@@ -166,6 +166,7 @@ mod projected_graph_execution;
 mod projection_generations;
 mod property_defaults;
 mod published_object_verification;
+mod qos_admission_refusals;
 mod query_execution;
 mod query_observability;
 mod read_transactions;
@@ -2806,6 +2807,23 @@ fn idempotent_raw_insert_and_dirty_mark_commit_atomically_on_both_paths() {
             .rows[0]
             .get("dirty"),
         Some(&Value::Bool(true))
+    );
+}
+
+/// A refused local QoS background admission is a typed, non-poisoning
+/// `RuntimeAdmissionRefused(background_task_saturated)` (#1926), never a
+/// storage error. `requested`/`available` are estimated operations.
+#[track_caller]
+fn assert_background_refusal(error: &HawDBError, requested: u64, available: u64, retryable: bool) {
+    assert_eq!(
+        error,
+        &HawDBError::RuntimeAdmissionRefused(crate::RuntimeAdmissionRefusal {
+            code: "background_task_saturated",
+            requested,
+            available,
+            retryable,
+        }),
+        "{error}"
     );
 }
 

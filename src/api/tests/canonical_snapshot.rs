@@ -3318,9 +3318,8 @@ fn hawdb_lightning_background_bootstrap_export_uses_qos_without_gating_direct_ex
             .prepare_background_hawdb_lightning_bootstrap_export(&policy, &LocalQosState::default())
             .unwrap_err();
 
-        assert!(error
-            .to_string()
-            .contains("background HawDB Lightning bootstrap export deferred"));
+        // A zero Import lane can never admit the export.
+        assert_background_refusal(&error, 5, 0, false);
         assert!(!active_storage_root(&path).join("stable_ids.hawdb").exists());
 
         let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();

@@ -4673,9 +4673,19 @@ fn embedded_store_background_delta_uses_scheduler_qos() {
         .apply_scheduled_background_search_projection_graph_delta(request)
         .unwrap_err();
 
-    assert!(error
-        .to_string()
-        .contains("background search projection graph delta"));
+    // A zero total budget can never admit the delta.
+    assert!(
+        matches!(
+            error,
+            HawDBError::RuntimeAdmissionRefused(hawdb_core::RuntimeAdmissionRefusal {
+                code: "background_task_saturated",
+                available: 0,
+                retryable: false,
+                ..
+            })
+        ),
+        "{error}"
+    );
     assert!(store
         .search_projection()
         .unwrap()

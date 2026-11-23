@@ -49,6 +49,22 @@ use std::cell::Cell;
 #[cfg(feature = "full-text-search")]
 use std::num::{NonZeroU64, NonZeroUsize};
 
+/// A refused QoS background admission is a typed, non-poisoning refusal
+/// (#1926), never a storage error.
+#[track_caller]
+fn assert_background_refusal(error: &HawDBError, requested: u64, available: u64, retryable: bool) {
+    assert_eq!(
+        error,
+        &HawDBError::RuntimeAdmissionRefused(hawdb_core::RuntimeAdmissionRefusal {
+            code: "background_task_saturated",
+            requested,
+            available,
+            retryable,
+        }),
+        "{error}"
+    );
+}
+
 #[derive(Default)]
 struct TestProjectionSource {
     nodes: Vec<NodeRecord>,
@@ -5660,9 +5676,41 @@ fn background_search_projection_rebuild_uses_qos_admission() {
         )
         .unwrap_err();
 
-    assert!(error.to_string().contains("deferred"));
+    // A request above the per-work limit can never be admitted as is.
+    assert_background_refusal(&error, 2, 1, false);
     assert_eq!(index.document_count(), 1);
     assert!(index.document("old").is_some());
+
+    // Running work holding the budget defers it until that work ends.
+    let busy = LocalQosPolicy {
+        max_total_background_operations: Some(3),
+        ..LocalQosPolicy::default()
+    };
+    let running = LocalQosState {
+        running_background_operations: 2,
+        ..LocalQosState::default()
+    };
+    let error = index
+        .rebuild_background_derived_artifacts(
+            &busy,
+            &running,
+            &catalog,
+            &store,
+            SearchRebuildOptions::default(),
+        )
+        .unwrap_err();
+    assert_background_refusal(&error, 2, 1, true);
+    assert!(index.document("old").is_some());
+    index
+        .rebuild_background_derived_artifacts(
+            &busy,
+            &LocalQosState::default(),
+            &catalog,
+            &store,
+            SearchRebuildOptions::default(),
+        )
+        .unwrap();
+    assert!(index.document("old").is_none());
 }
 
 #[test]
@@ -5982,7 +6030,7 @@ fn background_projection_delta_uses_qos_admission() {
         )
         .unwrap_err();
 
-    assert!(error.to_string().contains("deferred"));
+    assert_background_refusal(&error, 2, 1, false);
     assert_eq!(index.document_count(), 1);
     assert!(index.document("memory:old").is_some());
     assert!(index.document("memory:new").is_none());
@@ -6102,12 +6150,34 @@ fn scheduled_background_projection_delta_defers_when_scheduler_is_full() {
         )
         .unwrap_err();
 
-    assert!(error.to_string().contains("deferred"));
+    assert_background_refusal(&error, 2, 1, true);
     assert_eq!(scheduler.state().running_background_operations, 3);
     assert!(index.document("memory:old").is_some());
     assert!(index.document("memory:new").is_none());
 
     running.finish();
+    assert_eq!(scheduler.state().running_background_operations, 0);
+    index
+        .apply_scheduled_background_projection_delta(
+            &scheduler,
+            SearchProjectionDelta {
+                upserts: vec![SearchProjectionRow {
+                    kind: SearchProjectionKind::Memory,
+                    external_id: "new".to_string(),
+                    title: "Retried projection".to_string(),
+                    body: "Applied once capacity frees".to_string(),
+                    embedding: Some(vec![0.0, 1.0]),
+                    source_id: None,
+                    metadata: BTreeMap::new(),
+                }],
+                deletes: vec!["memory:old".to_string()],
+                max_operations: Some(2),
+                source_graph_commit_epoch: None,
+            },
+        )
+        .unwrap();
+    assert!(index.document("memory:old").is_none());
+    assert!(index.document("memory:new").is_some());
     assert_eq!(scheduler.state().running_background_operations, 0);
 }
 
@@ -6373,7 +6443,7 @@ fn background_metadata_repair_uses_qos_admission() {
         )
         .unwrap_err();
 
-    assert!(error.to_string().contains("deferred"));
+    assert_background_refusal(&error, 1, 0, false);
     assert_eq!(
         index
             .document("memory:mem_1")
@@ -6492,7 +6562,7 @@ fn scheduled_background_metadata_repair_defers_when_scheduler_is_full() {
         )
         .unwrap_err();
 
-    assert!(error.to_string().contains("deferred"));
+    assert_background_refusal(&error, 2, 1, true);
     assert_eq!(scheduler.state().running_background_operations, 3);
     assert_eq!(
         index
@@ -6505,6 +6575,25 @@ fn scheduled_background_metadata_repair_defers_when_scheduler_is_full() {
     );
 
     running.finish();
+    assert_eq!(scheduler.state().running_background_operations, 0);
+    index
+        .repair_scheduled_background_metadata_from_graph(
+            &scheduler,
+            &catalog,
+            &store,
+            MetadataRepairOptions::default(),
+            2,
+        )
+        .unwrap();
+    assert_ne!(
+        index
+            .document("memory:mem_1")
+            .unwrap()
+            .metadata
+            .get("kind")
+            .map(String::as_str),
+        Some("stale")
+    );
     assert_eq!(scheduler.state().running_background_operations, 0);
 }
 

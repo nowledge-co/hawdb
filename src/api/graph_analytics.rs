@@ -183,13 +183,8 @@ impl Database {
             .node_count_for_label(None)
             .saturating_add(snapshot.store.relationship_count_for_type(None))
             .max(1);
-        let permit = scheduler
-            .try_start(WorkRequest::background(WorkClass::Projection, units))
-            .map_err(|admission| {
-                HawDBError::Execution(format!(
-                    "background graph analytics not admitted: {admission:?}"
-                ))
-            })?;
+        let permit =
+            scheduler.try_start_or_refuse(WorkRequest::background(WorkClass::Projection, units))?;
         let (query, parameters, value_column) = algorithm_query(&request)?;
         let mut rows = BTreeMap::new();
         let mut streamed_rows = 0;
@@ -366,12 +361,7 @@ impl Database {
         let task_context = publication_context.as_ref();
         let scheduler = self.local_qos_scheduler_for_work();
         let permit = scheduler
-            .try_start(WorkRequest::background(WorkClass::Projection, operations))
-            .map_err(|admission| {
-                HawDBError::Execution(format!(
-                    "background analytics publication not admitted: {admission:?}"
-                ))
-            })?;
+            .try_start_or_refuse(WorkRequest::background(WorkClass::Projection, operations))?;
         let result = (|| {
             let needs_schema = self
                 .runtime
@@ -454,13 +444,7 @@ impl Database {
                 )
             })
             .transpose()
-            .map_err(|admission| {
-                HawDBError::or_stop(&admission, || {
-                    HawDBError::Execution(format!(
-                        "background graph analytics runtime not admitted: {admission}"
-                    ))
-                })
-            })
+            .map_err(HawDBError::from)
     }
 
     /// Freshness is conservative: any commit after publication makes the result

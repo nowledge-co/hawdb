@@ -54,7 +54,7 @@ fn database_facade_background_search_projection_rebuild_uses_qos_admission() {
         )
         .unwrap_err();
 
-    assert!(error.to_string().contains("deferred"));
+    assert_background_refusal(&error, 2, 1, false);
     assert!(search_index.document("memory:old").is_some());
     assert!(search_index.document("memory:mem_1").is_none());
 }
@@ -172,7 +172,7 @@ fn database_facade_background_search_projection_metadata_repair_uses_qos_admissi
         )
         .unwrap_err();
 
-    assert!(error.to_string().contains("deferred"));
+    assert_background_refusal(&error, 1, 0, false);
     assert_eq!(
         search_index
             .document("memory:mem_1")

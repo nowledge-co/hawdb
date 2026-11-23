@@ -851,7 +851,7 @@ fn background_schema_maintenance_defers_without_mutating_schema() {
             .run_background_schema_maintenance(&policy, &LocalQosState::default(), 1)
             .unwrap_err();
 
-        assert!(error.to_string().contains("deferred"));
+        assert_background_refusal(&error, 1, 0, false);
         let after = read_test_wal(&path).unwrap();
         assert_eq!(after, before);
         assert!(db.property_descriptors().unwrap().iter().any(|property| {
@@ -890,7 +890,7 @@ fn planned_background_schema_maintenance_uses_pending_work_estimate() {
             .run_planned_background_schema_maintenance(&policy, &LocalQosState::default())
             .unwrap_err();
 
-        assert!(error.to_string().contains("estimated operations 2"));
+        assert_background_refusal(&error, 2, 1, false);
         let after = read_test_wal(&path).unwrap();
         assert_eq!(after, before);
         assert!(db.property_descriptors().unwrap().iter().any(|property| {
@@ -2229,7 +2229,7 @@ fn bounded_background_property_index_projection_rebuild_defers_without_rebuildin
             )
             .unwrap_err();
 
-        assert!(error.to_string().contains("deferred"));
+        assert_background_refusal(&error, 2, 1, false);
         let after = read_test_wal(&path).unwrap();
         assert_eq!(after, before);
     }
