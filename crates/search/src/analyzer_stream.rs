@@ -285,18 +285,23 @@ fn visit_identifier_tokens<'a>(
 ) -> Result<Option<Text<'a>>> {
     let mut tokens = TokenEmitter::new(analyzer, control, emit);
     tokens.emit_token(Text::lowercase(raw, false, control)?)?;
-    // Jieba still owns its whole-run scratch and borrowed token collection.
-    visit_chinese_search_tokens_with_workspace(raw, control.workspace, |token| {
-        tokens.analyzed(Text::Borrowed(token))
-    })?;
-    for run in raw.split(|ch| !is_cjk_search_char(ch)) {
-        for width in [2, 3] {
-            let mut starts = [0; 3];
-            for (index, (offset, ch)) in run.char_indices().enumerate() {
-                starts.copy_within(1..width, 0);
-                starts[width - 1] = offset;
-                if index + 1 >= width {
-                    tokens.emit_token(Text::Borrowed(&run[starts[0]..offset + ch.len_utf8()]))?;
+    // ASCII words have no CJK characters, so neither Jieba nor the n-gram
+    // runs below can emit anything for them.
+    if !raw.is_ascii() {
+        // Jieba still owns its whole-run scratch and borrowed token collection.
+        visit_chinese_search_tokens_with_workspace(raw, control.workspace, |token| {
+            tokens.analyzed(Text::Borrowed(token))
+        })?;
+        for run in raw.split(|ch| !is_cjk_search_char(ch)) {
+            for width in [2, 3] {
+                let mut starts = [0; 3];
+                for (index, (offset, ch)) in run.char_indices().enumerate() {
+                    starts.copy_within(1..width, 0);
+                    starts[width - 1] = offset;
+                    if index + 1 >= width {
+                        tokens
+                            .emit_token(Text::Borrowed(&run[starts[0]..offset + ch.len_utf8()]))?;
+                    }
                 }
             }
         }
@@ -318,6 +323,9 @@ fn visit_identifier_tokens<'a>(
 }
 
 fn lowercase_is_identity(text: &str) -> bool {
+    if text.is_ascii() {
+        return !text.bytes().any(|byte| byte.is_ascii_uppercase());
+    }
     text.chars()
         .all(|ch| ch.to_lowercase().eq(std::iter::once(ch)))
 }

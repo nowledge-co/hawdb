@@ -54,7 +54,12 @@ fn one_pass_matches_equal_reference_analysis() {
         ),
         document("No body match", ""),
         document("ab", "a b ab a_b aB Ab ab ab ab"),
+        document(
+            &format!("{} {}", "x".repeat(64), "y".repeat(70)),
+            &format!("{}z {} {}", "y".repeat(69), "y".repeat(70), "x".repeat(63)),
+        ),
     ];
+    let long = format!("{} {} {}", "x".repeat(64), "y".repeat(70), "x".repeat(63));
     let queries = [
         "graph http run memory",
         "graph graph_stream",
@@ -65,6 +70,7 @@ fn one_pass_matches_equal_reference_analysis() {
         "ab a b",
         "ext graphstream 7 unindexed",
         "",
+        long.as_str(),
     ];
     let mut compared = 0;
     let mut spans_seen = 0;

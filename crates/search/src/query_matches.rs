@@ -38,6 +38,8 @@ pub(crate) fn visit<'d, 'q>(
     if terms.is_empty() {
         return Ok(());
     }
+    let filter = TermFilter::new(terms);
+    let find = |token: &str| filter.admits(token).then(|| terms.get(token)).flatten();
     // The word holding the pending span terms, as byte offsets in its field.
     let mut word = None::<(usize, usize)>;
     let mut word_terms = Vec::<&'q str>::new();
@@ -47,7 +49,7 @@ pub(crate) fn visit<'d, 'q>(
     ] {
         let base = text.as_ptr() as usize;
         visit_word_tokens(text, analyzer, control, |raw, token, phrase| {
-            let Some(term) = terms.get(token) else {
+            let Some(term) = find(token) else {
                 return Ok(());
             };
             matched(term.as_str())?;
@@ -67,12 +69,39 @@ pub(crate) fn visit<'d, 'q>(
     }
     for (text, _) in metadata_token_fields(&document.metadata) {
         visit_word_tokens(text, analyzer, control, |_, token, _| {
-            terms
-                .get(token)
-                .map_or(Ok(()), |term| matched(term.as_str()))
+            find(token).map_or(Ok(()), |term| matched(term.as_str()))
         })?;
     }
     Ok(())
+}
+
+/// An exact prefilter for term lookups: most analyzed tokens differ from
+/// every query term in length or first byte, which two bit tests decide
+/// before any string comparison.
+struct TermFilter {
+    first_bytes: [u64; 4],
+    lengths: u64,
+}
+
+impl TermFilter {
+    fn new(terms: &BTreeSet<String>) -> Self {
+        let mut filter = Self {
+            first_bytes: [0; 4],
+            lengths: 0,
+        };
+        for term in terms {
+            let first = term.as_bytes().first().copied().unwrap_or(0);
+            filter.first_bytes[usize::from(first >> 6)] |= 1 << (first & 63);
+            filter.lengths |= 1 << term.len().min(63);
+        }
+        filter
+    }
+
+    fn admits(&self, token: &str) -> bool {
+        let first = token.as_bytes().first().copied().unwrap_or(0);
+        self.first_bytes[usize::from(first >> 6)] & (1 << (first & 63)) != 0
+            && self.lengths & (1 << token.len().min(63)) != 0
+    }
 }
 
 fn flush<'d, 'q>(
