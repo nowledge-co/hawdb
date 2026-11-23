@@ -1,0 +1,21 @@
+{
+  "url": "https://ann-benchmarks.com/sift-128-euclidean.hdf5",
+  "etag": "\"2bf1ef4c0c3e17031bd64980774eea09-63\"",
+  "remote_bytes": 525128288,
+  "transferred_bytes": 53297152,
+  "selection": "first 100000 train vectors and first 128 held-out test vectors",
+  "outputs": {
+    "base.fvecs": {
+      "dataset": "train",
+      "rows": 100000,
+      "dimension": 128,
+      "sha256": "7145bedfe09fe8d1afcc9ad743eb6ba6218dc766b77c4b0bbe82d22b78e265ba"
+    },
+    "query.fvecs": {
+      "dataset": "test",
+      "rows": 128,
+      "dimension": 128,
+      "sha256": "810d603724d792a615426a95e310c6141549eaaf5446798863bc4be5ad78b900"
+    }
+  }
+}

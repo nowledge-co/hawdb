@@ -429,9 +429,11 @@ pub struct SearchOutOfCoreConfig {
     /// Values below `max_lexical_query_terms` are raised to it.
     pub max_lexical_query_analyzed_terms: NonZeroUsize,
     pub max_vector_candidates: NonZeroUsize,
-    /// DiskANN navigation beam for queries that do not set one with
+    /// DiskANN navigation beam for ordinary Search queries that do not set one with
     /// [`VectorSearchExecutionOptions::with_navigation_beam`]. A narrower beam
     /// scores fewer vectors per segment graph at some recall cost (#1614).
+    /// Defaults to 256. Canonical `vector_index_search` does not inherit this
+    /// reader setting and retains its separate single-graph recall budget.
     pub default_navigation_beam: NonZeroUsize,
     pub max_vector_search_working_bytes: NonZeroUsize,
     pub max_vector_search_parallelism: NonZeroUsize,
@@ -467,7 +469,8 @@ impl Default for SearchOutOfCoreConfig {
             )
             .unwrap(),
             max_vector_candidates: NonZeroUsize::new(1_024).unwrap(),
-            default_navigation_beam: NonZeroUsize::new(crate::DEFAULT_NAVIGATION_BEAM).unwrap(),
+            default_navigation_beam: NonZeroUsize::new(crate::DEFAULT_OUT_OF_CORE_NAVIGATION_BEAM)
+                .unwrap(),
             max_vector_search_working_bytes: NonZeroUsize::new(64 * 1024 * 1024).unwrap(),
             max_vector_search_parallelism: NonZeroUsize::MIN,
             max_hydrated_documents: NonZeroUsize::new(1024).unwrap(),

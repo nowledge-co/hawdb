@@ -224,7 +224,16 @@ fn default_graph_uses_the_requested_candidate_window_within_its_ceiling() {
             .unwrap();
     }
     writer.finish().unwrap();
-    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    // Cover the graph to keep navigation independent of the rerank window,
+    // regardless of the configured default chosen for ordinary queries.
+    let reader = SearchOutOfCoreReader::open_with_config(
+        &root.0,
+        crate::SearchOutOfCoreConfig {
+            default_navigation_beam: NonZeroUsize::new(512).unwrap(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let options = |rank_window| SearchQueryOptions {
         limit: 10,
         offset: 3,
