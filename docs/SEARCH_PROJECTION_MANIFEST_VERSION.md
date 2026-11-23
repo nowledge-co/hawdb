@@ -33,8 +33,12 @@ Both are omitted when `min_reader_version` is 1, and an absent field reads as
 | --- | --- |
 | 1 | Every field written before #1763. |
 | 2 | `content_source_graph_commit_epoch` (#1756), and the version fields themselves. |
+| 3 | `content_encoding: "blocks1"` on a content segment entry (#1917): its payload frames each descriptor segment as checksummed blocks ([SEARCH_CONTENT_BLOCKS.md](SEARCH_CONTENT_BLOCKS.md)). |
 
-This reader supports version 2.
+This reader supports version 3. Every new content artifact is written as
+`blocks1`, so any content publication by this release writes a version-3
+selector; a selector whose artifacts all predate #1917 keeps version 1 or 2.
+A version-2 reader refuses a version-3 selector with the typed error below.
 
 ## Reading
 
@@ -47,8 +51,8 @@ A reader decodes the selector in two stages:
    `HawDBError::UnsupportedStorageFormat(StorageFormatError::UnsupportedVersion {
    format: SEARCH_PROJECTION_MANIFEST_FORMAT, found, supported })`. `found` is the
    selector's `min_reader_version`, saturated to `u16::MAX`. The message is
-   `unsupported search projection manifest version 3; this reader supports
-   version 2`.
+   `unsupported search projection manifest version 4; this reader supports
+   version 3`.
 2. **Strict decode.** Otherwise the reader decodes and validates the body
    exactly as before, with `deny_unknown_fields`.
 
@@ -100,10 +104,12 @@ Every writer stamps the selector from the fields present
 - `format_version` is the writer's version when `min_reader_version` is above
   1, and 1 otherwise.
 
-An epoch advance therefore writes version 2, because it writes
-`content_source_graph_commit_epoch`. The next content publication, a resident
-checkpoint or an out-of-core delta, drops that field and writes version 1
-again. A host can downgrade after such a publication.
+An epoch advance therefore writes at least version 2, because it writes
+`content_source_graph_commit_epoch`. The next content publication drops that
+field. A resident checkpoint then writes version 1 again; an out-of-core delta
+or rebuild writes version 3 because its new content artifact is `blocks1`
+(#1917). Downgrading below the release that introduced `blocks1` requires a
+rebuild with the older binary (into a new directory) or a logical dump.
 
 ## Bump policy
 

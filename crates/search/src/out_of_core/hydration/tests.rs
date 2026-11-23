@@ -365,7 +365,9 @@ fn public_hydration_preserves_order_budgets_and_old_reader() {
     assert_eq!(output.documents, expected);
     assert_eq!(output.metrics.hydrated_bytes, required);
     assert_eq!(output.metrics.hydrated_documents, 3);
-    assert_eq!(output.metrics.segment_range_reads, 3);
+    // One verified index and one block per segment (#1917).
+    assert_eq!(output.metrics.content_index_reads, 3);
+    assert_eq!(output.metrics.content_blocks_read, 3);
     assert_eq!(
         output.metrics.segment_bytes_read,
         output.metrics.hydration_segment_bytes_read
@@ -462,8 +464,20 @@ fn public_hydration_rejects_damaged_tail_without_writing_artifacts() {
     let mut damaged = valid.clone();
     *damaged.last_mut().unwrap() ^= 1;
     fs::write(&path, &damaged).unwrap();
-    let error = reader.hydrate_documents(&[document(0).id]).unwrap_err();
-    assert!(error.to_string().contains("payload checksum mismatch"));
+    // The damaged tail is document 1's block. Document 0's block is intact
+    // and is not verified by a request for it alone (#1917).
+    assert_eq!(
+        reader
+            .hydrate_documents(&[document(0).id])
+            .unwrap()
+            .documents,
+        vec![document(0)]
+    );
+    let error = reader.hydrate_documents(&[document(1).id]).unwrap_err();
+    assert!(error.to_string().contains("checksum mismatch"), "{error}");
+    assert!(reader
+        .verify_content_segments(&hawdb_core::RuntimeTaskContext::default())
+        .is_err());
     assert_eq!(fs::read(&path).unwrap(), damaged);
     fs::write(&path, &valid).unwrap();
     assert_eq!(
@@ -487,7 +501,15 @@ fn public_lookup_reports_missing_ids_and_keeps_damage_a_storage_error() {
         writer.push(document(number)).unwrap();
     }
     writer.finish().unwrap();
-    let reader = SearchOutOfCoreReader::open(&root).unwrap();
+    // Without a content cache, so damage below is read from disk (#1917).
+    let reader = SearchOutOfCoreReader::open_with_config(
+        &root,
+        SearchOutOfCoreConfig {
+            content_cache_bytes: 0,
+            ..Default::default()
+        },
+    )
+    .unwrap();
     // Present and never-published ids, interleaved, come back in request
     // order on their own side of the result.
     let request = vec![
@@ -575,7 +597,7 @@ fn public_lookup_reports_missing_ids_and_keeps_damage_a_storage_error() {
     ] {
         let error = reader.lookup_documents(&request).unwrap_err();
         assert!(matches!(error, HawDBError::Storage(_)), "{error:?}");
-        assert!(error.to_string().contains("payload checksum mismatch"));
+        assert!(error.to_string().contains("checksum mismatch"), "{error}");
     }
     // Absence is decided by the published routes, which are intact.
     assert_eq!(

@@ -336,6 +336,8 @@ pub(crate) fn open_stationary_candidate(
 pub(crate) mod artifact_key;
 mod epoch_advance;
 pub use epoch_advance::SearchProjectionEpochAdvanceReport;
+mod content_blocks;
+pub use content_blocks::SearchContentVerificationReport;
 mod generation_writer;
 mod hydration;
 mod metadata_query;
@@ -394,6 +396,10 @@ const MAX_MARKER_BYTES: u64 = 64 * 1024;
 const CANDIDATE_FILE_HEADER: &[u8; 8] = b"SKNCAND1";
 static CANDIDATE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+/// Default [`SearchOutOfCoreConfig::content_cache_bytes`]: about a thousand
+/// 16 KiB content blocks.
+pub(crate) const DEFAULT_CONTENT_CACHE_BYTES: u64 = 16 * 1024 * 1024;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchOutOfCoreConfig {
     pub max_compressed_segment_bytes: NonZeroU64,
@@ -441,6 +447,11 @@ pub struct SearchOutOfCoreConfig {
     pub max_hydrated_bytes: NonZeroU64,
     pub max_matched_spans: NonZeroUsize,
     pub max_matched_span_bytes: NonZeroU64,
+    /// Capacity of the reader's cache of verified, decompressed content blocks
+    /// and segment indexes (#1917), shared by every query and refresh of one
+    /// reader. Zero disables it. Cached bytes are owned by the cache, not by
+    /// a query: a query charges only its transient read and decode buffers.
+    pub content_cache_bytes: u64,
     pub spill_directory: PathBuf,
 }
 
@@ -477,6 +488,7 @@ impl Default for SearchOutOfCoreConfig {
             max_hydrated_bytes: NonZeroU64::new(64 * 1024 * 1024).unwrap(),
             max_matched_spans: NonZeroUsize::new(4096).unwrap(),
             max_matched_span_bytes: NonZeroU64::new(8 * 1024 * 1024).unwrap(),
+            content_cache_bytes: DEFAULT_CONTENT_CACHE_BYTES,
             spill_directory: std::env::temp_dir().join("hawdb-search"),
         }
     }
@@ -508,6 +520,15 @@ pub struct SearchOutOfCoreMetrics {
     /// [`SearchOutOfCoreReader::search_with_options_admitted`]; zero for
     /// unaccounted ordinary reads.
     pub query_memory_peak_bytes: u64,
+    /// Block-framed content segments (#1917): segment indexes read from disk
+    /// and served from the reader's content cache.
+    pub content_index_reads: u64,
+    pub content_index_cache_hits: u64,
+    /// Content blocks read, verified and inflated, and those served verified
+    /// from the reader's content cache.
+    pub content_blocks_read: u64,
+    pub content_block_cache_hits: u64,
+    pub content_block_bytes_inflated: u64,
 }
 
 struct SearchDocumentSegmentRoute<'a> {
@@ -583,6 +604,8 @@ pub struct SearchOutOfCoreReader {
     lexical_source_policy: SearchLexicalSourcePolicy,
     lexical_term_policy: SearchLexicalTermPolicy,
     runtime_capabilities: RuntimeCapabilities,
+    /// Verified content blocks and indexes, shared across refreshes (#1917).
+    content_cache: content_blocks::ContentCache,
 }
 
 /// One immutable group of search artifacts selected by an out-of-core manifest.
@@ -604,6 +627,11 @@ pub(super) struct SegmentReaderContents {
     descriptor: crate::document_encoding::DecodedDescriptor,
     payload: File,
     payload_length: u64,
+    /// Selector-declared framing of `payload` (#1917).
+    content_encoding: content_blocks::ContentEncoding,
+    /// The payload's SHA-256 and generation: its content-cache identity.
+    payload_sha256: [u8; 32],
+    payload_generation: u64,
     metadata_payload: File,
     metadata_payload_length: u64,
     vector_payload: File,
@@ -750,6 +778,13 @@ struct SearchOutOfCoreSegmentManifest<S = String> {
     document_count: usize,
     documents_digest: u64,
     source_graph_commit_epoch: Option<u64>,
+    /// How `payload_file` frames its descriptor segments. Absent means
+    /// `stream1`; `blocks1` requires selector version 3 (#1917).
+    #[serde(
+        default,
+        skip_serializing_if = "content_blocks::ContentEncoding::is_stream1"
+    )]
+    content_encoding: content_blocks::ContentEncoding,
 }
 
 /// One immutable mutation artifact selected by the active manifest.
@@ -935,7 +970,13 @@ impl SearchOutOfCoreManifestBody {
     /// field is present, so a selector without one stays readable by the
     /// base reader.
     fn required_reader_version(&self) -> u16 {
-        if self.content_source_graph_commit_epoch.is_some() {
+        if self
+            .segments
+            .iter()
+            .any(|segment| !segment.content_encoding.is_stream1())
+        {
+            manifest_version::CONTENT_BLOCKS_VERSION
+        } else if self.content_source_graph_commit_epoch.is_some() {
             manifest_version::CONTENT_EPOCH_VERSION
         } else {
             manifest_version::BASE_VERSION
@@ -2134,6 +2175,9 @@ impl SearchOutOfCoreSegmentReader {
                 descriptor,
                 payload,
                 payload_length: manifest.payload_len,
+                content_encoding: manifest.content_encoding,
+                payload_sha256: manifest.objects.payload.sha256(),
+                payload_generation: manifest.generation,
                 metadata_payload,
                 metadata_payload_length: manifest.metadata_payload_len,
                 vector_payload,
@@ -2298,6 +2342,12 @@ impl SearchOutOfCoreReader {
         &self.config
     }
 
+    /// Occupancy and hit counters of this reader's content cache (#1917),
+    /// or `None` when `content_cache_bytes` is zero.
+    pub fn content_cache_snapshot(&self) -> Option<hawdb_storage::cache::SegmentCacheSnapshot> {
+        self.content_cache.snapshot()
+    }
+
     pub fn generation(&self) -> u64 {
         self.manifest.generation
     }
@@ -2431,6 +2481,7 @@ impl SearchOutOfCoreReader {
                 lexical_source_policy: reader.lexical_source_policy,
                 lexical_term_policy: reader.lexical_term_policy,
                 runtime_capabilities: reader.runtime_capabilities,
+                content_cache: reader.content_cache.clone(),
             };
             *reader = Arc::new(next);
         }
@@ -3863,6 +3914,8 @@ impl SearchOutOfCoreReader {
                 candidates,
                 metrics,
                 context.query,
+                // Only vector and hybrid hits rescore the stored embedding.
+                context.mode != SearchMode::Text,
             )?)
         };
         let query_scorer = if context.mode != SearchMode::Text && !candidates.is_empty() {
@@ -4076,6 +4129,7 @@ impl SearchOutOfCoreReader {
                 &ids,
                 hydrated_bytes,
                 metrics,
+                &self.content_cache,
             )? {
                 hydrated_bytes = hydrated_bytes
                     .checked_add(search_document_bytes(&document))
@@ -4213,25 +4267,39 @@ impl SearchOutOfCoreReader {
                 segment.segment_id
             ))
         })?;
-        let payload = read_out_of_core_payload_range(
-            &artifact.payload,
-            SearchOutOfCoreRange {
+        let documents = hydration::read_validated(
+            hydration::RangeReader {
+                file: &artifact.payload,
                 offset: range.offset,
-                length: range.length,
-                checksum: range.checksum,
-                entry_count: segment.document_count,
+                remaining: range.length,
             },
-            segment.segment_id,
-            "hydration",
-            metrics,
-        )?;
+            range.length,
+            range.checksum,
+            self.config.max_uncompressed_segment_bytes.get(),
+            None,
+            |text| {
+                let mut documents = Vec::new();
+                for line in std::io::BufRead::lines(text) {
+                    let line = line?;
+                    if line.starts_with("doc\t") {
+                        documents.push(crate::decode_search_document_line(&line)?);
+                    }
+                }
+                Ok(documents)
+            },
+        )
+        .map_err(|error| match error {
+            HawDBError::Storage(message) => HawDBError::Storage(format!(
+                "search segment {} hydration {message}",
+                segment.segment_id
+            )),
+            error => error,
+        })?;
+        metrics.segment_range_reads = metrics.segment_range_reads.saturating_add(1);
+        metrics.segment_bytes_read = metrics.segment_bytes_read.saturating_add(range.length);
         metrics.hydration_segment_bytes_read = metrics
             .hydration_segment_bytes_read
             .saturating_add(range.length);
-        let documents = decode_search_segment_documents_bounded(
-            &payload,
-            self.config.max_uncompressed_segment_bytes.get(),
-        )?;
         validate_search_segment_documents(segment, &documents)?;
         metrics.peak_segment_document_bytes = metrics
             .peak_segment_document_bytes
@@ -5553,6 +5621,8 @@ fn publish_out_of_core_projection(
             document_count: index.documents.len(),
             documents_digest: lexical_documents_digest(&index.documents),
             source_graph_commit_epoch: index.source_graph_commit_epoch,
+            // The resident snapshot writer frames segments as envelopes.
+            content_encoding: content_blocks::ContentEncoding::Stream1,
         }],
         mutation_runs: Vec::new(),
         document_count: index.documents.len(),

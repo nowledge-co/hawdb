@@ -14,17 +14,25 @@
 
 //! Bounded compression directly into a private artifact tail.
 //!
-//! The envelope length is known only after compression. Move the new tail
-//! backwards in bounded blocks to insert it; no other segment is touched.
-//! An error poisons the generation writer, so an incomplete tail is never
-//! published or offered as a retryable record.
+//! Content segments are framed as independently compressed blocks (#1917).
+//! The header and index slots are sized before compression and filled last;
+//! no other segment is touched. An error poisons the generation writer, so an
+//! incomplete tail is never published or offered as a retryable record.
 
 use super::*;
 use crate::document_encoding::RecordSource;
 use hawdb_storage::file_io::File;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Seek, SeekFrom};
 
-pub(in super::super) fn append_segment<T: RecordSource>(
+/// Appends one `blocks1` content segment (#1917) and returns its length and
+/// the segment digest CRC32C(header || index) recorded by the descriptor.
+///
+/// Block boundaries follow from the records' admitted encoded lengths, so the
+/// index size is known before any block is written: the header and index
+/// slots are skipped, blocks are compressed straight into the tail, and the
+/// slots are filled last. Memory is the compression workspace, one staging
+/// buffer and the index; no block is buffered whole.
+pub(in super::super) fn append_block_segment<T: RecordSource>(
     output: &mut File,
     encoding: &SegmentEncoding<'_, T>,
     max_uncompressed_bytes: u64,
@@ -32,91 +40,182 @@ pub(in super::super) fn append_segment<T: RecordSource>(
     memory: &BuildMemory,
     task: &RuntimeTaskContext,
 ) -> Result<(u64, u64)> {
+    use crate::out_of_core::content_blocks::{
+        encode_entry, entry_len, Header, WrittenBlock, BLOCK_TARGET_BYTES, HEADER_BYTES,
+        MAX_BUFFERED_BLOCK_BYTES,
+    };
+    let invalid = |reason: &str| HawDBError::Storage(format!("search content blocks {reason}"));
     checkpoint(task)?;
     if encoding.len() as u64 > max_uncompressed_bytes {
         return Err(HawDBError::Storage(
             "search document segment exceeds encoded admission".into(),
         ));
     }
+    let documents = encoding
+        .documents()
+        .ok_or_else(|| invalid("frame only document segments"))?;
+    if documents.is_empty() {
+        return Err(invalid("cannot frame an empty segment"));
+    }
+    // Plan blocks from admitted lengths: (first record, end record, bytes).
+    let mut plan_memory = memory.spool.reserve(0)?;
+    let mut plan: Vec<(usize, usize, u64)> = Vec::new();
+    let mut index_len = 0usize;
+    let mut start_record = 0;
+    let mut block_bytes = 0u64;
+    for (position, document) in documents.iter().enumerate() {
+        checkpoint(task)?;
+        let bytes = document.encoded_len(Some(task))? as u64;
+        if position != start_record && block_bytes + bytes > BLOCK_TARGET_BYTES {
+            if plan.len() == plan.capacity() {
+                let capacity = (plan.len() + 1).max(2 * plan.len());
+                reserve_capacity(&mut plan, capacity, &mut plan_memory)?;
+            }
+            plan.push((start_record, position, block_bytes));
+            start_record = position;
+            block_bytes = 0;
+        }
+        block_bytes += bytes;
+    }
+    if plan.len() == plan.capacity() {
+        let capacity = plan.len() + 1;
+        reserve_capacity(&mut plan, capacity, &mut plan_memory)?;
+    }
+    plan.push((start_record, documents.len(), block_bytes));
+    for (first, end, bytes) in &plan {
+        if *bytes > u64::from(u32::MAX) {
+            return Err(invalid("block exceeds the indexed length"));
+        }
+        index_len = index_len
+            .checked_add(entry_len(
+                documents[*first].header().id,
+                documents[*end - 1].header().id,
+            )?)
+            .ok_or_else(|| invalid("index size overflow"))?;
+    }
+    if index_len as u64 > max_uncompressed_bytes {
+        return Err(invalid("index exceeds its admission"));
+    }
+    let frame = (HEADER_BYTES + index_len) as u64;
+    let mut index_memory = memory.spool.reserve(0)?;
+    let mut index = Vec::new();
+    reserve_capacity(&mut index, HEADER_BYTES + index_len, &mut index_memory)?;
+    index.resize(HEADER_BYTES, 0);
+
     crate::build_memory::compression::require_qualified_zstd("workspace admission")?;
     let workspace = memory.retained.reserve(COMPRESSION_WORKSPACE_BYTES)?;
-    let _scratch = memory
-        .spool
-        .reserve(2 * HEX_BUFFER_BYTES + 3 * HEADER_CAPACITY)?;
+    let _scratch = memory.spool.reserve(
+        2 * HEX_BUFFER_BYTES + hawdb_storage::compression::FrameEncoder::staging_bytes(),
+    )?;
     let start = output.stream_position()?;
-    let mut compressed = LimitedWriter {
-        output,
-        bytes: 0,
-        limit: max_compressed_bytes,
-        digest: Crc32cHasher::new(),
-        task,
-    };
+    let blocks_start = start
+        .checked_add(frame)
+        .ok_or_else(|| HawDBError::Storage("search artifact offset overflow".into()))?;
+    output.seek(SeekFrom::Start(blocks_start))?;
     #[cfg(test)]
     evidence::started();
-    let mut encoder =
-        hawdb_storage::compression::Encoder::new(&mut compressed, SEARCH_COMPRESSION_LEVEL)?;
-    let mut digest = Crc32cHasher::new();
-    encoding.write_to(&mut CheckedWriter::new(
-        &mut DigestWriter {
-            writer: &mut encoder,
-            digest: &mut digest,
-        },
-        Some(task),
-    ))?;
-    encoder.finish()?;
+    let mut encoder = hawdb_storage::compression::FrameEncoder::new(SEARCH_COMPRESSION_LEVEL)?;
+    let mut compressed_total = 0u64;
+    let mut uncompressed_total = 0u64;
+    let limit = max_compressed_bytes.checked_sub(frame).ok_or_else(|| {
+        HawDBError::Storage(
+            "search segment requires compressed bytes exceeding its admission".into(),
+        )
+    })?;
+    for (first, end, bytes) in &plan {
+        checkpoint(task)?;
+        let mut sink = LimitedWriter {
+            output: &mut *output,
+            bytes: 0,
+            limit: limit - compressed_total,
+            digest: Crc32cHasher::new(),
+            task,
+        };
+        // Large single-record blocks keep zstd's bounded streaming window.
+        let declared = (*bytes <= MAX_BUFFERED_BLOCK_BYTES).then_some(*bytes);
+        let mut digest = Crc32cHasher::new();
+        let mut counted = CountingWriter {
+            writer: encoder.frame(declared, &mut sink)?,
+            bytes: 0,
+        };
+        {
+            let mut digested = DigestWriter {
+                writer: &mut counted,
+                digest: &mut digest,
+            };
+            let mut writer = CheckedWriter::new(&mut digested, Some(task));
+            for document in &documents[*first..*end] {
+                document.write_encoded(&mut writer)?;
+            }
+        }
+        if counted.bytes != *bytes {
+            return Err(invalid("records disagree with their admitted length"));
+        }
+        counted.writer.finish()?;
+        let compressed_len =
+            u32::try_from(sink.bytes).map_err(|_| invalid("block exceeds the indexed length"))?;
+        compressed_total += sink.bytes;
+        uncompressed_total += *bytes;
+        encode_entry(
+            &mut index,
+            &WrittenBlock {
+                compressed_len,
+                uncompressed_len: *bytes as u32,
+                compressed_crc: sink.digest.finish_u32(),
+                uncompressed_crc: digest.finish_u32(),
+                document_count: u32::try_from(end - first)
+                    .map_err(|_| invalid("block holds too many records"))?,
+                first: documents[*first].header().id,
+                last: documents[*end - 1].header().id,
+            },
+        )?;
+    }
+    drop(encoder);
     drop(workspace);
     checkpoint(task)?;
-    let compressed_bytes = compressed.bytes;
-    let header = search_snapshot_compression_header(
-        digest.finish(),
-        compressed.digest.finish(),
-        encoding.len(),
-        usize::try_from(compressed_bytes)
-            .map_err(|_| HawDBError::Storage("compressed segment exceeds usize".into()))?,
-    );
-    if header.capacity() > HEADER_CAPACITY {
-        return Err(HawDBError::Execution(
-            "search compression header exceeded admission".into(),
-        ));
+    if index.len() != HEADER_BYTES + index_len {
+        return Err(invalid("index disagrees with its planned length"));
     }
-    let length = compressed_bytes
-        .checked_add(header.len() as u64)
+    let header = Header {
+        block_count: u32::try_from(plan.len()).map_err(|_| invalid("too many blocks"))?,
+        document_count: u32::try_from(documents.len()).map_err(|_| invalid("too many records"))?,
+        index_len: index_len as u32,
+        uncompressed_len: uncompressed_total,
+    };
+    index[..HEADER_BYTES].copy_from_slice(&header.encode());
+    let length = frame
+        .checked_add(compressed_total)
         .filter(|length| *length <= max_compressed_bytes)
         .ok_or_else(|| {
             HawDBError::Storage(
                 "search segment requires compressed bytes exceeding its admission".into(),
             )
         })?;
-    let end = start
-        .checked_add(length)
-        .ok_or_else(|| HawDBError::Storage("search artifact offset overflow".into()))?;
-    let output = compressed.output;
-    let mut buffer = [0; HEX_BUFFER_BYTES];
-    let mut remaining = compressed_bytes;
-    while remaining != 0 {
-        checkpoint(task)?;
-        let count = remaining.min(buffer.len() as u64) as usize;
-        remaining -= count as u64;
-        output.seek(SeekFrom::Start(start + remaining))?;
-        output.read_exact(&mut buffer[..count])?;
-        output.seek(SeekFrom::Start(start + remaining + header.len() as u64))?;
-        output.write_all(&buffer[..count])?;
-    }
-    output.seek(SeekFrom::Start(start))?;
-    output.write_all(header.as_bytes())?;
-    let mut checksum = Crc32cHasher::new();
-    checksum.update(header.as_bytes());
-    let mut remaining = compressed_bytes;
-    while remaining != 0 {
-        checkpoint(task)?;
-        let count = remaining.min(buffer.len() as u64) as usize;
-        output.read_exact(&mut buffer[..count])?;
-        checksum.update(&buffer[..count]);
-        remaining -= count as u64;
-    }
+    let end = start + length;
     debug_assert_eq!(output.stream_position()?, end);
+    output.seek(SeekFrom::Start(start))?;
+    output.write_all(&index)?;
+    output.seek(SeekFrom::Start(end))?;
+    let mut checksum = Crc32cHasher::new();
+    checksum.update(&index);
     checkpoint(task)?;
     Ok((length, checksum.finish()))
+}
+
+struct CountingWriter<W> {
+    writer: W,
+    bytes: u64,
+}
+
+impl<W: Write> Write for CountingWriter<W> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let written = self.writer.write(bytes)?;
+        self.bytes += written as u64;
+        Ok(written)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.writer.flush()
+    }
 }
 
 struct LimitedWriter<'a> {

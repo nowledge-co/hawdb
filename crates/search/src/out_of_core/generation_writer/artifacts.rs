@@ -331,14 +331,32 @@ impl<'a> SegmentArtifactBuilder<'a> {
             SegmentKind::Documents,
             Some(&self.task),
         )?;
-        let (document_length, checksum) = encoding::append_segment(
-            &mut self.document_file,
-            &document_encoding,
-            self.options.max_segment_uncompressed_bytes.get(),
-            self.options.max_segment_compressed_bytes.get(),
-            &self.memory,
-            &self.task,
-        )?;
+        let (document_length, checksum) =
+            match super::super::content_blocks::written_content_encoding() {
+                super::super::content_blocks::ContentEncoding::Blocks1 => {
+                    encoding::append_block_segment(
+                        &mut self.document_file,
+                        &document_encoding,
+                        self.options.max_segment_uncompressed_bytes.get(),
+                        self.options.max_segment_compressed_bytes.get(),
+                        &self.memory,
+                        &self.task,
+                    )?
+                }
+                // Only compatibility tests write the pre-#1917 envelope.
+                super::super::content_blocks::ContentEncoding::Stream1 => {
+                    let payload =
+                        self.encode_segment_payload(segment_id, SegmentKind::Documents)?;
+                    let range = append_sidecar_payload_with_context(
+                        &mut self.document_file,
+                        &mut 0,
+                        payload.as_ref(),
+                        self.documents.len(),
+                        Some(&self.task),
+                    )?;
+                    (range.length, range.checksum)
+                }
+            };
         descriptor.payload_range = Some(SearchSegmentPayloadRange {
             artifact_id: SEARCH_SEGMENT_PAYLOAD_ARTIFACT_ID,
             offset: self.document_offset,

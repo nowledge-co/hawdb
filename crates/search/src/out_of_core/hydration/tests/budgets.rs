@@ -92,7 +92,7 @@ fn hydration_byte_refusal_preserves_the_complete_operation_budget() {
     assert_eq!(output.documents, expected);
     assert_eq!(output.metrics.hydrated_documents, ids.len());
     assert_eq!(output.metrics.hydrated_bytes, required);
-    assert_eq!(output.metrics.segment_range_reads, 2);
+    assert_eq!(output.metrics.content_index_reads, 2);
 
     let count_limited = SearchOutOfCoreReader::open_with_config(
         &root,

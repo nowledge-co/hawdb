@@ -29,9 +29,14 @@ pub(super) const BASE_VERSION: u16 = 1;
 /// a metadata-only epoch advance, together with the version fields.
 pub(super) const CONTENT_EPOCH_VERSION: u16 = 2;
 
+/// Version 3 adds `content_encoding: "blocks1"` on a content segment entry
+/// (#1917): its payload artifact frames each descriptor segment as
+/// independently compressed and checksummed blocks behind an index.
+pub(super) const CONTENT_BLOCKS_VERSION: u16 = 3;
+
 /// The highest selector version this reader decodes. It is also the
 /// `format_version` this writer stamps on a selector above the base version.
-pub(super) const READER_VERSION: u16 = CONTENT_EPOCH_VERSION;
+pub(super) const READER_VERSION: u16 = CONTENT_BLOCKS_VERSION;
 
 pub(super) const fn base_version() -> u16 {
     BASE_VERSION

@@ -60,7 +60,7 @@ fn query_hydration_streams_and_removed_documents_keep_their_funding() {
             |text| {
                 select_records(
                     text,
-                    &segment,
+                    Bounds::of(&segment),
                     &ids,
                     HydrationBudget {
                         limit: 16384,
@@ -68,6 +68,7 @@ fn query_hydration_streams_and_removed_documents_keep_their_funding() {
                     },
                     16384,
                     query,
+                    true,
                 )
             },
         );
@@ -149,14 +150,16 @@ fn query_hydration_preserves_wire_grammar_budgets_and_unselected_integrity() {
             },
             HydrationBudget { limit: 1, used: 0 },
         ] {
-            let expected = select_documents(&mut Cursor::new(&text), &segment, &ids, budget);
+            let expected =
+                select_documents(&mut Cursor::new(&text), Bounds::of(&segment), &ids, budget);
             let actual = select_records(
                 &mut Cursor::new(&text),
-                &segment,
+                Bounds::of(&segment),
                 &ids,
                 budget,
                 16384,
                 query,
+                true,
             );
             assert_eq!(actual.is_ok(), expected.is_ok(), "{tail:?}");
             if let (Ok(actual), Ok(expected)) = (actual, expected) {
@@ -190,7 +193,7 @@ fn query_hydration_preserves_wire_grammar_budgets_and_unselected_integrity() {
         |text| {
             select_records(
                 text,
-                &segment,
+                Bounds::of(&segment),
                 &ids,
                 HydrationBudget {
                     limit: 16384,
@@ -198,6 +201,7 @@ fn query_hydration_preserves_wire_grammar_budgets_and_unselected_integrity() {
                 },
                 16384,
                 query,
+                true,
             )
         },
     );
@@ -205,7 +209,7 @@ fn query_hydration_preserves_wire_grammar_budgets_and_unselected_integrity() {
     assert_eq!(ledger.snapshot().used_bytes, 0);
     let blocker = account.reserve(grant.get() - 1).unwrap();
     assert!(matches!(
-        decode_record(first.trim_end(), query),
+        decode_record(first.trim_end(), query, true),
         Err(HawDBError::ResourceBudgetExceeded(_))
     ));
     assert_eq!(ledger.snapshot().used_bytes, blocker.bytes());
@@ -213,14 +217,15 @@ fn query_hydration_preserves_wire_grammar_budgets_and_unselected_integrity() {
     task.cancellation().cancel();
     assert!(select_records(
         &mut Cursor::new(""),
-        &segment,
+        Bounds::of(&segment),
         &ids,
         HydrationBudget {
             limit: 16384,
             used: 0
         },
         16384,
-        query
+        query,
+        true
     )
     .is_err());
     assert_eq!(ledger.snapshot().used_bytes, 0);

@@ -451,6 +451,7 @@ pub(super) fn open(context: OpenContext<'_, '_>) -> Result<OpenedRoot> {
         manifest,
     )?;
     drop(capture);
+    let content_cache_bytes = config.content_cache_bytes;
     Ok(OpenedRoot {
         stationary_immutable: stationary.is_some(),
         _native_custody: native_custody,
@@ -466,6 +467,7 @@ pub(super) fn open(context: OpenContext<'_, '_>) -> Result<OpenedRoot> {
             lexical_source_policy,
             lexical_term_policy,
             runtime_capabilities: crate::compiled_runtime_capabilities(),
+            content_cache: super::content_blocks::ContentCache::new(content_cache_bytes),
         },
         _root_memory: root_memory,
         _manifest_memory: manifest_memory,

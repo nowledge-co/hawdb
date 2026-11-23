@@ -82,17 +82,63 @@ fn invalid(reason: impl std::fmt::Display) -> HawDBError {
     HawDBError::Storage(format!("search hydration {reason}"))
 }
 
+/// The record count and id bounds one scanned range must match: a whole
+/// descriptor segment, or one indexed content block (#1917).
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Bounds<'a> {
+    pub(super) first: &'a str,
+    pub(super) last: &'a str,
+    pub(super) count: usize,
+}
+
+impl<'a> Bounds<'a> {
+    pub(super) fn of(segment: &'a SearchSegmentDescriptorEntry) -> Self {
+        Self {
+            first: &segment.first_document_id,
+            last: &segment.last_document_id,
+            count: segment.document_count,
+        }
+    }
+
+    pub(super) fn of_block<B: std::ops::Deref<Target = [u8]>>(
+        index: &'a super::content_blocks::Index<B>,
+        entry: &super::content_blocks::Entry,
+    ) -> Self {
+        Self {
+            first: index.first(entry),
+            last: index.last(entry),
+            count: entry.document_count as usize,
+        }
+    }
+}
+
+/// Positioned reads of one segment of an unaccounted payload file.
+pub(super) struct PlainSource<'a> {
+    pub(super) file: &'a File,
+    pub(super) base: u64,
+}
+
+impl super::content_blocks::SegmentSource for PlainSource<'_> {
+    fn read_exact_at(&self, offset: u64, output: &mut [u8]) -> Result<()> {
+        let offset = self
+            .base
+            .checked_add(offset)
+            .ok_or_else(|| invalid("range offset overflow"))?;
+        read_search_range(self.file, offset, output)
+    }
+}
+
 #[derive(Debug)]
-struct Selection {
+pub(super) struct Selection {
     documents: Vec<SearchDocument>,
     bytes: u64,
     peak_document_bytes: u64,
 }
 
 #[derive(Clone, Copy)]
-struct HydrationBudget {
-    limit: u64,
-    used: u64,
+pub(super) struct HydrationBudget {
+    pub(super) limit: u64,
+    pub(super) used: u64,
 }
 
 impl SearchOutOfCoreSegmentReader {
@@ -103,10 +149,19 @@ impl SearchOutOfCoreSegmentReader {
         ids: &BTreeSet<String>,
         hydrated_bytes: u64,
         metrics: &mut SearchOutOfCoreMetrics,
+        cache: &super::content_blocks::ContentCache,
     ) -> Result<Vec<SearchDocument>> {
         let range = segment
             .payload_range
             .ok_or_else(|| invalid("segment has no payload range"))?;
+        if self.content_encoding == super::content_blocks::ContentEncoding::Blocks1 {
+            let cache = super::content_blocks::CacheScope::new(
+                cache,
+                self.payload_sha256,
+                self.payload_generation,
+            );
+            return self.read_selected_blocks(config, segment, ids, hydrated_bytes, metrics, cache);
+        }
         let input = RangeReader {
             file: &self.payload,
             offset: range.offset,
@@ -136,6 +191,107 @@ impl SearchOutOfCoreSegmentReader {
     }
 }
 
+impl SearchOutOfCoreSegmentReader {
+    /// Reads and verifies only the indexed blocks that can hold `ids`.
+    fn read_selected_blocks(
+        &self,
+        config: &SearchOutOfCoreConfig,
+        segment: &SearchSegmentDescriptorEntry,
+        ids: &BTreeSet<String>,
+        hydrated_bytes: u64,
+        metrics: &mut SearchOutOfCoreMetrics,
+        cache: Option<super::content_blocks::CacheScope<'_>>,
+    ) -> Result<Vec<SearchDocument>> {
+        use super::content_blocks::{self as blocks, Expect, Reads};
+        let range = segment
+            .payload_range
+            .ok_or_else(|| invalid("segment has no payload range"))?;
+        let source = PlainSource {
+            file: &self.payload,
+            base: range.offset,
+        };
+        let mut reads = Reads::default();
+        let mut peak = 0u64;
+        let result = (|| {
+            let index = blocks::load_index(
+                &source,
+                cache,
+                range.offset,
+                Expect {
+                    length: range.length,
+                    checksum: range.checksum,
+                    max_uncompressed_bytes: config.max_uncompressed_segment_bytes.get(),
+                    descriptor: Some((
+                        segment.document_count,
+                        &segment.first_document_id,
+                        &segment.last_document_id,
+                    )),
+                },
+                None,
+                &mut reads,
+            )?;
+            let mut wanted = ids
+                .iter()
+                .filter_map(|id| index.find(id))
+                .collect::<Vec<_>>();
+            wanted.dedup();
+            let mut decoder = None;
+            let mut documents = Vec::new();
+            let mut bytes = 0u64;
+            for block in wanted {
+                let entry = index.entries()[block];
+                let bounds = Bounds::of_block(&index, &entry);
+                let budget = HydrationBudget {
+                    limit: config.max_hydrated_bytes.get(),
+                    used: hydrated_bytes.saturating_add(bytes),
+                };
+                let selected = if u64::from(entry.uncompressed_len)
+                    > blocks::MAX_BUFFERED_BLOCK_BYTES
+                {
+                    reads.range_reads += 1;
+                    reads.bytes_read += u64::from(entry.compressed_len);
+                    reads.blocks_read += 1;
+                    reads.bytes_inflated += u64::from(entry.uncompressed_len);
+                    blocks::stream_blocks(
+                        RangeReader {
+                            file: &self.payload,
+                            offset: range.offset + entry.offset,
+                            remaining: u64::from(entry.compressed_len),
+                        },
+                        &index,
+                        block..block + 1,
+                        None,
+                        |text| select_documents(text, bounds, ids, budget),
+                    )?
+                } else {
+                    let decoder = match &mut decoder {
+                        Some(decoder) => decoder,
+                        None => decoder
+                            .insert(crate::build_memory::decoder::BlockDecoder::new(None, None)?),
+                    };
+                    let body = blocks::load_block(
+                        &source,
+                        cache,
+                        range.offset,
+                        &entry,
+                        decoder,
+                        None,
+                        &mut reads,
+                    )?;
+                    select_documents(&mut &body[..], bounds, ids, budget)?
+                };
+                peak = peak.max(bytes.saturating_add(selected.peak_document_bytes));
+                bytes = bytes.saturating_add(selected.bytes);
+                documents.extend(selected.documents);
+            }
+            Ok(documents)
+        })();
+        reads.record(metrics);
+        metrics.peak_segment_document_bytes = metrics.peak_segment_document_bytes.max(peak);
+        result
+    }
+}
+
 fn read_selected(
     input: impl Read,
     length: u64,
@@ -151,7 +307,7 @@ fn read_selected(
         checksum,
         max_uncompressed_bytes,
         None,
-        |text| select_documents(text, segment, ids, budget),
+        |text| select_documents(text, Bounds::of(segment), ids, budget),
     )
 }
 
@@ -204,7 +360,21 @@ pub(super) fn read_validated_with_account<T>(
         .map(|admission| admission.memory.reserve(4 * INPUT_BYTES))
         .transpose()?;
     let mut range = CheckedReader::new(input.take(length));
-    let mut buffered = BufReader::with_capacity(INPUT_BYTES, &mut range);
+    // The artifact's encoding is gated by the selector; the segment's own
+    // magic selects the frame reader (#1917).
+    let mut magic = [0; 8];
+    let prefix = read_prefix(&mut range, &mut magic)?;
+    if magic[..prefix] == super::content_blocks::MAGIC[..] {
+        return super::content_blocks::read_segment(
+            &mut range,
+            length,
+            checksum,
+            max_uncompressed_bytes,
+            admission,
+            select,
+        );
+    }
+    let mut buffered = BufReader::with_capacity(INPUT_BYTES, (&magic[..prefix]).chain(&mut range));
     let selected = read_envelope(
         &mut buffered,
         length,
@@ -228,6 +398,20 @@ pub(super) fn read_validated_with_account<T>(
         crate::build_control::checkpoint(admission.task)?;
     }
     selected
+}
+
+/// Reads up to `output.len()` bytes, fewer only at the end of the range.
+fn read_prefix(input: &mut impl Read, output: &mut [u8]) -> Result<usize> {
+    let mut count = 0;
+    while count < output.len() {
+        match input.read(&mut output[count..]) {
+            Ok(0) => break,
+            Ok(read) => count += read,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(crate::build_memory::read::io_error(error)),
+        }
+    }
+    Ok(count)
 }
 
 fn read_envelope<T>(
@@ -418,9 +602,9 @@ fn summarize_document_line(line: &str) -> Result<(String, u64)> {
     Ok((crate::decode_string(id)?, bytes))
 }
 
-fn select_documents(
+pub(super) fn select_documents(
     text: &mut dyn BufRead,
-    segment: &SearchSegmentDescriptorEntry,
+    segment: Bounds<'_>,
     ids: &BTreeSet<String>,
     budget: HydrationBudget,
 ) -> Result<Selection> {
@@ -450,7 +634,7 @@ fn select_documents(
         // proves the segment's order, bounds and count from its id; the
         // checksummed range already fences the bytes of the others.
         let (id, bytes) = summarize_document_line(line)?;
-        if count == 0 && id != segment.first_document_id {
+        if count == 0 && id != segment.first {
             return Err(invalid("document bounds do not match its descriptor"));
         }
         if previous.as_ref().is_some_and(|previous| previous >= &id) {
@@ -459,7 +643,7 @@ fn select_documents(
         count = count
             .checked_add(1)
             .ok_or_else(|| invalid("document count overflow"))?;
-        if count > segment.document_count {
+        if count > segment.count {
             return Err(invalid("document count exceeds its descriptor"));
         }
         selected.peak_document_bytes = selected
@@ -496,9 +680,7 @@ fn select_documents(
             selected.documents.push(document);
         }
     }
-    if count != segment.document_count
-        || previous.as_deref() != Some(segment.last_document_id.as_str())
-    {
+    if count != segment.count || previous.as_deref() != Some(segment.last) {
         return Err(invalid(
             "document count or bounds do not match its descriptor",
         ));

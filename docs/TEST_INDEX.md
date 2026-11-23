@@ -728,7 +728,29 @@ byte-identical. Each refusal asserts `format() == SEARCH_PROJECTION_MANIFEST_FOR
 `hawdb-core` `storage_format` tests pin the exported format constants. `bindings/ffi/src/error_tests.rs` and `bindings/python/src/errors.rs`
 pin the binding kind. No lane, profile or timeout is added. Local replay:
 `cargo test --locked -p hawdb-search --lib manifest_version`. See
-[the policy](SEARCH_PROJECTION_MANIFEST_VERSION.md).
+[the policy](SEARCH_PROJECTION_MANIFEST_VERSION.md). These cases write
+pre-#1917 envelope content artifacts so that versions 1 and 2 stay pinned.
+
+Search-crate owner `out_of_core::content_blocks::tests` (`nowledge-co/hawdb#1917`),
+in the same `hawdb-search` unit lane, covers block-framed content segments
+([format](SEARCH_CONTENT_BLOCKS.md)). New generations write `blocks1` behind a
+version-3 selector that a version-2 reader refuses with the typed error; every
+document round-trips with one record per block and with several. Hydrating one
+id reads the index and exactly one block (inflated bytes counted by a test
+hook), three ids read three blocks, and text hits read at most one block each.
+A damaged block fails only requests that read it, deep verification
+(`verify_content_segments`) and whole-segment projection scans; a damaged index
+fails every request in its segment. Reserved header fields, codecs,
+dictionaries and newer layouts are typed refusals only behind a matching
+digest; truncated, garbled and non-tiling indexes are `Storage`. Envelope
+artifacts written as before #1917 still read and verify. The content cache
+serves repeated reads without I/O, releases its pins, refuses admission above
+its capacity without changing results, and never admits a damaged block.
+Existing hydration, delta and budget cases assert block reads instead of
+whole-segment reads. Power-loss and publication ordering are unchanged and stay
+owned by the existing search segment qualification. No lane, profile or timeout
+is added. Local replay:
+`cargo test --locked -p hawdb-search --all-features --lib content_blocks`.
 
 The experimental [Windows directory-custody first packet](../scripts/windows-directory-custody-probe.ps1)
 is owned by the narrowly path-filtered, same-repository

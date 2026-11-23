@@ -96,6 +96,35 @@ impl Read for QueryFileRange<'_> {
     }
 }
 
+impl QueryFileRange<'_> {
+    /// Fills `output` from the range start with as few admitted positioned
+    /// reads as the platform allows, each at most 256 KiB.
+    pub(crate) fn read_exact_positioned(&mut self, output: &mut [u8]) -> Result<()> {
+        if output.len() as u64 > self.remaining {
+            return Err(HawDBError::Storage(
+                "query range read exceeds its range".into(),
+            ));
+        }
+        let mut done = 0;
+        while done < output.len() {
+            let end = output.len().min(done + (256 << 10));
+            let count = read_at(self, self.context, &mut output[done..end], self.offset)?;
+            if count == 0 {
+                return Err(HawDBError::Storage(
+                    "query range read reached an unexpected EOF".into(),
+                ));
+            }
+            done += count;
+            self.offset = self
+                .offset
+                .checked_add(count as u64)
+                .ok_or_else(|| HawDBError::Storage("query range offset overflow".into()))?;
+            self.remaining -= count as u64;
+        }
+        Ok(())
+    }
+}
+
 fn read_at(
     range: &QueryFileRange<'_>,
     context: QueryContext<'_>,

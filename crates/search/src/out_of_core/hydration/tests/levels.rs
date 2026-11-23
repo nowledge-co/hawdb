@@ -143,8 +143,10 @@ fn hit_hydration_levels() {
         }
 
         // Default hydration matches the stored documents exactly.
+        // Body hydration reads its blocks or finds them in the content cache.
         assert_eq!(
-            documents.metrics.hydration_segment_bytes_read == 0,
+            documents.metrics.hydration_segment_bytes_read == 0
+                && documents.metrics.content_index_cache_hits == 0,
             sidecar,
             "{mode:?} {text:?}"
         );
