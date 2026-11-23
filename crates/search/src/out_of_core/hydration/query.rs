@@ -83,30 +83,25 @@ fn load(
         values: BTreeMap::new(),
         _memory: query.memory.reserve(0)?,
     };
-    for candidate in candidates {
-        query.checkpoint()?;
-        let id = &candidate.id;
-        let route = reader
-            .segment_for_document_with_context(id, Some(query))?
-            .ok_or_else(|| invalid("candidate has no visible document route"))?;
-        if route.lexical_document_bytes_read > 0 {
-            metrics.lexical_document_block_reads =
-                metrics.lexical_document_block_reads.saturating_add(1);
-            metrics.lexical_document_bytes_read = metrics
-                .lexical_document_bytes_read
-                .saturating_add(route.lexical_document_bytes_read);
-        }
-        let key = (route.artifact_index, route.segment.segment_id);
-        if !routes.values.contains_key(&key) {
-            routes._memory.grow(MAP_ENTRY_BYTES)?;
-            routes.values.insert(key, BTreeSet::new());
-        }
-        let ids = routes.values.get_mut(&key).expect("route was inserted");
-        if !ids.contains(id) {
-            routes._memory.grow(add(SET_ENTRY_BYTES, id.len())?)?;
-            ids.insert(id.clone());
-        }
-    }
+    route_candidates(
+        reader,
+        candidates,
+        Some(query),
+        metrics,
+        |id, artifact_index, segment| {
+            let key = (artifact_index, segment.segment_id);
+            if !routes.values.contains_key(&key) {
+                routes._memory.grow(MAP_ENTRY_BYTES)?;
+                routes.values.insert(key, BTreeSet::new());
+            }
+            let ids = routes.values.get_mut(&key).expect("route was inserted");
+            if !ids.contains(id) {
+                routes._memory.grow(add(SET_ENTRY_BYTES, id.len())?)?;
+                ids.insert(id.to_string());
+            }
+            Ok(())
+        },
+    )?;
     let mut output = Documents {
         values: BTreeMap::new(),
         _memory: query.memory.reserve(0)?,

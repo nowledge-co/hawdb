@@ -173,6 +173,16 @@ fn hit_hydration_levels() {
                 assert!(hit.matched_terms.is_empty() && hit.matched_spans.is_empty());
             }
         }
+        // The page's hits share one lexical document mapping block, which
+        // routing reads once per page rather than once per hit (#1917).
+        for output in [&documents, &metadata] {
+            assert_eq!(
+                output.metrics.lexical_document_block_reads
+                    - scores_only.metrics.lexical_document_block_reads,
+                1,
+                "{mode:?} {text:?}"
+            );
+        }
         // Metadata hydration equals Documents without matches and never
         // reads or decodes the document payload, whatever the mode.
         let without_matches = documents

@@ -542,6 +542,12 @@ pub struct SearchOutOfCoreMetrics {
     pub content_block_bytes_inflated: u64,
 }
 
+/// Batched routes, `(artifact_index, segment)` per requested id in order.
+struct DocumentRoutes<'a> {
+    routes: Vec<Option<(usize, &'a SearchSegmentDescriptorEntry)>>,
+    _memory: Option<hawdb_executor::QueryMemoryLease>,
+}
+
 struct SearchDocumentSegmentRoute<'a> {
     artifact_index: usize,
     segment: &'a SearchSegmentDescriptorEntry,
@@ -4107,26 +4113,22 @@ impl SearchOutOfCoreReader {
         let mut segment_documents = BTreeMap::<(usize, u64), BTreeSet<String>>::new();
         // Every id with a visible route must load, whoever asked for it.
         let mut routed_documents = 0usize;
-        for id in document_ids {
-            let Some(route) = self.segment_for_document(id)? else {
+        let ids = document_ids.iter().map(String::as_str).collect::<Vec<_>>();
+        let routes = self.segments_for_documents_with_context(&ids, None, metrics)?;
+        for (id, route) in document_ids.iter().zip(&routes.routes) {
+            let Some((artifact_index, segment)) = route else {
                 match request.unknown_document(id) {
                     Some(error) => return Err(error),
                     None => continue,
                 }
             };
             routed_documents += 1;
-            if route.lexical_document_bytes_read > 0 {
-                metrics.lexical_document_block_reads =
-                    metrics.lexical_document_block_reads.saturating_add(1);
-                metrics.lexical_document_bytes_read = metrics
-                    .lexical_document_bytes_read
-                    .saturating_add(route.lexical_document_bytes_read);
-            }
             segment_documents
-                .entry((route.artifact_index, route.segment.segment_id))
+                .entry((*artifact_index, segment.segment_id))
                 .or_default()
                 .insert(id.clone());
         }
+        drop(routes);
         let mut targets = BTreeMap::<String, SearchOutOfCoreMutationTarget>::new();
         let mut hydrated_bytes = 0u64;
         for ((layer, segment_id), ids) in segment_documents {
@@ -4197,6 +4199,76 @@ impl SearchOutOfCoreReader {
         }
         metrics.hydrated_bytes = hydrated_bytes;
         Ok(targets)
+    }
+
+    /// Routes `ids` (ascending and distinct) exactly like
+    /// [`Self::segment_for_document_with_context`] routes each one, but
+    /// probes each artifact's lexical document blocks with one ascending
+    /// prober, so a block holding several ids is read and verified once
+    /// instead of once per id (#1917). One block is held at a time. Block
+    /// reads and bytes are added to `metrics`.
+    fn segments_for_documents_with_context(
+        &self,
+        ids: &[&str],
+        context: Option<crate::lexical_projection::QueryContext<'_>>,
+        metrics: &mut SearchOutOfCoreMetrics,
+    ) -> Result<DocumentRoutes<'_>> {
+        debug_assert!(ids.is_sorted_by(|left, right| left < right));
+        let checkpoint = || context.map_or(Ok(()), |context| context.checkpoint());
+        checkpoint()?;
+        let route_bytes = size_of::<Option<(usize, &SearchSegmentDescriptorEntry)>>();
+        let _memory = context
+            .map(|context| {
+                context
+                    .memory
+                    .reserve(ids.len().saturating_mul(route_bytes))
+            })
+            .transpose()?;
+        let mut routes = vec![None; ids.len()];
+        for (artifact_index, artifact) in self.segments.iter().enumerate() {
+            checkpoint()?;
+            let mut prober = artifact.lexical_projection.document_id_prober(context);
+            for (id, route) in ids.iter().zip(routes.iter_mut()) {
+                checkpoint()?;
+                if !self.visibility.is_visible(artifact.content_segment_id, id) {
+                    continue;
+                }
+                let Ok(index) = artifact.descriptor.segments.binary_search_by(|segment| {
+                    if segment.last_document_id.as_str() < *id {
+                        CmpOrdering::Less
+                    } else if segment.first_document_id.as_str() > *id {
+                        CmpOrdering::Greater
+                    } else {
+                        CmpOrdering::Equal
+                    }
+                }) else {
+                    continue;
+                };
+                let segment = artifact
+                    .descriptor
+                    .segments
+                    .get(index)
+                    .expect("binary search returned an existing descriptor segment");
+                let probe = prober.probe(id)?;
+                if probe.bytes_read > 0 {
+                    metrics.lexical_document_block_reads =
+                        metrics.lexical_document_block_reads.saturating_add(1);
+                    metrics.lexical_document_bytes_read = metrics
+                        .lexical_document_bytes_read
+                        .saturating_add(probe.bytes_read);
+                }
+                if !probe.present {
+                    continue;
+                }
+                if route.replace((artifact_index, segment)).is_some() {
+                    return Err(HawDBError::Storage(format!(
+                        "search out-of-core segment set has duplicate document {id}"
+                    )));
+                }
+            }
+        }
+        checkpoint()?;
+        Ok(DocumentRoutes { routes, _memory })
     }
 
     fn segment_for_document(&self, id: &str) -> Result<Option<SearchDocumentSegmentRoute<'_>>> {

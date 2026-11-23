@@ -157,7 +157,11 @@ read, not the whole range.
   term/span analysis of each hit body and the per-hit lexical id probe, not by
   content reads. Matched terms and spans now take one analyzer pass per field,
   and `SearchHitHydration::Metadata` skips them and the document payload
-  entirely (see [STORAGE.md](STORAGE.md), search hit hydration).
+  entirely (see [STORAGE.md](STORAGE.md), search hit hydration). Hit routing
+  probes the page's ids in ascending order with one prober per artifact, so
+  each lexical document mapping block is read, checksummed and validated once
+  per page instead of once per hit; it holds one block at a time, charged to
+  the query, and `lexical_document_block_reads` counts blocks actually read.
 - Adjacent needed blocks are read one positioned read each; coalescing reads
   is left for measurement to justify.
 - The metadata sidecar keeps the envelope framing.

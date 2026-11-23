@@ -33,24 +33,20 @@ pub(in crate::out_of_core) fn load(
         Ok(())
     };
     let mut routes = BTreeMap::<(usize, u64), BTreeSet<&str>>::new();
-    for candidate in candidates {
-        checkpoint()?;
-        let route = reader
-            .segment_for_document_with_context(&candidate.id, query)?
-            .ok_or_else(|| invalid("candidate has no visible document route"))?;
-        if route.lexical_document_bytes_read > 0 {
-            metrics.lexical_document_block_reads =
-                metrics.lexical_document_block_reads.saturating_add(1);
-            metrics.lexical_document_bytes_read = metrics
-                .lexical_document_bytes_read
-                .saturating_add(route.lexical_document_bytes_read);
-        }
-        grow(&mut memory, add(MAP_ENTRY_BYTES, SET_ENTRY_BYTES)?)?;
-        routes
-            .entry((route.artifact_index, route.segment.segment_id))
-            .or_default()
-            .insert(candidate.id.as_str());
-    }
+    super::route_candidates(
+        reader,
+        candidates,
+        query,
+        metrics,
+        |id, artifact_index, segment| {
+            grow(&mut memory, add(MAP_ENTRY_BYTES, SET_ENTRY_BYTES)?)?;
+            routes
+                .entry((artifact_index, segment.segment_id))
+                .or_default()
+                .insert(id);
+            Ok(())
+        },
+    )?;
     let mut values = BTreeMap::<String, SearchDocument>::new();
     let mut used = 0u64;
     for ((layer, segment_id), ids) in &routes {

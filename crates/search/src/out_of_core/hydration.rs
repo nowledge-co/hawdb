@@ -128,6 +128,38 @@ impl super::content_blocks::SegmentSource for PlainSource<'_> {
     }
 }
 
+/// Routes the distinct candidate ids in ascending order, reading each lexical
+/// document block once for all of them (#1917), and visits each id with its
+/// `(artifact_index, segment)`.
+pub(super) fn route_candidates<'r, 'c>(
+    reader: &'r SearchOutOfCoreReader,
+    candidates: &'c [SearchScoredCandidate],
+    query: Option<crate::lexical_projection::QueryContext<'_>>,
+    metrics: &mut SearchOutOfCoreMetrics,
+    mut visit: impl FnMut(&'c str, usize, &'r SearchSegmentDescriptorEntry) -> Result<()>,
+) -> Result<()> {
+    let _memory = query
+        .map(|query| {
+            query
+                .memory
+                .reserve(candidates.len().saturating_mul(size_of::<&str>()))
+        })
+        .transpose()?;
+    let mut ids = candidates
+        .iter()
+        .map(|candidate| candidate.id.as_str())
+        .collect::<Vec<_>>();
+    ids.sort_unstable();
+    ids.dedup();
+    let routes = reader.segments_for_documents_with_context(&ids, query, metrics)?;
+    for (id, route) in ids.into_iter().zip(&routes.routes) {
+        let (artifact_index, segment) =
+            route.ok_or_else(|| invalid("candidate has no visible document route"))?;
+        visit(id, artifact_index, segment)?;
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 pub(super) struct Selection {
     documents: Vec<SearchDocument>,
