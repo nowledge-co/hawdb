@@ -1,0 +1,15 @@
+{
+  "base_revision": "c5e7dea8466cd3b9eab7252d8e124d3368bb85ae",
+  "platform": "macOS arm64",
+  "rust": "1.99.1",
+  "profile": "repository release",
+  "build_target_directory": "dedicated to this worktree",
+  "timing_environment": "concurrent builds; not a quiet-host qualification",
+  "source_sha256": {
+    "crates/search/src/lib.rs": "a0bbd1dd8eb9269f663abf2fb9c34cdd3c12f3eb6f84030caab7ebc4a6be415f",
+    "crates/search/src/out_of_core.rs": "38e62708a0fb3f9af9c5abc18bcded00f46de3624e6416e9b11f1866ee877f40",
+    "examples/vector_navigation_beam.rs": "f6a727cf386cf383cbbb3817070a83d7f55268112b8e3d0d43bc7930917d2ab1",
+    ".cargo/config.toml": "06c7ca26d39223bd90a6412acd8609c380ce2d1650a72b70c90171656ca89819",
+    "rust-toolchain.toml": "f715f440167e20fd8ea9afa0498c3d1ab80174cfcb8cbc895f106a34d907a1e1"
+  }
+}
