@@ -552,8 +552,8 @@ fn vector_report(output: &SearchOutOfCoreOutput) -> &crate::SearchRetrieverRepor
         .unwrap()
 }
 
-/// Per-query navigation beam and candidate window (#1470): defaults are
-/// unchanged, a smaller beam or window does less graph work, the beam never
+/// Per-query navigation beam and candidate window (#1470): explicit defaults
+/// agree, a smaller beam or window does less graph work, the beam never
 /// drops below the result count, and the window stays within the reader's
 /// `max_vector_candidates`.
 #[cfg(feature = "vector-search")]
@@ -576,7 +576,7 @@ fn graph_navigation_beam_and_candidate_window_are_per_query() {
     let default = search(VectorSearchExecutionOptions::default(), 10).unwrap();
     let explicit_default = search(
         VectorSearchExecutionOptions::default()
-            .with_navigation_beam(NonZeroUsize::new(1024).unwrap())
+            .with_navigation_beam(NonZeroUsize::new(256).unwrap())
             .with_candidate_window(NonZeroUsize::new(128).unwrap()),
         10,
     )
@@ -691,7 +691,7 @@ fn configured_default_navigation_beam_applies_unless_a_query_sets_one() {
     let default_reader = SearchOutOfCoreReader::open(&graph).unwrap();
     assert_eq!(
         default_reader.config.default_navigation_beam.get(),
-        crate::DEFAULT_NAVIGATION_BEAM
+        crate::DEFAULT_OUT_OF_CORE_NAVIGATION_BEAM
     );
     let narrow_reader = SearchOutOfCoreReader::open_with_config(
         &graph,
@@ -720,8 +720,9 @@ fn configured_default_navigation_beam_applies_unless_a_query_sets_one() {
     // A per-query beam overrides the configured default.
     let overridden = search(
         &narrow_reader,
-        VectorSearchExecutionOptions::default()
-            .with_navigation_beam(NonZeroUsize::new(crate::DEFAULT_NAVIGATION_BEAM).unwrap()),
+        VectorSearchExecutionOptions::default().with_navigation_beam(
+            NonZeroUsize::new(crate::DEFAULT_OUT_OF_CORE_NAVIGATION_BEAM).unwrap(),
+        ),
     );
     assert_eq!(hits(&overridden), hits(&wide));
     assert_eq!(
@@ -729,5 +730,56 @@ fn configured_default_navigation_beam_applies_unless_a_query_sets_one() {
         vector_report(&wide).candidate_scan_payload_bytes_read
     );
     drop((default_reader, narrow_reader));
+    fs::remove_dir_all(graph).unwrap();
+}
+
+/// The default navigation budget (#1614) must execute the 256-wide graph
+/// search, while callers can still request the former 1024-wide search.
+#[cfg(feature = "vector-search")]
+#[test]
+fn default_navigation_beam_bounds_graph_work_and_preserves_explicit_wide_search() {
+    let documents = corpus(600);
+    let graph = build("vector-default-bounded-beam", &documents, Some(true));
+    let reader = SearchOutOfCoreReader::open(&graph).unwrap();
+    let query = embedding(2064);
+    let search = |execution| {
+        reader
+            .search_with_options_compressed_vector_projection_execution_options(
+                "",
+                Some(&query),
+                SearchMode::Vector,
+                options(10, None),
+                crate::CompressedVectorSearchMode::Disabled,
+                execution,
+            )
+            .unwrap()
+    };
+    let default = search(VectorSearchExecutionOptions::default());
+    let bounded = search(
+        VectorSearchExecutionOptions::default()
+            .with_navigation_beam(NonZeroUsize::new(256).unwrap()),
+    );
+    let wide = search(
+        VectorSearchExecutionOptions::default()
+            .with_navigation_beam(NonZeroUsize::new(1024).unwrap()),
+    );
+    assert_eq!(hits(&default), hits(&bounded));
+    assert_eq!(
+        vector_report(&default).candidate_scan_payload_bytes_read,
+        vector_report(&bounded).candidate_scan_payload_bytes_read,
+        "default queries must use the bounded beam"
+    );
+    assert!(
+        vector_report(&default).candidate_scan_payload_bytes_read
+            < vector_report(&wide).candidate_scan_payload_bytes_read,
+        "the explicit wide search must remain available and do more graph work"
+    );
+    assert_eq!(
+        hits(&default),
+        reference(&documents, &query, |_| true, 10),
+        "the fixed regression fixture must retain its exact top ten"
+    );
+    assert_eq!(hits(&wide), hits(&default));
+    drop(reader);
     fs::remove_dir_all(graph).unwrap();
 }

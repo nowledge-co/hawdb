@@ -165,6 +165,7 @@ pub(super) fn flush_batched_index_join_rows<'a>(
             let row = match (&locator.index_key, &read_rows) {
                 (Some(index_key), None) => row_runtime.read_index_covered(
                     &right_relation.table,
+                    &access.descriptor.name,
                     &access.descriptor.index_columns,
                     index_key,
                     &locator.primary_key,

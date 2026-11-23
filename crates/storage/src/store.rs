@@ -767,6 +767,7 @@ pub struct KernelWriteBatch {
 #[derive(Default)]
 struct MutationCommitOptions<'a> {
     relational: Option<RelationalTransaction>,
+    capture_relational_mutation_rows: Option<bool>,
     append: Option<AppendTransaction>,
     preserve_single_create_wal: bool,
     mvcc_read_epoch: Option<u64>,
@@ -813,6 +814,7 @@ pub struct PreparedTransactionCommit {
     pub transaction: PreparedGraphMutationTransaction,
     pub relational: RelationalTransaction,
     pub append: AppendTransaction,
+    pub capture_relational_mutation_rows: bool,
 }
 
 /// An isolated graph mutation workspace for a single explicit transaction.
@@ -982,6 +984,13 @@ pub struct GraphStore {
     next_node_id: u64,
     next_rel_id: u64,
     commit_epoch: u64,
+    /// Commit epoch of the newest commit that changed graph data or graph
+    /// schema; relational-only and append-only commits leave it unchanged.
+    graph_change_commit_epoch: u64,
+    /// Whether the WAL record most recently appended for a pending commit
+    /// changes the graph. `finish_non_relational_commit` consumes it so live
+    /// commits classify exactly like WAL replay.
+    pending_commit_changes_graph: bool,
     // A maintenance capture's monotonic floor for any post-snapshot debt.
     // Live writers normally have no capture clock; handoff restores that fact.
     checkpoint_capture_started: Option<std::time::Instant>,
@@ -2013,6 +2022,8 @@ impl GraphStore {
             next_node_id: 0,
             next_rel_id: 0,
             commit_epoch: 0,
+            graph_change_commit_epoch: 0,
+            pending_commit_changes_graph: false,
             checkpoint_capture_started: None,
             version_index: hawdb_storage::version::VersionIndex::default(),
             version_snapshot_pins: Default::default(),
@@ -2214,6 +2225,32 @@ impl GraphStore {
 
     pub fn commit_epoch(&self) -> u64 {
         self.commit_epoch
+    }
+
+    /// Returns the commit epoch of the newest commit that changed graph nodes,
+    /// relationships, their properties, or graph schema (tables, labels,
+    /// relationship types, property definitions, indexes, constraints and
+    /// projected graphs). Relational-only and append-only commits do not
+    /// advance it. It is independent of the search projection change log, so
+    /// pruning never regresses it. It is not persisted: recovery starts it at
+    /// the checkpoint's commit epoch and WAL replay advances it exactly. It is
+    /// monotonic only over surviving history: a crash under
+    /// `SyncOnCheckpoint` can drop acknowledged commits, so hosts must discard
+    /// any baseline captured before a reopen.
+    ///
+    /// Refused with the storage error once this store is poisoned (for
+    /// example after a failed durability barrier), because the epoch of an
+    /// uncertain commit cannot be relied on.
+    pub fn graph_change_commit_epoch(&self) -> Result<u64> {
+        ensure_graph_read_flags_usable(&self.integrity_poisoned, &self.post_wal_apply_poisoned)?;
+        Ok(self.graph_change_commit_epoch)
+    }
+
+    /// The raw value, for capturing a transaction's base snapshot; readers
+    /// that report it use [`Self::graph_change_commit_epoch`].
+    #[doc(hidden)]
+    pub fn graph_change_commit_epoch_unchecked(&self) -> u64 {
+        self.graph_change_commit_epoch
     }
 
     pub fn published_read_view(&self) -> PublishedReadView {
@@ -2507,6 +2544,8 @@ impl GraphStore {
             next_node_id: self.next_node_id,
             next_rel_id: self.next_rel_id,
             commit_epoch: self.commit_epoch,
+            graph_change_commit_epoch: self.graph_change_commit_epoch,
+            pending_commit_changes_graph: self.pending_commit_changes_graph,
             checkpoint_capture_started: self.checkpoint_capture_started,
             version_index: self.version_index.clone(),
             version_snapshot_pins: self.version_snapshot_pins.clone(),
@@ -2788,9 +2827,11 @@ fn validate_property_default(
         }
         PropertyDefault::Value(value) => {
             crate::canonical::validate_property_value(value).map_err(|error| {
-                HawDBError::Storage(format!(
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Storage(format!(
                     "property schema {table}.{property} default violates storage limits: {error}"
                 ))
+                })
             })?;
             value.clone()
         }
@@ -10296,7 +10337,7 @@ mod tests {
         let task = RuntimeTaskContext::without_deadline(cancellation)
             .with_io_wave_controller(controller.clone());
         let result = candidate.catch_up_with_task_context(&captured, &task);
-        assert!(matches!(result, Err(HawDBError::Execution(_))));
+        assert!(matches!(result, Err(HawDBError::RuntimeTaskStopped(_))));
         assert_eq!(candidate.commit_epoch(), 2);
         assert_eq!(controller.acquisitions.load(AtomicOrdering::SeqCst), 6);
         assert_eq!(controller.in_flight.load(AtomicOrdering::SeqCst), 0);
@@ -10595,7 +10636,7 @@ mod tests {
                     &cancelled.context(local.clone()),
                 )
                 .unwrap_err();
-                assert!(error.to_string().contains("checkpoint build stopped"));
+                assert!(error.to_string().contains("runtime task stopped"));
                 assert_eq!(cancelled.completed.load(Ordering::SeqCst), cut);
                 cancelled.assert_released(&local);
                 assert_eq!(store.checkpoint_source_identity(), identity);
@@ -10653,7 +10694,7 @@ mod tests {
             )
             .unwrap_err();
             assert!(
-                error.to_string().contains("checkpoint build stopped"),
+                error.to_string().contains("runtime task stopped"),
                 "cancel_after={cancel_after}: {error}"
             );
             assert_eq!(probe.completed.load(Ordering::SeqCst), cancel_after);
@@ -10782,7 +10823,7 @@ mod tests {
                 &probe.context(scheduler.clone()),
             )
             .unwrap_err();
-        assert!(error.to_string().contains("checkpoint build stopped"));
+        assert!(error.to_string().contains("runtime task stopped"));
         assert_eq!(probe.completed.load(Ordering::SeqCst), 17);
         assert_eq!(probe.io_waves.load(Ordering::SeqCst), 0);
         probe.assert_released(&scheduler);
@@ -10795,7 +10836,7 @@ mod tests {
             .checkpoint_relationship_records_owned(&probe.context(scheduler.clone()))
             .err()
             .expect("relationship capture must also stop before collecting its delta");
-        assert!(error.to_string().contains("checkpoint build stopped"));
+        assert!(error.to_string().contains("runtime task stopped"));
         assert_eq!(probe.completed.load(Ordering::SeqCst), 17);
         assert_eq!(probe.io_waves.load(Ordering::SeqCst), 0);
         probe.assert_released(&scheduler);
@@ -10939,7 +10980,7 @@ mod tests {
                         &probe.context(scheduler.clone()),
                     )
                     .unwrap_err();
-                assert!(error.to_string().contains("checkpoint build stopped"));
+                assert!(error.to_string().contains("runtime task stopped"));
                 assert_eq!(probe.completed.load(Ordering::SeqCst), 17);
                 probe.assert_released(&scheduler);
             }
@@ -10952,7 +10993,7 @@ mod tests {
                     &probe.context(scheduler.clone()),
                 )
                 .unwrap_err();
-            assert!(error.to_string().contains("checkpoint build stopped"));
+            assert!(error.to_string().contains("runtime task stopped"));
             assert_eq!(probe.completed.load(Ordering::SeqCst), 17);
             assert_eq!(probe.io_waves.load(Ordering::SeqCst), 0);
             probe.assert_released(&scheduler);
@@ -11122,7 +11163,7 @@ mod tests {
         let error = source
             .prepare_checkpoint_candidate_with_work_context(&catalog, &work)
             .unwrap_err();
-        assert!(error.to_string().contains("checkpoint build stopped"));
+        assert!(error.to_string().contains("runtime task stopped"));
         assert!(observer.observed_file.load(Ordering::SeqCst));
         assert_eq!(observer.completed_after_file.load(Ordering::SeqCst), 10);
         probe.assert_released(&scheduler);
@@ -11269,7 +11310,7 @@ mod tests {
         let error = source
             .prepare_checkpoint_candidate_with_work_context(&catalog, &work)
             .unwrap_err();
-        assert!(error.to_string().contains("checkpoint build stopped"));
+        assert!(error.to_string().contains("runtime task stopped"));
         assert!(observer.observed_file.load(Ordering::SeqCst));
         assert_eq!(observer.completed_after_file.load(Ordering::SeqCst), 17);
         assert_eq!(probe.io_waves.load(Ordering::SeqCst), 0);
@@ -11393,7 +11434,7 @@ mod tests {
         let error = source
             .prepare_checkpoint_candidate_with_work_context(&catalog, &work)
             .unwrap_err();
-        assert!(error.to_string().contains("checkpoint build stopped"));
+        assert!(error.to_string().contains("runtime task stopped"));
         assert!(observer.observed_file.load(Ordering::SeqCst));
         assert_eq!(observer.completed_after_file.load(Ordering::SeqCst), 17);
         // No surviving record has been encoded: only the immutable 16-byte
@@ -11559,7 +11600,7 @@ mod tests {
             .prepare_checkpoint_candidate_with_work_context(&catalog, &work)
             .unwrap_err();
         assert!(observer.observed_file.load(Ordering::SeqCst));
-        assert!(error.to_string().contains("checkpoint build stopped"));
+        assert!(error.to_string().contains("runtime task stopped"));
         probe.assert_released(&scheduler);
         assert_eq!(store.checkpoint_source_identity(), identity);
         assert_eq!(std::fs::read(&wal_path).unwrap(), wal);

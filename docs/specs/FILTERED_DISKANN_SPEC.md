@@ -9,6 +9,19 @@ transitions, optional Local Scaling Graph (LSG) construction, and existing
 canonical MVCC snapshots. A standalone in-memory graph does not satisfy this
 contract.
 
+Ordinary out-of-core Search queries use a navigation beam of 256 unless explicitly
+configured otherwise. Out-of-core readers can set
+`SearchOutOfCoreConfig::default_navigation_beam`; a query's
+`VectorSearchExecutionOptions::with_navigation_beam` overrides that reader
+setting. Resident Search retains its 1024 default and per-query override.
+Canonical `vector_index_search` retains its separate 1024 single-graph recall
+budget and does not inherit the ordinary reader setting. Python bindings do
+not currently expose this Rust Search execution option.
+An explicit 1024-wide ordinary Search remains available. A smaller beam trades
+recall for less graph work; the candidate/result floors, memory admission and
+explicit exact-search semantics remain unchanged. Qualify beam choices against
+ground truth for the host's data and filters rather than assuming equal recall.
+
 ## Architecture decision
 
 Implement Vamana construction and multi-hop filtered search in the existing
@@ -215,8 +228,9 @@ positive-only cosine relevance and stable-ID ties.
 `with_exact_search`; explicit adaptive/compressed entry points keep their prior
 RaBitQ selection policy. Default ANN pagination admits at least `offset + limit` candidates and keeps
 a 128-candidate minimum window for hybrid fusion. Resident and mapped serving
-independently retain at least 1,024 navigation candidates, or the requested
-output window when larger, bounded by graph size. Navigation does not increase
+retain the configured navigation beam, or the requested output window when
+larger, bounded by graph size. Resident and canonical index serving default to
+1,024; ordinary out-of-core Search defaults to 256. Navigation does not increase
 the raw reranking window. Its full workspace is preflighted against the existing
 query memory/work limits; insufficient admission fails rather than shrinking
 the beam or returning partial results. Cache construction has a 64 MiB ceiling and query admission includes

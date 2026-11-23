@@ -28,9 +28,7 @@ impl<'execution> ReadAdmission<'execution> {
     ) -> Result<ReadBytes<'execution>> {
         crate::build_control::checkpoint(self.task)?;
         let _native = self.scratch(4096)?;
-        let _io = self
-            .io()
-            .map_err(|error| HawDBError::Execution(error.to_string()))?;
+        let _io = self.io().map_err(HawDBError::from_execution_error)?;
         crate::build_control::checkpoint(self.task)?;
         let mut control = Control {
             admission: self,
@@ -56,7 +54,9 @@ impl<'execution> ReadAdmission<'execution> {
                     _memory: Some(memory),
                 };
                 output.value.try_reserve_exact(count).map_err(|error| {
-                    HawDBError::Execution(format!("reader head allocation failed: {error}"))
+                    HawDBError::or_stop(&error, || {
+                        HawDBError::Execution(format!("reader head allocation failed: {error}"))
+                    })
                 })?;
                 if output.value.capacity() > count {
                     return Err(HawDBError::Execution(

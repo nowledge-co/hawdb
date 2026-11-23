@@ -175,11 +175,10 @@ impl<'a> IndexReadAdmission<'a> {
 }
 
 impl RelationalIndexShadowReader {
-    /// Returns the declared posting count for one complete index key and the
-    /// actual metadata read report. Logical traversal and decoding visit only
-    /// the checked root-to-leaf path, without decoding posting-chain pages or
-    /// visiting canonical rows. Inline locator bytes are decoded as part of the
-    /// leaf page, without interpreting them as relational keys.
+    /// Returns the declared posting count for one complete logical index key.
+    /// Covering indexes may have several physical keys with that prefix. The
+    /// traversal reads matching leaves without visiting posting-chain pages or
+    /// canonical rows. Inline locator bytes are decoded as part of the leaf page.
     /// Cold or evicted mounted handles additionally validate the whole immutable
     /// object; these physical bytes are admitted and included in the report.
     ///
@@ -218,12 +217,25 @@ impl RelationalIndexShadowReader {
         }
         let encoded = self.encode_lookup_key(key)?;
         let mut context = ReadContext::new_admitted(self, limits, read_admission);
-        let rows = context
-            .find_exact_posting(descriptor, &encoded)?
-            .as_ref()
-            .map(index_leaf_posting_rows)
-            .transpose()?
-            .unwrap_or(0);
+        let root = context.read_root(descriptor)?;
+        let mut rows = 0_u64;
+        context.visit_prefix_subtree(
+            root.child,
+            root.height,
+            None,
+            &encoded,
+            &mut |context, entry| {
+                rows = rows
+                    .checked_add(index_leaf_posting_rows(&entry.posting)?)
+                    .ok_or_else(|| context.corrupt("index posting count overflow"))?;
+                // Ordinary indexes have one physical key per complete logical key.
+                Ok(if entry.key.len() == encoded.len() {
+                    VisitOutcome::PastPrefix
+                } else {
+                    VisitOutcome::Continue
+                })
+            },
+        )?;
         Ok((rows, context.report))
     }
 
@@ -351,8 +363,13 @@ impl RelationalIndexShadowReader {
         let encoded = self.encode_lookup_key(prefix)?;
         let mut context = ReadContext::new_admitted(self, limits, read_admission);
         let root = context.read_root(&descriptor)?;
-        let outcome =
-            context.visit_prefix_subtree(root.child, root.height, None, &encoded, &mut visit)?;
+        let outcome = context.visit_prefix_subtree(
+            root.child,
+            root.height,
+            None,
+            &encoded,
+            &mut |context, entry| context.visit_prefix_posting(&entry, &mut visit),
+        )?;
         context.report.stopped_early = outcome == VisitOutcome::Stopped;
         Ok(context.report)
     }
@@ -423,7 +440,11 @@ impl RelationalIndexShadowReader {
                 root.height,
                 None,
                 &encoded_prefix,
-                &mut |index_key, primary_key| visit(&prefix, index_key, primary_key),
+                &mut |context, entry| {
+                    context.visit_prefix_posting(&entry, &mut |index_key, primary_key| {
+                        visit(&prefix, index_key, primary_key)
+                    })
+                },
             )?;
             if outcome == VisitOutcome::Stopped {
                 context.report.stopped_early = true;
@@ -659,7 +680,10 @@ impl<'a> ReadContext<'a> {
         height: u32,
         expected_upper_bound: Option<&[u8]>,
         prefix: &[u8],
-        visit: &mut impl FnMut(&super::RelationalKey, &super::RelationalKey) -> bool,
+        visit: &mut impl FnMut(
+            &mut Self,
+            crate::index_page::IndexLeafEntry,
+        ) -> Result<VisitOutcome, RelationalIndexShadowError>,
     ) -> Result<VisitOutcome, RelationalIndexShadowError> {
         let page = self.read_page(page_id)?;
         if let Some(expected) = expected_upper_bound {
@@ -811,7 +835,10 @@ impl<'a> ReadContext<'a> {
         &mut self,
         entries: Vec<crate::index_page::IndexLeafEntry>,
         prefix: &[u8],
-        visit: &mut impl FnMut(&super::RelationalKey, &super::RelationalKey) -> bool,
+        visit: &mut impl FnMut(
+            &mut Self,
+            crate::index_page::IndexLeafEntry,
+        ) -> Result<VisitOutcome, RelationalIndexShadowError>,
     ) -> Result<VisitOutcome, RelationalIndexShadowError> {
         let start = entries.partition_point(|entry| entry.key.as_slice() < prefix);
         for entry in entries.into_iter().skip(start) {
@@ -828,16 +855,21 @@ impl<'a> ReadContext<'a> {
                 .matched_index_keys
                 .checked_add(1)
                 .ok_or_else(|| self.admission("matched-key counter overflow"))?;
-            let index_key = decode_relational_key(&entry.key).inspect_err(|_| {
-                self.reader.poison();
-            })?;
-            if self.visit_ordered_posting(&index_key, &entry.posting, visit)?
-                == VisitOutcome::Stopped
-            {
-                return Ok(VisitOutcome::Stopped);
+            match visit(self, entry)? {
+                VisitOutcome::Continue => {}
+                outcome => return Ok(outcome),
             }
         }
         Ok(VisitOutcome::Continue)
+    }
+
+    fn visit_prefix_posting(
+        &mut self,
+        entry: &crate::index_page::IndexLeafEntry,
+        visit: &mut impl FnMut(&super::RelationalKey, &super::RelationalKey) -> bool,
+    ) -> Result<VisitOutcome, RelationalIndexShadowError> {
+        let index_key = decode_relational_key(&entry.key).inspect_err(|_| self.reader.poison())?;
+        self.visit_ordered_posting(&index_key, &entry.posting, visit)
     }
 
     fn visit_ordered_posting(

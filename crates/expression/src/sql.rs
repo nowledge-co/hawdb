@@ -89,6 +89,14 @@ pub enum ExprKind {
         op: SqlComparisonOp,
         right: Box<Expr>,
     },
+    /// PostgreSQL row-constructor comparison. Fields are kept in source order
+    /// so execution can stop at the first unequal or NULL pair and index
+    /// planning can recognize a lexicographic composite bound.
+    RowCompare {
+        left: Vec<Expr>,
+        op: SqlComparisonOp,
+        right: Vec<Expr>,
+    },
     InList {
         left: Box<Expr>,
         values: Vec<Expr>,
@@ -188,6 +196,11 @@ impl Expr {
                 left.try_visit_mut(visitor)?;
                 right.try_visit_mut(visitor)?;
             }
+            ExprKind::RowCompare { left, right, .. } => {
+                for expression in left.iter_mut().chain(right) {
+                    expression.try_visit_mut(visitor)?;
+                }
+            }
             ExprKind::Not(expression)
             | ExprKind::IsNull { expression, .. }
             | ExprKind::Negate(expression)
@@ -231,6 +244,11 @@ impl Expr {
             | ExprKind::Arithmetic { left, right, .. } => {
                 left.visit(visitor);
                 right.visit(visitor);
+            }
+            ExprKind::RowCompare { left, right, .. } => {
+                for expression in left.iter().chain(right) {
+                    expression.visit(visitor);
+                }
             }
             ExprKind::Not(expression)
             | ExprKind::IsNull { expression, .. }

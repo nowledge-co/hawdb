@@ -683,7 +683,10 @@ pub(crate) fn map_projection_error(error: ProjectionError, context: &str) -> Haw
     match error {
         ProjectionError::Admission(error) => error,
         ProjectionError::Io(error) => HawDBError::from_storage_error(error),
-        ProjectionError::Cancelled(reason) => HawDBError::Execution(format!("{context}: {reason}")),
+        ProjectionError::Cancelled(reason) => {
+            let _ = context;
+            HawDBError::RuntimeTaskStopped(reason)
+        }
         error => HawDBError::Storage(format!("{context}: {error}")),
     }
 }

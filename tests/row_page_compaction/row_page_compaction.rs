@@ -252,7 +252,10 @@ fn row_page_compaction_failure_limits_leave_the_generation_retryable() {
             &RuntimeTaskContext::without_deadline(cancellation),
         )
         .unwrap_err();
-    assert!(error.to_string().contains("compaction stopped"));
+    assert!(
+        matches!(error, hawdb::HawDBError::RuntimeTaskStopped(_)),
+        "{error}"
+    );
     let report = db.compact_relational_row_pages(Default::default()).unwrap();
     assert_eq!(report.published_generation, generation);
     assert_eq!(report.allocated_pages, report.root_pages);

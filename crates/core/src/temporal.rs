@@ -35,8 +35,10 @@ use std::cell::Cell;
 use std::cmp::Ordering;
 use std::fmt::{Display, Formatter};
 
+// Keep facade names stable across the minimum and current time releases.
 pub use ::time::{
-    Date, Month, OffsetDateTime, PlainDateTime, SignedDuration, Time, UtcOffset, Weekday,
+    Date, Duration as SignedDuration, Month, OffsetDateTime, PrimitiveDateTime as PlainDateTime,
+    Time, UtcOffset, Weekday,
 };
 pub(crate) mod types;
 

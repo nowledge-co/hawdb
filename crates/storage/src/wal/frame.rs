@@ -105,7 +105,39 @@ pub fn encode_binary_wal_header(generation: u64, start_lsn: u64) -> Vec<u8> {
     header
 }
 
+/// Version of the binary WAL file format this reader decodes; the trailing two
+/// ASCII digits of [`WAL_BINARY_MAGIC`].
+pub const WAL_BINARY_FORMAT_VERSION: u16 = 1;
+const WAL_BINARY_MAGIC_PREFIX: &[u8; 6] = b"SKWALB";
+
+/// Refuses a WAL file whose magic names a newer binary WAL format (#1901).
+///
+/// Only the magic is inspected: a newer writer may change the header length,
+/// layout and checksum, so they cannot be validated first. A header outside
+/// the `SKWALB` + two-digit family, or naming version 0, is left to the
+/// caller's corruption handling.
+pub fn binary_wal_header_format_refusal(bytes: &[u8]) -> Option<HawDBError> {
+    let magic = bytes.get(..WAL_BINARY_MAGIC.len())?;
+    if &magic[..WAL_BINARY_MAGIC_PREFIX.len()] != WAL_BINARY_MAGIC_PREFIX
+        || !magic[6].is_ascii_digit()
+        || !magic[7].is_ascii_digit()
+    {
+        return None;
+    }
+    let found = u16::from(magic[6] - b'0') * 10 + u16::from(magic[7] - b'0');
+    (found > WAL_BINARY_FORMAT_VERSION).then_some(HawDBError::UnsupportedStorageFormat(
+        hawdb_core::StorageFormatError::UnsupportedVersion {
+            format: hawdb_core::WAL_FILE_FORMAT,
+            found,
+            supported: WAL_BINARY_FORMAT_VERSION,
+        },
+    ))
+}
+
 pub fn decode_binary_wal_header(bytes: &[u8]) -> Result<(u64, u64)> {
+    if let Some(refusal) = binary_wal_header_format_refusal(bytes) {
+        return Err(refusal);
+    }
     if bytes.len() < WAL_BINARY_FILE_HEADER_BYTES {
         return Err(HawDBError::Storage(
             "binary WAL file header is truncated".to_string(),
@@ -608,6 +640,42 @@ impl<R: Read> BinaryWalReader<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn newer_wal_header_is_unsupported_format_not_corruption() {
+        assert_eq!(
+            &WAL_BINARY_MAGIC[6..],
+            format!("{WAL_BINARY_FORMAT_VERSION:02}").as_bytes()
+        );
+        let current = encode_binary_wal_header(3, 17);
+        assert_eq!(decode_binary_wal_header(&current).unwrap(), (3, 17));
+        for (magic, found) in [(b"SKWALB02", 2), (b"SKWALB99", 99)] {
+            let mut future = current.clone();
+            future[..8].copy_from_slice(magic);
+            let expected = HawDBError::UnsupportedStorageFormat(
+                hawdb_core::StorageFormatError::UnsupportedVersion {
+                    format: hawdb_core::WAL_FILE_FORMAT,
+                    found,
+                    supported: WAL_BINARY_FORMAT_VERSION,
+                },
+            );
+            // Refused whatever the rest of the header holds, even when short.
+            assert_eq!(decode_binary_wal_header(&future).unwrap_err(), expected);
+            assert_eq!(
+                decode_binary_wal_header(&future[..8]).unwrap_err(),
+                expected
+            );
+        }
+        for magic in [b"SKWALB00", b"SKWALB0x", b"SKWALC02", b"\0\0\0\0\0\0\0\0"] {
+            let mut damaged = current.clone();
+            damaged[..8].copy_from_slice(magic);
+            assert!(binary_wal_header_format_refusal(&damaged).is_none());
+            assert!(matches!(
+                decode_binary_wal_header(&damaged),
+                Err(HawDBError::Storage(_))
+            ));
+        }
+    }
 
     #[test]
     fn captured_range_reads_only_the_suffix_and_ignores_later_append_damage() {

@@ -125,10 +125,12 @@ fn read_admitted_bytes_with_capacity(
 
 fn reserve(bytes: &mut Vec<u8>, additional: usize, path: &Path) -> Result<()> {
     bytes.try_reserve_exact(additional).map_err(|error| {
-        HawDBError::Storage(format!(
-            "search artifact {} allocation failed: {error}",
-            path.display()
-        ))
+        HawDBError::or_stop(&error, || {
+            HawDBError::Storage(format!(
+                "search artifact {} allocation failed: {error}",
+                path.display()
+            ))
+        })
     })
 }
 

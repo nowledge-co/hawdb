@@ -78,27 +78,51 @@ fn search_sql(
     context: Option<&hawdb_core::RuntimeTaskContext>,
     sql: &str,
 ) -> Result<RelationalQueryOutput> {
+    search_prepared_sql(
+        prepare_search_sql(sql)?,
+        state,
+        blocking_operator_bytes,
+        context,
+    )
+}
+
+fn prepare_search_sql(sql: &str) -> Result<PreparedRelationalSql> {
+    Ok(PreparedRelationalSql {
+        template: Arc::new(hawdb_sql::prepare_postgres_sql(sql)?),
+        parse_nanos: 0,
+    })
+}
+
+fn search_prepared_sql(
+    prepared_sql: PreparedRelationalSql,
+    state: &RelationalState,
+    blocking_operator_bytes: usize,
+    context: Option<&hawdb_core::RuntimeTaskContext>,
+) -> Result<RelationalQueryOutput> {
     let memory = hawdb_executor::ExecutionMemoryConfig {
         blocking_operator_bytes: NonZeroUsize::new(blocking_operator_bytes).unwrap(),
         ..Default::default()
     };
-    execute_relational_query_sql_with_runtime(
-        sql,
+    execute_prepared_relational_query_with_resources(
+        prepared_sql,
         &[],
         state,
         RelationalQueryReadModes::new(
             RelationalIndexReadMode::<crate::RelationalMaterializedReader>::Materialized,
             RelationalRowReadMode::<crate::RelationalMaterializedReader>::CanonicalMemory,
         ),
-        RelationalQueryLimits {
-            max_output_rows: 1024,
-            max_output_payload_bytes: 64 * 1024 * 1024,
-            max_intermediate_rows: 1 << 20,
-            max_candidate_work: 1 << 20,
-            ..batched_index_join_limits()
-        },
-        &memory,
-        context,
+        RelationalQueryResourceContext::new(
+            RelationalJoinEnumerationConfig::default(),
+            RelationalQueryLimits {
+                max_output_rows: 1024,
+                max_output_payload_bytes: 64 * 1024 * 1024,
+                max_intermediate_rows: 1 << 20,
+                max_candidate_work: 1 << 20,
+                ..batched_index_join_limits()
+            },
+            &memory,
+            context,
+        ),
     )
 }
 
@@ -163,13 +187,18 @@ fn text_search_admits_sparse_lengths_before_decoding_the_window() {
     let sql = "SELECT id FROM text_search('docs_body', 'common', top_k => 1)";
     let entries_bytes = SEARCH_INDEX_LENGTH_BLOCK_DOCUMENTS as usize
         * std::mem::size_of::<Option<SearchDocumentEntry>>();
+    // The probe owns BM25 execution allocations, not the parser's CST. Parse
+    // each statement before starting the probe so grammar growth cannot mask
+    // whether refusal happens before decoding the lengths window.
+    let control_sql = prepare_search_sql(sql).unwrap();
     let probe = PayloadProbe::start(entries_bytes);
-    let control = search_sql(&state, 128 * 1024, None, sql).unwrap();
+    let control = search_prepared_sql(control_sql, &state, 128 * 1024, None).unwrap();
     let control_allocations = probe.finish();
     assert_eq!(control.rows.len(), 1);
     assert_eq!(control.search_index_scan.unwrap().lengths_rows_read, 32);
+    let refused_sql = prepare_search_sql(sql).unwrap();
     let probe = PayloadProbe::start(entries_bytes);
-    let refused = search_sql(&state, 32 * 1024, None, sql);
+    let refused = search_prepared_sql(refused_sql, &state, 32 * 1024, None);
     let refused_allocations = probe.finish();
     let error = refused.unwrap_err().to_string();
     assert!(error.contains("Bm25IndexScan"), "{error}");

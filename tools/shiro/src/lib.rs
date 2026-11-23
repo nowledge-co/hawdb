@@ -52,7 +52,7 @@ pub use hawdb_fuzz_contracts::{
     NOWLEDGE_QUERY_FUZZ_HARNESS_PROTOCOL,
 };
 pub use optimizer_qualification::{
-    qualify_generated_optimizer_case, qualify_optimizer_read,
+    qualify_bounded_order_case, qualify_generated_optimizer_case, qualify_optimizer_read,
     GeneratedOptimizerQualificationReport, OptimizerQualificationComparison,
     OptimizerQualificationReport, OptimizerQualificationVariant, PlanAgreement,
 };
@@ -66,6 +66,7 @@ pub use parser_oracle::{
     run_parser_fuzz_case, ParserFuzzCase, ParserFuzzObservation, PARSER_FUZZ_PROTOCOL,
 };
 pub use row_page_oracle::{run_row_page_compaction_case, ROW_PAGE_COMPACTION_PROTOCOL};
+pub use sql_oracle::plan_guidance::query_plan_guidance_cli;
 pub use sql_oracle::{
     SqlCaseReport, SqlExecutionObservation, SqlFailureReport, SqlJoinGeneratorProfile,
     SqlJoinRewriteCase, SqlJoinRewriteEvidence, SqlJoinRewriteFailureReport, SqlMutation,
@@ -2173,6 +2174,9 @@ fn error_class(error: &HawDBError) -> &'static str {
         }
         | HawDBError::ReadBudgetExceeded(_)
         | HawDBError::WalRecordLimitExceeded(_)
+        | HawDBError::RuntimeAdmissionRefused(_)
+        | HawDBError::RuntimeIoWaveReservationExceeded { .. }
+        | HawDBError::RuntimeTaskStopped(_)
         | HawDBError::ReadOnly { .. }
         | HawDBError::ResourceBudgetExceeded(_)
         | HawDBError::GraphExpansionCandidateLimitExceeded { .. }
@@ -2184,7 +2188,11 @@ fn error_class(error: &HawDBError) -> &'static str {
         | HawDBError::SearchProjectionRebuildRefused { .. }
         | HawDBError::SearchProjectionOwnershipMarkerCorrupt { .. }
         | HawDBError::SearchProjectionOwnershipMismatch { .. }
-        | HawDBError::SearchProjectionEpochAdvanceRefused { .. } => "execution",
+        | HawDBError::SearchProjectionEpochAdvanceRefused { .. }
+        | HawDBError::SearchProjectionPrefixBehindSource { .. }
+        | HawDBError::SearchProjectionBatchBudgetExceeded { .. }
+        | HawDBError::SearchProductionQualificationGraphEpochMismatch { .. }
+        | HawDBError::SearchProductionQualificationRefused { .. } => "execution",
         HawDBError::Storage(_)
         | HawDBError::Constraint {
             surface: RelationalErrorSurface::Storage,

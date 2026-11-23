@@ -65,6 +65,45 @@ fn compare_value_refs(
     }))
 }
 
+fn compare_row_fields(
+    left_len: usize,
+    right_len: usize,
+    op: SqlComparisonOp,
+    mut compare: impl FnMut(usize, SqlComparisonOp) -> Result<Option<bool>>,
+) -> Result<Option<bool>> {
+    if left_len != right_len {
+        return Err(HawDBError::Semantic(
+            "row comparison requires the same number of fields on both sides".to_string(),
+        ));
+    }
+    if matches!(op, SqlComparisonOp::Eq | SqlComparisonOp::NotEq) {
+        let mut unknown = false;
+        for index in 0..left_len {
+            match compare(index, SqlComparisonOp::Eq)? {
+                Some(false) => return Ok(Some(op == SqlComparisonOp::NotEq)),
+                Some(true) => {}
+                None => unknown = true,
+            }
+        }
+        return Ok(if unknown {
+            None
+        } else {
+            Some(op == SqlComparisonOp::Eq)
+        });
+    }
+    for index in 0..left_len {
+        match compare(index, SqlComparisonOp::Eq)? {
+            Some(true) => continue,
+            None => return Ok(None),
+            Some(false) => return compare(index, op),
+        }
+    }
+    Ok(Some(matches!(
+        op,
+        SqlComparisonOp::Lte | SqlComparisonOp::Gte
+    )))
+}
+
 pub fn predicate_truth_with<'a>(
     predicate: &SqlPredicate,
     parameters: &[Value],
@@ -92,18 +131,18 @@ pub fn predicate_truth_with<'a>(
             Ok(predicate_truth_with(predicate, parameters, resolve)?.map(|value| !value))
         }
         ExprKind::Compare { left, op, right } => {
-            let (left_value, scalar_type) = if let Some(column) = left.as_column() {
-                let (value, kind) = resolve(column)?;
-                (std::borrow::Cow::Borrowed(value), Some(kind))
-            } else {
-                (predicate_expression(left, parameters, resolve)?, None)
-            };
-            let right_value = if let Some(kind) = scalar_type {
-                predicate_operand(right, parameters, kind, resolve)?
-            } else {
-                predicate_expression(right, parameters, resolve)?
-            };
-            compare_values(left_value.as_ref(), right_value.as_ref(), *op)
+            compare_predicate_expressions(left, right, *op, parameters, resolve)
+        }
+        ExprKind::RowCompare { left, op, right } => {
+            compare_row_fields(left.len(), right.len(), *op, |index, field_op| {
+                compare_predicate_expressions(
+                    &left[index],
+                    &right[index],
+                    field_op,
+                    parameters,
+                    resolve,
+                )
+            })
         }
         ExprKind::InList {
             left,
@@ -212,6 +251,27 @@ fn compare_values(
     compare_value_refs(left.as_ref(), right.as_ref(), op)
 }
 
+fn compare_predicate_expressions<'a>(
+    left: &Expr,
+    right: &Expr,
+    op: SqlComparisonOp,
+    parameters: &[Value],
+    resolve: &impl Fn(&SqlColumnRef) -> Result<(&'a RelationalValue, RelationalScalarType)>,
+) -> Result<Option<bool>> {
+    let (left_value, scalar_type) = if let Some(column) = left.as_column() {
+        let (value, kind) = resolve(column)?;
+        (std::borrow::Cow::Borrowed(value), Some(kind))
+    } else {
+        (predicate_expression(left, parameters, resolve)?, None)
+    };
+    let right_value = if let Some(kind) = scalar_type {
+        predicate_operand(right, parameters, kind, resolve)?
+    } else {
+        predicate_expression(right, parameters, resolve)?
+    };
+    compare_values(left_value.as_ref(), right_value.as_ref(), op)
+}
+
 #[cfg(test)]
 mod tests;
 
@@ -231,6 +291,17 @@ fn predicate_expression<'a>(
                 predicate_expression(child, parameters, resolve)
             })
             .map(Cow::Owned)
+        }
+        ExprKind::Function {
+            name,
+            arguments,
+            distinct: false,
+            filter: None,
+        } if name == "octet_length" => {
+            let argument = crate::query_value::octet_length_argument(arguments)?;
+            let value = predicate_expression(argument, parameters, resolve)?;
+            crate::query_value::octet_length(value.as_ref().as_ref())
+                .map(|value| Cow::Owned(value.to_owned_value()))
         }
         _ => Err(HawDBError::Semantic("unsupported predicate operand".into())),
     }

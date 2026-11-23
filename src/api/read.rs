@@ -73,6 +73,10 @@ pub(super) fn profiled_relational_sql_output(
             rows_visited: row_execution_evidence.rows_visited,
             overlay_entries: row_execution_evidence.overlay_entries,
             overlay_resident_bytes: row_execution_evidence.overlay_resident_bytes,
+            recursive_iterations: row_execution_evidence.recursive_iterations,
+            recursive_working_rows_peak: row_execution_evidence.recursive_working_rows_peak,
+            recursive_rows_emitted: row_execution_evidence.recursive_rows_emitted,
+            recursive_work: row_execution_evidence.recursive_work,
         },
         blocking_operator_memory_reports,
         search_index_scan,
@@ -851,15 +855,20 @@ where
         );
         let prepared = self.relational_plan_template_cache.prepare(sql_text)?;
         reject_locking_select_without_manager(prepared.statement(), false)?;
-        let crate::sql::SqlStatement::Select(select) = prepared.statement() else {
-            return Err(HawDBError::Semantic(
-                "profiled relational SQL requires SELECT".to_string(),
-            ));
-        };
-        if system_sql::is_virtual_catalog_select(select) {
-            return Err(HawDBError::Semantic(
-                "profiled relational SQL does not support virtual system catalogs".to_string(),
-            ));
+        match prepared.statement() {
+            crate::sql::SqlStatement::Select(select)
+                if system_sql::is_virtual_catalog_select(select) =>
+            {
+                return Err(HawDBError::Semantic(
+                    "profiled relational SQL does not support virtual system catalogs".to_string(),
+                ));
+            }
+            crate::sql::SqlStatement::Select(_) | crate::sql::SqlStatement::Query(_) => {}
+            _ => {
+                return Err(HawDBError::Semantic(
+                    "profiled relational SQL requires SELECT".to_string(),
+                ));
+            }
         }
         self.execute_profiled_relational_sql(
             prepared,
@@ -936,6 +945,15 @@ where
         request: SqlQueryRequest<'_>,
         prepared: crate::relational_sql::PreparedRelationalSql,
     ) -> Result<QueryOutput> {
+        self.query_sql_with_prepared_request_at_clock(request, prepared, self.sql_clock)
+    }
+
+    pub(super) fn query_sql_with_prepared_request_at_clock(
+        &self,
+        request: SqlQueryRequest<'_>,
+        prepared: crate::relational_sql::PreparedRelationalSql,
+        clock: hawdb_core::temporal::OffsetDateTime,
+    ) -> Result<QueryOutput> {
         self.store.ensure_usable()?;
         let task =
             query_request::bind_request_context(self.task_context.as_ref(), request.task_context)?;
@@ -947,17 +965,19 @@ where
             ..request
         };
         let limits = request.effective_output_limits(&self.config);
-        self.query_sql_with_prepared_params_context_and_join_planning(
-            request.sql,
-            request.parameters,
-            prepared,
-            DatabaseReadSqlOptions {
-                max_rows: limits.max_rows,
-                max_payload_bytes: limits.max_payload_bytes,
-                task_context,
-                join_planning: request.join_planning,
-            },
-        )
+        hawdb_core::temporal::with_statement_clock(clock, || {
+            self.query_sql_with_prepared_params_context_and_join_planning_at_clock(
+                request.sql,
+                request.parameters,
+                prepared,
+                DatabaseReadSqlOptions {
+                    max_rows: limits.max_rows,
+                    max_payload_bytes: limits.max_payload_bytes,
+                    task_context,
+                    join_planning: request.join_planning,
+                },
+            )
+        })
     }
 
     /// Executes one SQL statement with the statement clock pinned to the read
@@ -1078,7 +1098,7 @@ where
             );
         }
 
-        self.execute_profiled_relational_sql(
+        self.execute_profiled_relational_sql_at_clock(
             prepared,
             parameters,
             max_rows,
@@ -1377,8 +1397,7 @@ impl DatabaseReadTransaction {
 }
 
 fn rebuild_scan_checkpoint(task: &hawdb_core::RuntimeTaskContext) -> Result<()> {
-    task.checkpoint()
-        .map_err(|reason| HawDBError::Execution(format!("search projection rebuild scan {reason}")))
+    task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)
 }
 
 impl<S: crate::executor::ExecutionStore> DatabaseReadTransaction<S> {
@@ -1430,7 +1449,7 @@ impl<S: crate::executor::ExecutionStore> DatabaseReadTransaction<S> {
         if let Some(context) = &self.task_context {
             context
                 .checkpoint()
-                .map_err(|reason| HawDBError::Execution(format!("runtime task {reason}")))?;
+                .map_err(HawDBError::RuntimeTaskStopped)?;
         }
         let configured_memory = self.config.execution_memory.query_memory_bytes.get();
         let configured_result = self

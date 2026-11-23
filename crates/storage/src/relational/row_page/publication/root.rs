@@ -66,22 +66,26 @@ pub(super) fn prepare_dirty_page_with_work_context(
     })?;
     let last = page.rows.last().expect("dirty page has a first row");
     let encode_key = |key: &crate::relational::RelationalKey| match work {
-        Some(work) => {
-            crate::relational::row_page::checkpoint::ordered_key(key, work).map_err(|error| {
-                match error {
-                    crate::relational::RelationalRowPageError::Admission(message)
-                    | crate::relational::RelationalRowPageError::Corrupt(message) => message,
-                }
-            })
-        }
-        None => encode_ordered_relational_key(key).map_err(|error| error.to_string()),
+        Some(work) => crate::relational::row_page::checkpoint::ordered_key(key, work)
+            .map_err(RelationalRowPagePublicationError::from),
+        None => encode_ordered_relational_key(key)
+            .map_err(|error| RelationalRowPagePublicationError::Admission(error.to_string())),
     };
-    let lower_bound = encode_key(&first.primary_key).map_err(|error| {
-        RelationalRowPagePublicationError::Admission(format!("dirty row-page lower bound: {error}"))
-    })?;
-    let upper_bound = encode_key(&last.primary_key).map_err(|error| {
-        RelationalRowPagePublicationError::Admission(format!("dirty row-page upper bound: {error}"))
-    })?;
+    let contextualize = |error: RelationalRowPagePublicationError, bound: &str| match error {
+        RelationalRowPagePublicationError::Stopped(reason) => {
+            RelationalRowPagePublicationError::Stopped(reason)
+        }
+        RelationalRowPagePublicationError::PublishOutcomeUnknown(error) => {
+            RelationalRowPagePublicationError::PublishOutcomeUnknown(error)
+        }
+        error => RelationalRowPagePublicationError::Admission(format!(
+            "dirty row-page {bound} bound: {error}"
+        )),
+    };
+    let lower_bound =
+        encode_key(&first.primary_key).map_err(|error| contextualize(error, "lower"))?;
+    let upper_bound =
+        encode_key(&last.primary_key).map_err(|error| contextualize(error, "upper"))?;
     if lower_bound.len() > limits.max_key_bytes.get()
         || upper_bound.len() > limits.max_key_bytes.get()
     {
@@ -659,7 +663,7 @@ impl RootWriter<'_> {
     fn clone_name(&self, name: &str) -> Result<String, RelationalRowPagePublicationError> {
         match &self.work {
             Some(work) => crate::relational::codec::clone_string_with_work_context(name, work)
-                .map_err(|error| RelationalRowPagePublicationError::Admission(error.to_string())),
+                .map_err(RelationalRowPagePublicationError::from_relational),
             None => Ok(name.to_string()),
         }
     }

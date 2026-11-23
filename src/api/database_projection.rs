@@ -38,7 +38,7 @@ impl Database {
                 hawdb_storage::projection_generation::ProjectionGenerationError::Corruption(
                     message,
                 ) => HawDBError::StorageIntegrity(message),
-                error => HawDBError::Execution(error.to_string()),
+                error => HawDBError::from_execution_error(error),
             })
     }
 
@@ -424,6 +424,12 @@ impl Database {
         Ok(verification)
     }
 
+    /// Selects whole changefeed commits after `source_commit_epoch`, up to
+    /// `max_operations`. A batch ending before the head is a prefix that
+    /// bounded catch-up refuses ([`HawDBError::SearchProjectionPrefixBehindSource`]).
+    /// A first commit that alone exceeds the limit is refused with the typed
+    /// [`HawDBError::SearchProjectionBatchBudgetExceeded`], which is not a
+    /// storage failure.
     pub fn build_search_projection_change_batch_after(
         &self,
         source_commit_epoch: u64,
@@ -511,10 +517,12 @@ impl Database {
                 && next_operation_count > limit
             {
                 if complete_through_commit_epoch == source_commit_epoch {
-                    return Err(HawDBError::Storage(format!(
-                        "search projection change at commit epoch {} requires {next_operation_count} operations, exceeding configured per-batch limit {limit}",
-                        change.commit_epoch
-                    )));
+                    return Err(HawDBError::SearchProjectionBatchBudgetExceeded {
+                        budget: hawdb_core::SearchProjectionBatchBudget::ChangeBatch,
+                        commit_epoch: Some(change.commit_epoch),
+                        required_operations: next_operation_count,
+                        limit,
+                    });
                 }
                 truncated_by_budget = true;
                 break;
@@ -570,6 +578,10 @@ impl Database {
         )
     }
 
+    /// [`Self::build_search_projection_change_batch_after`] from the index's
+    /// applied watermark. With `Some(cap)` this is the read-only probe for
+    /// bounded catch-up: a batch whose complete-through epoch is the current
+    /// commit epoch covers the whole pending interval (#1924).
     pub fn build_search_projection_change_batch_from_freshness(
         &self,
         search_index: &SearchIndex,

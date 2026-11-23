@@ -885,7 +885,7 @@ impl RelationalConstraintIndex for RelationalTransactionIndexView {
             .visit_with_overlay(
                 table,
                 index,
-                RelationalIndexReadSelector::Exact(key),
+                RelationalIndexReadSelector::Prefix(key),
                 attempt.limits(),
                 visit,
                 IndexReadAdmission::new(&attempt),
@@ -933,6 +933,7 @@ pub(super) fn relational_read_error(error: RelationalError) -> RelationalIndexSh
         RelationalError::FileDescriptors(error) => {
             RelationalIndexShadowError::FileDescriptors(error)
         }
+        RelationalError::Stopped(reason) => RelationalIndexShadowError::Stopped(reason),
         RelationalError::Admission(message) => RelationalIndexShadowError::Admission(message),
         RelationalError::Durability(message) => RelationalIndexShadowError::Durability(message),
         RelationalError::Corruption(message)

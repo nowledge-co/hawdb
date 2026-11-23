@@ -65,7 +65,9 @@ impl Pending {
         let slots = mul(count, size_of::<SearchDocument>())?;
         input.memory.grow(slots)?;
         input.upserts.try_reserve_exact(count).map_err(|error| {
-            HawDBError::Execution(format!("cannot allocate search delta slots: {error}"))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Execution(format!("cannot allocate search delta slots: {error}"))
+            })
         })?;
         if input.upserts.capacity() > count {
             return Err(HawDBError::Execution(

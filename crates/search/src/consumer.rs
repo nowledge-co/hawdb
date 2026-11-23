@@ -529,7 +529,7 @@ impl<'birth> ConsumerStationaryTargetLease<'birth> {
             let io = self
                 .task
                 .acquire_io_wave(std::num::NonZeroUsize::MIN)
-                .map_err(|error| HawDBError::Execution(error.to_string()))?
+                .map_err(HawDBError::from_execution_error)?
                 .ok_or_else(|| {
                     HawDBError::Execution(
                         "consumer candidate metadata check requires I/O admission".into(),
@@ -694,7 +694,7 @@ impl ConsumerCandidateOutput<'_, '_> {
         let permit = self
             .task
             .acquire_io_wave(NonZeroUsize::MIN)
-            .map_err(|error| HawDBError::Execution(error.to_string()))?;
+            .map_err(HawDBError::from_execution_error)?;
         if self.task.has_resource_controllers() && permit.is_none() {
             return Err(HawDBError::Execution(
                 "consumer candidate output requires I/O admission".into(),
@@ -828,7 +828,7 @@ impl ConsumerCandidateOutput<'_, '_> {
         let permit = self
             .task
             .acquire_io_wave(NonZeroUsize::MIN)
-            .map_err(|error| HawDBError::Execution(error.to_string()))?;
+            .map_err(HawDBError::from_execution_error)?;
         if self.task.has_resource_controllers() && permit.is_none() {
             return Err(HawDBError::Execution(
                 "consumer generation metadata requires I/O admission".into(),
@@ -836,7 +836,9 @@ impl ConsumerCandidateOutput<'_, '_> {
         }
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(length).map_err(|error| {
-            HawDBError::Execution(format!("consumer metadata allocation failed: {error}"))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Execution(format!("consumer metadata allocation failed: {error}"))
+            })
         })?;
         if bytes.capacity() > length {
             return Err(HawDBError::Execution(

@@ -30,6 +30,7 @@ pub mod compat;
 mod compatibility_facades;
 mod compiled_capabilities;
 pub mod embedded;
+pub mod embedded_concurrent;
 pub mod embedded_store;
 #[cfg(feature = "tokio-runtime")]
 pub mod embedded_tokio;
@@ -286,6 +287,7 @@ pub use embedded::{
     EmbeddedDeploymentProfile, EmbeddedQueryError, EmbeddedRuntimeResources, HawDBEmbedded,
     HawDBEmbeddedOpenOptions,
 };
+pub use embedded_concurrent::HawDBConcurrentEmbedded;
 pub use embedded_store::{
     bounded_read_evidence_json, bounded_read_evidence_json_with_route_readiness,
     bounded_read_evidence_json_with_routes, graph_config, graph_config_with_search_mode,
@@ -295,6 +297,7 @@ pub use embedded_store::{
     source_mutation_dual_write_readiness, source_mutation_family_requirements,
     BackgroundMaintenanceReport, BoundedSearchCandidateOutput, CutoverControls,
     CutoverControlsReport, DefinedSearchProjectionConsumer, EmbeddedGraph,
+    EmbeddedOptimizerCardinalityEstimate, EmbeddedOptimizerCardinalityEstimateScope,
     EmbeddedProductionStatus, EmbeddedQueryExecutionPath, EmbeddedQueryOutput, EmbeddedQueryReport,
     EmbeddedQueryReportOptions, EmbeddedReadOptions, EmbeddedReadOutput, EmbeddedReadReport,
     EmbeddedReadSnapshot, EmbeddedReadSnapshotBudget, EmbeddedReadSnapshotReport,
@@ -313,30 +316,30 @@ pub use embedded_store::{
     SearchCandidateFieldSummary, SearchCandidateFilterPushdownEvidence, SearchCandidateOutput,
     SearchCandidateReadinessOptions, SearchCandidateReadinessReport, SearchCandidateReport,
     SearchCandidateRequest, SearchCandidateShadowAccumulator, SearchCandidateShadowEvidence,
-    SearchHydrationOutput, SearchProjection, SearchProjectionDocumentLookup,
-    SearchProjectionOpenMode, SearchProjectionRebuildOptions, SearchProjectionRebuildPhase,
-    SearchProjectionRebuildProgress, SearchProjectionRebuildReport, SearchProjectionRebuildSource,
-    SearchProjectionRebuildVerification, SearchProjectionRole, SlowQueryReport,
-    SlowQueryReportRecord, SourceMutationDualWriteEvidence, SourceMutationDualWriteReadinessReport,
-    SourceMutationFamilyRequirement, StorageLifecycleActionKind, StorageLifecycleDecision,
-    WorkControl, BOUNDED_READ_EVIDENCE_PROTOCOL, CUTOVER_CONTROLS_PROTOCOL,
-    GRAPH_READ_ROUTE_CATALOG_VERSION, LIBRARY_READINESS_PROTOCOL,
-    MAX_SEARCH_PROJECTION_MARKER_REASON_BYTES, NOWLEDGE_QUERY_RUNTIME_PREFLIGHT_PROTOCOL,
-    OPEN_REPORT_PROTOCOL, OPERATIONS_READINESS_PROTOCOL, PRODUCTION_STATUS_PROTOCOL,
-    QUERY_REPORT_PROTOCOL, READINESS_DASHBOARD_PROTOCOL, READ_REPORT_PROTOCOL,
-    READ_SNAPSHOT_REPORT_PROTOCOL, REQUIRED_BOUNDED_READ_ROUTES, REQUIRED_SOURCE_MUTATION_FAMILIES,
-    RETRIEVAL_REPORT_PROTOCOL, RUNTIME_STATUS_PROTOCOL, SEARCH_CANDIDATE_EVIDENCE_ROUTE,
-    SEARCH_CANDIDATE_EVIDENCE_SOURCE, SEARCH_CANDIDATE_PRIMARY_ENGINE,
-    SEARCH_CANDIDATE_READINESS_PROTOCOL, SEARCH_CANDIDATE_REPORT_PROTOCOL,
-    SEARCH_CANDIDATE_SHADOW_ENGINE, SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL,
-    SEARCH_CANDIDATE_TRACE_EVIDENCE_SOURCE, SEARCH_CANDIDATE_TRACE_PRIMARY_ENGINE,
-    SEARCH_CANDIDATE_TRACE_SHADOW_ENGINE, SEARCH_ROUTE, SERVING_PATH_READINESS_PROTOCOL,
-    SLOW_QUERY_REPORT_PROTOCOL, SOURCE_MUTATION_DUAL_WRITE_READINESS_PROTOCOL,
-    SOURCE_MUTATION_FAMILY_CONTENT_REFRESH_REPARSE, SOURCE_MUTATION_FAMILY_GRAPH_DELETE,
-    SOURCE_MUTATION_FAMILY_INDEXED_TRANSITION, SOURCE_MUTATION_FAMILY_INGEST_CREATE,
-    SOURCE_MUTATION_FAMILY_LIFECYCLE, SOURCE_MUTATION_FAMILY_PATCH_DELETE,
-    SOURCE_MUTATION_FAMILY_REVISION_EDGES, SOURCE_MUTATION_FAMILY_SEARCH_PROJECTION_EFFECTS,
-    STORAGE_LIFECYCLE_DECISION_PROTOCOL,
+    SearchHydrationOutput, SearchProjection, SearchProjectionChangeBatchProbe,
+    SearchProjectionDocumentLookup, SearchProjectionOpenMode, SearchProjectionRebuildOptions,
+    SearchProjectionRebuildPhase, SearchProjectionRebuildProgress, SearchProjectionRebuildReport,
+    SearchProjectionRebuildSource, SearchProjectionRebuildVerification, SearchProjectionRole,
+    SlowQueryReport, SlowQueryReportRecord, SourceMutationDualWriteEvidence,
+    SourceMutationDualWriteReadinessReport, SourceMutationFamilyRequirement,
+    StorageLifecycleActionKind, StorageLifecycleDecision, WorkControl,
+    BOUNDED_READ_EVIDENCE_PROTOCOL, CUTOVER_CONTROLS_PROTOCOL, GRAPH_READ_ROUTE_CATALOG_VERSION,
+    LIBRARY_READINESS_PROTOCOL, MAX_SEARCH_PROJECTION_MARKER_REASON_BYTES,
+    NOWLEDGE_QUERY_RUNTIME_PREFLIGHT_PROTOCOL, OPEN_REPORT_PROTOCOL, OPERATIONS_READINESS_PROTOCOL,
+    PRODUCTION_STATUS_PROTOCOL, QUERY_REPORT_PROTOCOL, READINESS_DASHBOARD_PROTOCOL,
+    READ_REPORT_PROTOCOL, READ_SNAPSHOT_REPORT_PROTOCOL, REQUIRED_BOUNDED_READ_ROUTES,
+    REQUIRED_SOURCE_MUTATION_FAMILIES, RETRIEVAL_REPORT_PROTOCOL, RUNTIME_STATUS_PROTOCOL,
+    SEARCH_CANDIDATE_EVIDENCE_ROUTE, SEARCH_CANDIDATE_EVIDENCE_SOURCE,
+    SEARCH_CANDIDATE_PRIMARY_ENGINE, SEARCH_CANDIDATE_READINESS_PROTOCOL,
+    SEARCH_CANDIDATE_REPORT_PROTOCOL, SEARCH_CANDIDATE_SHADOW_ENGINE,
+    SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL, SEARCH_CANDIDATE_TRACE_EVIDENCE_SOURCE,
+    SEARCH_CANDIDATE_TRACE_PRIMARY_ENGINE, SEARCH_CANDIDATE_TRACE_SHADOW_ENGINE, SEARCH_ROUTE,
+    SERVING_PATH_READINESS_PROTOCOL, SLOW_QUERY_REPORT_PROTOCOL,
+    SOURCE_MUTATION_DUAL_WRITE_READINESS_PROTOCOL, SOURCE_MUTATION_FAMILY_CONTENT_REFRESH_REPARSE,
+    SOURCE_MUTATION_FAMILY_GRAPH_DELETE, SOURCE_MUTATION_FAMILY_INDEXED_TRANSITION,
+    SOURCE_MUTATION_FAMILY_INGEST_CREATE, SOURCE_MUTATION_FAMILY_LIFECYCLE,
+    SOURCE_MUTATION_FAMILY_PATCH_DELETE, SOURCE_MUTATION_FAMILY_REVISION_EDGES,
+    SOURCE_MUTATION_FAMILY_SEARCH_PROJECTION_EFFECTS, STORAGE_LIFECYCLE_DECISION_PROTOCOL,
 };
 #[cfg(feature = "tokio-runtime")]
 pub use embedded_tokio::{
@@ -345,11 +348,13 @@ pub use embedded_tokio::{
 pub use error::{
     FileDescriptorError, HawDBError, ReadBudgetError, ReadBudgetResource, RelationalErrorKind,
     RelationalErrorSurface, ResourceBudgetError, ResourceBudgetKind, ResourceBudgetScope, Result,
-    SearchProjectionEpochAdvanceRefusal, SearchProjectionRebuildRefusal, StorageFormatError,
-    TransactionRetryError, TransactionRetryReason, WalRecordLimit, WalRecordLimitError,
-    APPEND_WAL_FORMAT, LOGICAL_DUMP_FORMAT, RELATIONAL_CHECKPOINT_LAYOUT_FORMAT,
-    RELATIONAL_DURABLE_CODEC_FORMAT, RELATIONAL_ROW_PAGE_FORMAT, RELATIONAL_SCHEMA_FORMAT,
-    SEARCH_PROJECTION_MANIFEST_FORMAT, STORAGE_MANIFEST_FORMAT,
+    RuntimeAdmissionRefusal, SearchProjectionBatchBudget, SearchProjectionEpochAdvanceRefusal,
+    SearchProjectionRebuildRefusal, StorageFormatError, TransactionRetryError,
+    TransactionRetryReason, WalRecordLimit, WalRecordLimitError, APPEND_WAL_FORMAT,
+    GRAPH_CHANGE_COMMIT_EPOCH_CONFLICT_KEY, LOGICAL_DUMP_FORMAT,
+    RELATIONAL_CHECKPOINT_LAYOUT_FORMAT, RELATIONAL_DURABLE_CODEC_FORMAT,
+    RELATIONAL_ROW_PAGE_FORMAT, RELATIONAL_SCHEMA_FORMAT, SEARCH_PROJECTION_MANIFEST_FORMAT,
+    STORAGE_MANIFEST_FORMAT, WAL_FILE_FORMAT,
 };
 pub use executor::{
     ProjectedRowRef, QueryRow, QueryRowRef, QueryRows, QuerySchema, ReadExecutionProfile, Row,

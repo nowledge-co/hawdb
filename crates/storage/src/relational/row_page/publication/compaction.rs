@@ -71,11 +71,9 @@ impl RowPageRewriteControls<'_> {
     }
 
     pub(super) fn checkpoint(self) -> Result<(), RelationalRowPagePublicationError> {
-        self.task.checkpoint().map_err(|reason| {
-            RelationalRowPagePublicationError::Admission(format!(
-                "row-page rewrite stopped: {reason}"
-            ))
-        })
+        self.task
+            .checkpoint()
+            .map_err(RelationalRowPagePublicationError::Stopped)
     }
 
     /// Selects a generation whose live bytes are at most the configured

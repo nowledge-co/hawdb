@@ -114,6 +114,8 @@ mod branch_lifecycle;
 mod canonical_snapshot;
 mod concurrent;
 #[cfg(test)]
+pub(crate) use concurrent::set_commit_boundary_hook;
+#[cfg(test)]
 pub(crate) use concurrent::AutocommitMutationPhase;
 pub(crate) use concurrent::{
     ExclusiveDatabaseLease, PublishedConcurrentRead, SharedDatabaseGuard, SharedDatabaseOwner,
@@ -182,7 +184,9 @@ pub use query_preparation_metrics::{query_preparation_metrics, QueryPreparationM
 mod sql_runtime;
 #[cfg(feature = "tokio-runtime")]
 pub(crate) use sql_runtime::PreparedRuntimeSql;
+pub(crate) use sql_runtime::RuntimeSqlPlanningSnapshot;
 mod retained_query;
+pub(crate) use retained_query::EmbeddedRuntimeBinding;
 pub use retained_query::{
     ArrowArray, ArrowArrayStream, ArrowSchema, RetainedArrowCodeOwner, RetainedArrowExport,
     RetainedArrowSchema, RetainedArrowStream, RetainedColumnRole, RetainedColumnSchema,
@@ -228,8 +232,6 @@ pub use query_request::{
     OwnedSqlQueryRequest, QueryRequest, ReadSnapshotBudget, ReadSnapshotUsage, ScoringRequest,
     SqlQueryRequest,
 };
-#[cfg(feature = "tokio-runtime")]
-pub(crate) use query_runtime::RuntimePlanningSnapshot;
 pub(crate) use query_runtime::{runtime_result_memory_budget, PreparedRuntimeQuery};
 pub use types::*;
 
@@ -612,6 +614,11 @@ pub(super) struct DatabaseTransactionState {
     /// pins the statement clock to it, so `CURRENT_TIMESTAMP`, `now()`,
     /// `LOCALTIMESTAMP` and clock defaults agree across the transaction.
     sql_clock: hawdb_core::temporal::OffsetDateTime,
+    /// Graph change epoch of the transaction's base snapshot.
+    base_graph_change_commit_epoch: u64,
+    /// Set once the caller reads the graph change epoch: commit is refused
+    /// unless the committed graph change epoch still equals this value.
+    graph_change_guard: Option<u64>,
 }
 
 struct SparseRelationalStatementStage {
@@ -702,7 +709,11 @@ impl DatabaseReadSnapshot {
         &self,
         task_context: Option<hawdb_core::RuntimeTaskContext>,
     ) -> Result<DatabaseReadTransaction> {
-        self.0.fork_at_same_snapshot(task_context)
+        let mut transaction = self.0.fork_at_same_snapshot(task_context)?;
+        // A publication pins data, not the start time of future transactions.
+        // Forks within an existing transaction still inherit its clock.
+        transaction.sql_clock = hawdb_core::temporal::statement_now();
+        Ok(transaction)
     }
 }
 
@@ -889,9 +900,12 @@ fn require_search_projection_source_epoch(expected: Option<u64>, actual: u64) ->
                 "search projection graph delta complete-through epoch {expected} is ahead of graph commit epoch {actual}"
             )));
         }
-        return Err(HawDBError::Execution(format!(
-            "search projection complete-through epoch {expected} differs from source snapshot epoch {actual}; prepare the complete source interval before publishing its watermark"
-        )));
+        // A prefix behind the pinned source is a typed, non-poisoning refusal
+        // (#1924): hosts must cover the whole interval or re-prepare.
+        return Err(HawDBError::SearchProjectionPrefixBehindSource {
+            complete_through_commit_epoch: expected,
+            source_commit_epoch: actual,
+        });
     }
     Ok(())
 }
@@ -908,9 +922,12 @@ fn search_projection_graph_delta_for(
     if let Some(limit) = request.max_operations
         && operation_count > limit
     {
-        return Err(HawDBError::Storage(format!(
-                "search projection graph delta operation count {operation_count} exceeded configured limit {limit}"
-            )));
+        return Err(HawDBError::SearchProjectionBatchBudgetExceeded {
+            budget: hawdb_core::SearchProjectionBatchBudget::GraphDelta,
+            commit_epoch: None,
+            required_operations: operation_count,
+            limit,
+        });
     }
     // A changefeed prefix describes IDs, not a historical read view.
     // Hydrating it from a newer head would publish future data under an old watermark.

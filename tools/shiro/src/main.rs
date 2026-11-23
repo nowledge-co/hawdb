@@ -51,6 +51,16 @@ fn main() -> ExitCode {
     if std::env::args().nth(1).as_deref() == Some("qualify") {
         return qualification_cli::run(std::env::args().skip(2));
     }
+    if std::env::args().nth(1).as_deref() == Some("qpg") {
+        return match shiro_core::query_plan_guidance_cli(std::env::args().skip(2)) {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::FAILURE,
+            Err(error) => {
+                eprintln!("shiro qpg: {error}");
+                ExitCode::from(2)
+            }
+        };
+    }
     if std::env::args().skip(1).collect::<Vec<_>>().as_slice() == ["--help"] {
         println!("{}", usage());
         return ExitCode::SUCCESS;
@@ -341,7 +351,7 @@ fn next_usize(args: &mut impl Iterator<Item = String>, option: &str) -> Result<u
 }
 
 fn usage() -> &'static str {
-    "usage: shiro [--timeout-seconds <u64>] [--seed <u64>] [--cases <usize>] [--case-index <usize>] [--shard-index <usize>] [--shard-count <usize>] [--progress-interval <usize>] [--resume] [--log-directory <path>] [--print-report]\n       shiro capabilities generate --seed N --index N | replay FILE | shrink FILE [--attempts N]\n       shiro sqlsmith --help"
+    "usage: shiro [--timeout-seconds <u64>] [--seed <u64>] [--cases <usize>] [--case-index <usize>] [--shard-index <usize>] [--shard-count <usize>] [--progress-interval <usize>] [--resume] [--log-directory <path>] [--print-report]\n       shiro capabilities generate --seed N --index N | replay FILE | shrink FILE [--attempts N]\n       shiro sqlsmith --help\n       shiro qpg --help"
 }
 
 fn run_id(options: CampaignOptions, execution: CampaignExecutionOptions) -> String {

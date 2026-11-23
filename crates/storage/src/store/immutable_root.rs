@@ -294,7 +294,7 @@ impl GraphStore {
         let plan = durable.checkpoint_closure_plan_with_work(manifest, work)?;
         let checkpoint_bindings = checkpoint_artifact_bindings(&durable.root_path, plan.inputs())?;
         let closure = plan
-            .publish_with_work(&mut objects, work)
+            .publish_sealed_with_work(&mut objects, work)
             .map_err(HawDBError::from_storage_error)?;
         let root = SealedRoot {
             checkpoint_epoch: manifest.checkpoint_commit_epoch,
@@ -375,7 +375,11 @@ impl GraphStore {
             branch.metadata_revision,
             publication.metadata(),
         )
-        .map_err(|error| HawDBError::Storage(format!("checkpoint branch validation: {error}")))?;
+        .map_err(|error| {
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!("checkpoint branch validation: {error}"))
+            })
+        })?;
         branch_head::validate_active_wal_prefix_from_file(
             &durable.wal_path,
             prepared.head.active_wal,
@@ -2507,7 +2511,9 @@ fn publish_sealed_root(
     let manifest_bytes = fs::read(durable.manifest_path())?;
     let manifest =
         DurableManifest::decode(std::str::from_utf8(&manifest_bytes).map_err(|error| {
-            HawDBError::Storage(format!("decode durable manifest bytes: {error}"))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!("decode durable manifest bytes: {error}"))
+            })
         })?)?;
     let durable_manifest = ObjectReference::for_bytes(
         ObjectKind::DurableManifest,
@@ -2539,7 +2545,7 @@ fn publish_sealed_root(
         let plan = durable.checkpoint_closure_plan(manifest)?;
         let bindings = checkpoint_artifact_bindings(&durable.root_path, plan.inputs())?;
         let closure = plan
-            .publish(objects)
+            .publish_sealed_with_work(objects, crate::immutable_object::BlockWork::default())
             .map_err(HawDBError::from_storage_error)?;
         // A new manifest includes its checkpoint replay boundary. Previously
         // sealed intervals are covered and must not be replayed a second time.
@@ -5460,6 +5466,20 @@ mod tests {
         let prepared = store
             .prepare_immutable_root_handoff(&objects)
             .expect("prepare immutable root");
+        #[cfg(unix)]
+        {
+            let immutable = ImmutableObjectStore::open(&objects).unwrap();
+            for binding in &prepared.root.checkpoint_bindings {
+                let source = database.join(&binding.relative_path);
+                let object = immutable.object_path(binding.reference);
+                assert_eq!(
+                    crate::native_file_identity::of_metadata(&std::fs::metadata(&source).unwrap()),
+                    crate::native_file_identity::of_metadata(&std::fs::metadata(&object).unwrap()),
+                    "initial handoff must share {}",
+                    source.display(),
+                );
+            }
+        }
         prepared.root.validate().expect("valid root");
         assert!(!prepared.root.checkpoint_references.is_empty());
         assert!(

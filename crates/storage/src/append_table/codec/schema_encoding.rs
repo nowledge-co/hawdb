@@ -41,17 +41,15 @@ pub(super) struct Size<'a> {
 impl relational::Sink for Size<'_> {
     fn raw(&mut self, bytes: &[u8]) -> Result<(), RelationalError> {
         if let Some(work) = self.work {
-            work.start_unit().map_err(relational_work_error)?.finish();
+            work.start_unit()
+                .map_err(RelationalError::from_work)?
+                .finish();
         }
         self.bytes = self.bytes.checked_add(bytes.len()).ok_or_else(|| {
             RelationalError::Admission("append schema encoding size overflows usize".into())
         })?;
         Ok(())
     }
-}
-
-fn relational_work_error(error: crate::background::CheckpointWorkError) -> RelationalError {
-    RelationalError::Admission(error.to_string())
 }
 
 pub(in crate::append_table) fn schema_record_len(
@@ -84,7 +82,7 @@ impl relational::Sink for Hash<'_> {
                 .work
                 .map(CheckpointWorkContext::start_unit)
                 .transpose()
-                .map_err(relational_work_error)?;
+                .map_err(RelationalError::from_work)?;
             self.hasher.update(block);
             if let Some(unit) = unit {
                 unit.finish();
@@ -171,5 +169,5 @@ pub(in crate::append_table) fn schema_record(
 }
 
 fn map_core(error: hawdb_core::HawDBError) -> AppendTableError {
-    AppendTableError::Admission(error.to_string())
+    super::super::binary::allocation_error(error)
 }

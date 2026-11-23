@@ -584,9 +584,7 @@ fn entity_query_fails_closed_when_an_out_of_core_segment_is_corrupted() {
     db.checkpoint().unwrap();
 
     let canonical_path = active_generation_path(&path, "checkpoint_generation", "canonical");
-    let mut bytes = std::fs::read(&canonical_path).unwrap();
-    bytes[24] ^= 0xff;
-    std::fs::write(&canonical_path, bytes).unwrap();
+    super::flip_test_file_byte(&canonical_path, 24, None);
 
     let error = db
         .query_request(bounded_batch_query(
@@ -633,9 +631,7 @@ fn public_query_fails_closed_when_an_out_of_core_segment_is_corrupted() {
     db.checkpoint().unwrap();
 
     let canonical_path = active_generation_path(&path, "checkpoint_generation", "canonical");
-    let mut bytes = std::fs::read(&canonical_path).unwrap();
-    bytes[24] ^= 0xff;
-    std::fs::write(&canonical_path, bytes).unwrap();
+    super::flip_test_file_byte(&canonical_path, 24, None);
 
     let error = db
         .query("MATCH (m:Memory) RETURN m.id AS memory_id")
@@ -2755,9 +2751,7 @@ fn user_invalidates_old_snapshots_when_checkpoint_or_projection_reads_corrupt_ca
             .query_sql("SELECT id FROM snapshot_probe WHERE id = 1")
             .expect("healthy snapshot probe succeeds before canonical corruption");
         let canonical = active_generation_path(&path, "checkpoint_generation", "canonical");
-        let mut bytes = std::fs::read(&canonical).unwrap();
-        bytes[24] ^= 0xff;
-        std::fs::write(canonical, bytes).unwrap();
+        super::flip_test_file_byte(&canonical, 24, None);
         // When a checkpoint or projection-delta build detects the canonical corruption.
         let result = if checkpoint {
             db.checkpoint()

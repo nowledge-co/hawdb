@@ -128,7 +128,7 @@ impl GraphStore {
     /// Selects whether checkpoints also write the legacy full-row relational
     /// file. The canonical row-page and overflow roots carry the complete
     /// relational state either way; the legacy file only lets releases before
-    /// persistent format 3 reopen the database outside OutOfCore residency
+    /// persistent format 6 reopen the database outside OutOfCore residency
     /// with Authoritative relational indexes (#1737).
     pub fn set_legacy_relational_checkpoint_file_enabled(&mut self, enabled: bool) {
         self.legacy_relational_checkpoint_file = enabled;
@@ -326,15 +326,14 @@ impl GraphStore {
                     "relational row checkpoint change references missing table {table}"
                 ))
             })?;
-            let schema_digest = self
-                .relational_state
-                .table_schema_digest(&table)
-                .map_err(crate::error::HawDBError::from_storage_error)?
-                .ok_or_else(|| {
-                    crate::error::HawDBError::Storage(format!(
-                        "relational row checkpoint cannot derive schema digest for {table}"
-                    ))
-                })?;
+            let recorded = base_manifest
+                .tables
+                .binary_search_by(|candidate| candidate.table.cmp(&table))
+                .ok()
+                .map(|index| base_manifest.tables[index].schema_digest);
+            let schema_digest =
+                crate::relational::schema_digest_for_binding(schema, recorded, None)
+                    .map_err(crate::error::HawDBError::from_storage_error)?;
             let mut plan = planner
                 .plan_table(&table, schema_digest, schema.columns.len(), changes)
                 .map_err(crate::error::HawDBError::from_storage_error)?;
@@ -485,9 +484,11 @@ impl GraphStore {
             delta_config,
         )
         .map_err(|error| {
-            crate::error::HawDBError::Storage(format!(
-                "canonical relational row root could not be pinned: {error}"
-            ))
+            crate::error::HawDBError::or_stop(&error, || {
+                crate::error::HawDBError::Storage(format!(
+                    "canonical relational row root could not be pinned: {error}"
+                ))
+            })
         })?;
         let expected_previous =
             match RelationalRowDeltaReader::latest_generation(&root, delta_config) {
@@ -653,15 +654,13 @@ impl GraphStore {
         let mut hydrated = match allocations {
             Some(context) => context
                 .vector_capacity(replay_access.entries().len())
-                .map_err(|error| RelationalError::Admission(error.to_string()))?,
+                .map_err(RelationalError::from_admission)?,
             None => Vec::with_capacity(replay_access.entries().len()),
         };
         let mut read_bytes = 0usize;
         for access in replay_access.entries() {
             if let Some(context) = allocations {
-                context
-                    .checkpoint()
-                    .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                context.checkpoint().map_err(RelationalError::from_work)?;
             }
             let schema = self
                 .relational_state
@@ -677,7 +676,7 @@ impl GraphStore {
                 Some(context) => std::borrow::Cow::Owned(
                     context
                         .string(&access.table)
-                        .map_err(|error| RelationalError::Admission(error.to_string()))?,
+                        .map_err(RelationalError::from_admission)?,
                 ),
                 None => std::borrow::Cow::Borrowed(access.table.as_str()),
             };
@@ -692,10 +691,10 @@ impl GraphStore {
                     Some(context) => {
                         fields_memory
                             .before_insert(requested_fields.len(), context)
-                            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                            .map_err(RelationalError::from_admission)?;
                         let mut fields = context
                             .vector_capacity(column_count)
-                            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                            .map_err(RelationalError::from_admission)?;
                         fields.extend(0..column_count);
                         fields
                     }
@@ -844,6 +843,7 @@ impl GraphStore {
         rows: &RelationalTransactionRowView,
         transaction: RelationalTransaction,
         constraint_index: &dyn RelationalConstraintIndex,
+        capture_mutation_rows: bool,
     ) -> Result<
         (
             RelationalState,
@@ -881,7 +881,7 @@ impl GraphStore {
             &proven_absent_primary_keys,
         );
         state
-            .stage_sparse_transaction_with_authoritative_replay_access_and_outcomes(
+            .stage_sparse_transaction_with_authoritative_replay_access_outcomes_and_row_capture(
                 RelationalSparseLiveStage {
                     transaction,
                     hydrated_workspace,
@@ -891,6 +891,7 @@ impl GraphStore {
                     row_capture_limits,
                     constraint_index: &proven_constraint_index,
                 },
+                capture_mutation_rows,
             )
             .map(|(next, index_capture, row_capture, _, outcomes)| {
                 (next, index_capture, row_capture, outcomes)
@@ -964,7 +965,7 @@ impl GraphStore {
                 ),
             Err(crate::background::CheckpointOperationError::Work(error)) => {
                 self.mark_relational_row_page_recovery_unavailable(epoch, error.to_string());
-                return Err(RelationalError::Admission(error.to_string()));
+                return Err(RelationalError::from_work(error));
             }
         }
         Ok(())
@@ -1407,7 +1408,9 @@ impl GraphStore {
                 work,
             )
             .map_err(|error| {
-                super::HawDBError::Storage(format!("private row recovery: {error}"))
+                super::HawDBError::or_stop(&error, || {
+                    super::HawDBError::Storage(format!("private row recovery: {error}"))
+                })
             })?;
         let root = self
             .durable
@@ -1429,14 +1432,18 @@ impl GraphStore {
                 Some(report.recorded_resident_bytes),
             )
             .map_err(|error| {
-                super::HawDBError::Storage(format!("pin private row recovery: {error}"))
+                super::HawDBError::or_stop(&error, || {
+                    super::HawDBError::Storage(format!("pin private row recovery: {error}"))
+                })
             })?;
         let selector = crate::relational::PreparedRelationalRecoverySelector::prepare(
             &immutable,
             root.join(crate::relational::RELATIONAL_ROW_DELTA_MANIFEST_FILE),
         )
         .map_err(|error| {
-            super::HawDBError::Storage(format!("prepare private row selector: {error}"))
+            super::HawDBError::or_stop(&error, || {
+                super::HawDBError::Storage(format!("prepare private row selector: {error}"))
+            })
         })?
         .with_generation_alias(
             immutable.clone(),
@@ -1631,11 +1638,8 @@ impl GraphStore {
                     .to_string(),
             ));
         }
-        task.checkpoint().map_err(|reason| {
-            crate::error::HawDBError::Execution(format!(
-                "relational overflow compaction stopped: {reason}"
-            ))
-        })?;
+        task.checkpoint()
+            .map_err(crate::error::HawDBError::RuntimeTaskStopped)?;
         let durable = self.durable.as_ref().ok_or_else(|| {
             crate::error::HawDBError::Storage(
                 "exact overflow compaction requires durable storage".to_string(),
@@ -1707,11 +1711,8 @@ impl GraphStore {
         let mut remaining_overlay_entries = config.max_overlay_entries.get();
         let mut remaining_overlay_bytes = config.max_overlay_bytes.get();
         for schema in self.relational_state.table_schemas() {
-            task.checkpoint().map_err(|reason| {
-                crate::error::HawDBError::Execution(format!(
-                    "relational overflow compaction stopped: {reason}"
-                ))
-            })?;
+            task.checkpoint()
+                .map_err(crate::error::HawDBError::RuntimeTaskStopped)?;
             let requested_fields = (0..schema.columns.len()).collect::<Vec<_>>();
             let table_root = view
                 .base()
@@ -1772,9 +1773,9 @@ impl GraphStore {
                     | hawdb_storage::relational::RelationalRowPageSnapshotReadError::MissingTable(
                         _,
                     ) => crate::error::HawDBError::StorageIntegrity(message),
-                    hawdb_storage::relational::RelationalRowPageSnapshotReadError::Stopped(_) => {
-                        crate::error::HawDBError::Execution(message)
-                    }
+                    hawdb_storage::relational::RelationalRowPageSnapshotReadError::Stopped(
+                        reason,
+                    ) => crate::error::HawDBError::RuntimeTaskStopped(reason),
                     hawdb_storage::relational::RelationalRowPageSnapshotReadError::Admission(_)
                     | hawdb_storage::relational::RelationalRowPageSnapshotReadError::Durability(
                         _,
@@ -1919,6 +1920,7 @@ fn map_sparse_row_delta_error(error: RelationalRowDeltaError) -> RelationalError
             RelationalError::UnsupportedFormat(error)
         }
         RelationalRowDeltaError::FileDescriptors(error) => RelationalError::FileDescriptors(error),
+        RelationalRowDeltaError::Stopped(reason) => RelationalError::Stopped(reason),
         RelationalRowDeltaError::Admission(message)
         | RelationalRowDeltaError::Invalidated(message) => RelationalError::Admission(message),
         RelationalRowDeltaError::RequiresCheckpoint { tables } => {
@@ -1984,9 +1986,7 @@ fn map_sparse_snapshot_read_error(error: RelationalRowPageSnapshotReadError) -> 
         RelationalRowPageSnapshotReadError::Admission(message) => {
             RelationalError::Admission(message)
         }
-        RelationalRowPageSnapshotReadError::Stopped(reason) => {
-            RelationalError::Admission(reason.to_string())
-        }
+        RelationalRowPageSnapshotReadError::Stopped(reason) => RelationalError::Stopped(reason),
         RelationalRowPageSnapshotReadError::MissingTable(table) => RelationalError::Corruption(
             format!("sparse WAL snapshot is missing authenticated table {table}"),
         ),
@@ -3691,7 +3691,9 @@ mod tests {
                         index: hawdb_storage::relational::RelationalIndexSchema {
                             name: "notes_body".to_string(),
                             columns: vec!["body".to_string()],
+                            included_columns: Vec::new(),
                             unique: false,
+                            predicate: None,
                         },
                     }],
                 },

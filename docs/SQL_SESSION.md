@@ -63,8 +63,14 @@ This session accepts HawDB's existing SQL subset. Unsupported `CREATE EXTENSION`
 PL/pgSQL, triggers, `tsvector`/`to_tsvector`, `jsonb` operators/casts,
 `pg_trgm`, `now()` and `::timestamptz` retain existing Parse/Semantic errors.
 A GBrain-shaped upsert with `jsonb` and `now()` therefore aborts its transaction.
-The existing `ON CONFLICT DO UPDATE RETURNING` combination also remains
-unsupported; ordinary `INSERT RETURNING` and `DO NOTHING RETURNING` work.
+Column-only `RETURNING` works for `INSERT`, `UPDATE`, `DELETE`, and
+`INSERT ... ON CONFLICT DO UPDATE`. Top-level data-modifying CTEs may use those
+returned rows in a containing query. Their writes share one transaction/WAL
+boundary; the containing query reads the pre-statement table snapshot and the
+CTE's returned rows, and any projection, constraint, or output-budget failure
+publishes nothing. Each data-modifying CTE requires `RETURNING`, and one
+statement cannot target the same table from more than one data-modifying CTE.
+Nested data-modifying CTEs remain unsupported.
 SQL is never stripped, rewritten or silently skipped. The session does not
 execute GBrain's Postgres schema unchanged, start a TCP listener, embed PGLite,
 or provide a Node addon.

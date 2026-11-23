@@ -60,6 +60,12 @@ pub(super) fn equality<'a>(
         RelationalPredicate::And(left, right) => {
             equality(left, column).or_else(|| equality(right, column))
         }
+        RelationalPredicate::RowCompare {
+            fields,
+            op: RelationalComparisonOp::Eq,
+        } => fields
+            .iter()
+            .find_map(|field| equality(&field.equality, column)),
         RelationalPredicate::Compare {
             column: name,
             op: RelationalComparisonOp::Eq,
@@ -202,7 +208,7 @@ fn append_zero_with_allocations(
     })?;
     let mut next = context
         .vector_capacity(capacity)
-        .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        .map_err(RelationalError::from_admission)?;
     next.extend_from_slice(value);
     next.push(0);
     Ok(next)

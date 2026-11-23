@@ -13,7 +13,7 @@
 // limitations under the License.
 
 //! Databases written by persistent format 2 (HawDB 0.33.0) carry a full-row
-//! `relational.N.hawdb` checkpoint. Format 3 reads them and then checkpoints
+//! `relational.N.hawdb` checkpoint. Format 6 reads them and then checkpoints
 //! incrementally without writing that file again (#1737).
 
 use super::*;

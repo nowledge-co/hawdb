@@ -538,9 +538,12 @@ fn streaming_node_cancellation_stops_before_next_source_copy() {
         },
         Some(&task),
     );
-    assert!(
-        matches!(output.result, Err(HawDBError::Execution(ref message)) if message.contains("runtime task stopped: cancelled"))
-    );
+    assert!(matches!(
+        output.result,
+        Err(HawDBError::RuntimeTaskStopped(
+            hawdb_core::RuntimeCancellationReason::Cancelled
+        ))
+    ));
     assert_eq!(
         fixture.node_visits.get(),
         1,

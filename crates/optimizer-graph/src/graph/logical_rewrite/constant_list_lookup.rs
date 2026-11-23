@@ -1,0 +1,236 @@
+// Copyright 2026 Nowledge
+// SPDX-License-Identifier: Apache-2.0
+
+//! Turn a proven constant-map first lookup into the existing CASE dispatch.
+//! Dynamic lists, projections and potentially failing property reads stay eager.
+
+use hawdb_core::Value;
+use hawdb_plan_cypher::{ProjectionExpression as E, ScalarBinaryOp};
+
+const MIN_KEYS: usize = 8;
+const MAX_ITEMS: usize = 1024;
+const MAX_KEY_BYTES: usize = 64 * 1024;
+
+pub(super) fn rewrite(expression: &mut E) -> bool {
+    let E::ListIndex { list, index } = expression else {
+        return false;
+    };
+    if !matches!(index.as_ref(), E::Literal(Value::Int(0))) {
+        return false;
+    }
+    let E::ListComprehension(comprehension) = list.as_ref() else {
+        return false;
+    };
+    let E::Literal(Value::List(values)) = &comprehension.list else {
+        return false;
+    };
+    if comprehension.projection.is_some() || !(MIN_KEYS..=MAX_ITEMS).contains(&values.len()) {
+        return false;
+    }
+    let Some(E::Binary {
+        left,
+        op: ScalarBinaryOp::Eq,
+        right,
+    }) = &comprehension.predicate
+    else {
+        return false;
+    };
+    let key = |expression: &E| match expression {
+        E::LocalVariable {
+            name,
+            property: Some(property),
+        } if name == &comprehension.variable => Some(property.clone()),
+        _ => None,
+    };
+    let (property, operand) = if let Some(property) = key(left) {
+        (property, right.as_ref())
+    } else if let Some(property) = key(right) {
+        (property, left.as_ref())
+    } else {
+        return false;
+    };
+    if !matches!(operand, E::Property { .. } | E::Column(_)) {
+        return false;
+    }
+    let mut keys = 0;
+    let mut key_bytes = 0usize;
+    for value in values {
+        match value {
+            Value::Null => {}
+            Value::Map(fields) => match fields.get(&property) {
+                Some(Value::String(key)) => {
+                    keys += 1;
+                    key_bytes = key_bytes.saturating_add(key.len());
+                    if key_bytes > MAX_KEY_BYTES {
+                        return false;
+                    }
+                }
+                Some(Value::Null) | None => {}
+                _ => return false,
+            },
+            _ => return false,
+        }
+    }
+    if keys < MIN_KEYS {
+        return false;
+    }
+    // Every source element is now proven safe to inspect, including elements
+    // after the first match. CASE cannot hide a later comprehension error.
+    let operand = Box::new(operand.clone());
+    let E::ListIndex { list, .. } = std::mem::replace(expression, E::Literal(Value::Null)) else {
+        unreachable!()
+    };
+    let E::ListComprehension(comprehension) = *list else {
+        unreachable!()
+    };
+    let E::Literal(Value::List(values)) = comprehension.list else {
+        unreachable!()
+    };
+    let mut branches = Vec::with_capacity(keys);
+    for value in values {
+        if let Value::Map(fields) = &value
+            && let Some(Value::String(key)) = fields.get(&property)
+        {
+            branches.push((E::Literal(Value::String(key.clone())), E::Literal(value)));
+        }
+    }
+    // Source order preserves the first duplicate, including maps whose other
+    // fields are NULL. The executor builds an admitted, query-owned index.
+    *expression = E::Case {
+        operand: Some(operand),
+        branches,
+        otherwise: None,
+    };
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hawdb_plan_cypher::ListComprehensionProjection;
+    use std::collections::BTreeMap;
+
+    fn expression() -> E {
+        E::ListIndex {
+            list: Box::new(E::ListComprehension(Box::new(
+                ListComprehensionProjection {
+                    variable: "candidate".into(),
+                    list: E::Literal(Value::List(
+                        (0..20)
+                            .map(|index| {
+                                Value::Map(BTreeMap::from([
+                                    ("id".into(), Value::String(format!("key-{}", index % 10))),
+                                    ("score".into(), Value::Int(index)),
+                                ]))
+                            })
+                            .collect(),
+                    )),
+                    predicate: Some(E::Binary {
+                        left: Box::new(E::LocalVariable {
+                            name: "candidate".into(),
+                            property: Some("id".into()),
+                        }),
+                        op: ScalarBinaryOp::Eq,
+                        right: Box::new(E::Column("key".into())),
+                    }),
+                    projection: None,
+                },
+            ))),
+            index: Box::new(E::Literal(Value::Int(0))),
+        }
+    }
+
+    fn comprehension(expression: &mut E) -> &mut ListComprehensionProjection {
+        let E::ListIndex { list, .. } = expression else {
+            unreachable!()
+        };
+        let E::ListComprehension(comprehension) = list.as_mut() else {
+            unreachable!()
+        };
+        comprehension
+    }
+
+    #[test]
+    fn constant_list_lookup_preserves_source_order_and_is_idempotent() {
+        for reversed in [false, true] {
+            let mut expression = expression();
+            if reversed {
+                let Some(E::Binary { left, right, .. }) =
+                    &mut comprehension(&mut expression).predicate
+                else {
+                    unreachable!()
+                };
+                std::mem::swap(left, right);
+            }
+            assert!(rewrite(&mut expression));
+            let E::Case {
+                operand: Some(operand),
+                branches,
+                otherwise: None,
+            } = &expression
+            else {
+                panic!("{expression:?}")
+            };
+            assert_eq!(operand.as_ref(), &E::Column("key".into()));
+            assert_eq!(branches.len(), 20);
+            for (index, (key, value)) in branches.iter().enumerate() {
+                assert_eq!(
+                    key,
+                    &E::Literal(Value::String(format!("key-{}", index % 10)))
+                );
+                let E::Literal(Value::Map(fields)) = value else {
+                    panic!("{value:?}")
+                };
+                assert_eq!(fields["score"], Value::Int(index as i64));
+            }
+            assert!(!rewrite(&mut expression));
+        }
+    }
+
+    #[test]
+    fn constant_list_lookup_refuses_unsafe_or_unbounded_shapes() {
+        for mutation in 0..10 {
+            let mut expression = expression();
+            let list = comprehension(&mut expression);
+            let E::Literal(Value::List(values)) = &mut list.list else {
+                unreachable!()
+            };
+            match mutation {
+                0 => values.clear(),
+                1 => values.truncate(MIN_KEYS - 1),
+                2 => values.resize(MAX_ITEMS + 1, values[0].clone()),
+                3 => values.push(Value::String("invalid trailing element".into())),
+                4 => values.push(Value::Map(BTreeMap::from([("id".into(), Value::Int(1))]))),
+                5 => list.list = E::Column("dynamic".into()),
+                6 => {
+                    list.projection = Some(E::LocalVariable {
+                        name: "candidate".into(),
+                        property: None,
+                    })
+                }
+                7 => {
+                    let Some(E::Binary { op, .. }) = &mut list.predicate else {
+                        unreachable!()
+                    };
+                    *op = ScalarBinaryOp::NotEq;
+                }
+                8 => {
+                    let E::ListIndex { index, .. } = &mut expression else {
+                        unreachable!()
+                    };
+                    **index = E::Literal(Value::Int(-1));
+                }
+                9 => {
+                    values[0] = Value::Map(BTreeMap::from([(
+                        "id".into(),
+                        Value::String("x".repeat(MAX_KEY_BYTES + 1)),
+                    )]))
+                }
+                _ => unreachable!(),
+            }
+            let original = expression.clone();
+            assert!(!rewrite(&mut expression), "mutation {mutation}");
+            assert_eq!(expression, original);
+        }
+    }
+}

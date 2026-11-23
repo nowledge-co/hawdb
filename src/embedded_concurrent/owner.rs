@@ -9,8 +9,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard, TryLockError};
 
 #[derive(Debug)]
-pub(super) struct EmbeddedOwner {
+pub(crate) struct EmbeddedOwner {
     state: Mutex<HawDBEmbedded>,
+    metadata: Mutex<Arc<crate::api::RuntimeSqlPlanningSnapshot>>,
+    runtime_binding: crate::api::EmbeddedRuntimeBinding,
     published: Mutex<Option<Arc<PublishedConcurrentRead>>>,
     failed: AtomicBool,
     user_transaction: AtomicBool,
@@ -20,15 +22,22 @@ pub(super) struct EmbeddedOwner {
 }
 
 #[derive(Debug)]
-pub(super) struct ConcurrentRuntime {
+pub(crate) struct ConcurrentRuntime {
     identity: DatabaseInstanceIdentity,
     database: ConcurrentDatabase,
 }
 
 impl EmbeddedOwner {
-    pub(super) fn new(embedded: HawDBEmbedded) -> Self {
+    pub(crate) fn new(mut embedded: HawDBEmbedded) -> Self {
+        let runtime_binding =
+            crate::api::EmbeddedRuntimeBinding::new(embedded.runtime_governor().clone());
+        embedded.bind_runtime(&runtime_binding);
         let user_transaction = embedded.transaction_active();
         Self {
+            metadata: Mutex::new(Arc::new(
+                embedded.database().runtime_sql_planning_snapshot(),
+            )),
+            runtime_binding,
             state: Mutex::new(embedded),
             published: Mutex::new(None),
             failed: AtomicBool::new(false),
@@ -37,11 +46,11 @@ impl EmbeddedOwner {
         }
     }
 
-    pub(super) fn inspect(&self) -> MutexGuard<'_, HawDBEmbedded> {
+    pub(crate) fn inspect(&self) -> MutexGuard<'_, HawDBEmbedded> {
         self.state.lock().unwrap_or_else(|error| error.into_inner())
     }
 
-    pub(super) fn autocommit(&self) -> Result<MutexGuard<'_, HawDBEmbedded>> {
+    pub(crate) fn autocommit(&self) -> Result<MutexGuard<'_, HawDBEmbedded>> {
         self.ensure_usable()?;
         let state = self.state.lock().map_err(|_| poisoned())?;
         self.ensure_usable()?;
@@ -49,19 +58,19 @@ impl EmbeddedOwner {
         Ok(state)
     }
 
-    pub(super) fn execution(&self) -> Result<RwLockReadGuard<'_, ()>> {
+    pub(crate) fn execution(&self) -> Result<RwLockReadGuard<'_, ()>> {
         let guard = self.administration.read().map_err(|_| poisoned())?;
         self.ensure_usable()?;
         Ok(guard)
     }
 
-    pub(super) fn administration(&self) -> RwLockWriteGuard<'_, ()> {
+    pub(crate) fn administration(&self) -> RwLockWriteGuard<'_, ()> {
         self.administration
             .write()
             .unwrap_or_else(|error| error.into_inner())
     }
 
-    pub(super) fn direct_write(&self) -> EmbeddedGuard<'_> {
+    pub(crate) fn direct_write(&self) -> EmbeddedGuard<'_> {
         EmbeddedGuard {
             state: self.inspect(),
             owner: self,
@@ -71,11 +80,12 @@ impl EmbeddedOwner {
         }
     }
 
-    pub(super) fn concurrent(
+    pub(crate) fn concurrent(
         self: &Arc<Self>,
         cached: &Mutex<Option<ConcurrentRuntime>>,
     ) -> Result<ConcurrentDatabase> {
-        let identity = self.autocommit()?.database().instance_identity()?;
+        self.ensure_usable()?;
+        let identity = self.sql_planning()?.identity.clone();
         let mut cached = cached.lock().map_err(|_| poisoned())?;
         if let Some(cached) = cached.as_ref()
             && cached.identity == identity
@@ -88,6 +98,42 @@ impl EmbeddedOwner {
             database: database.clone(),
         });
         Ok(database)
+    }
+
+    pub(crate) fn governor(&self) -> &crate::RuntimeGovernor {
+        self.runtime_binding.governor()
+    }
+
+    pub(crate) fn sql_planning(&self) -> Result<Arc<crate::api::RuntimeSqlPlanningSnapshot>> {
+        self.ensure_usable()?;
+        Ok(self.metadata.lock().map_err(|_| poisoned())?.clone())
+    }
+
+    pub(crate) fn view(&self) -> Result<Arc<PublishedConcurrentRead>> {
+        let view = self.read_view()?;
+        if view.needs_checkpoint_handoff()? {
+            // Cached reads must not wait for a writer or group durability.
+            // An idle owner can adopt a completed physical generation instead
+            // of keeping the old checkpoint pinned until the next mutation.
+            if let Some(mut database) = self.try_lock()? {
+                view.adopt_checkpoint_handoff(&mut database)?;
+                drop(database);
+                return self.read_view();
+            }
+        }
+        Ok(view)
+    }
+
+    pub(crate) fn finish_read<T>(&self, result: Result<T>) -> Result<T> {
+        if result.is_ok() {
+            self.ensure_usable()?;
+            let view = self.published.lock().map_err(|_| poisoned())?.clone();
+            if let Some(view) = view {
+                view.needs_checkpoint_handoff()?;
+                view.snapshot.ensure_usable()?;
+            }
+        }
+        result
     }
 
     fn ensure_usable(&self) -> Result<()> {
@@ -151,12 +197,15 @@ impl SharedDatabaseOwner for EmbeddedOwner {
         // Keep state -> publication lock order, and never retain the publication
         // mutex across runtime admission/recovery callbacks during cold capture.
         let view = Arc::new(PublishedConcurrentRead::capture(state.database())?);
+        // Deferred persistent opens have no branch template cache until capture
+        // admits the runtime. Subsequent SQL preparation must use that cache.
+        *self.metadata.lock().map_err(|_| poisoned())? = Arc::new(view.sql_planning.clone());
         *self.published.lock().map_err(|_| poisoned())? = Some(Arc::clone(&view));
         Ok(view)
     }
 }
 
-pub(super) struct EmbeddedGuard<'a> {
+pub(crate) struct EmbeddedGuard<'a> {
     // Field order releases the canonical mutex before retiring an old source.
     state: MutexGuard<'a, HawDBEmbedded>,
     owner: &'a EmbeddedOwner,
@@ -188,9 +237,21 @@ impl Drop for EmbeddedGuard<'_> {
             self.owner.failed.store(true, Ordering::Release);
             return;
         }
+        if !self.refresh {
+            // Administration can replace either the full embedded handle or
+            // its database. Keep admission, storage and new retained work on
+            // the stable governor also used by in-flight work and Tokio.
+            self.state.bind_runtime(&self.owner.runtime_binding);
+        }
         self.owner
             .user_transaction
             .store(self.state.transaction_active(), Ordering::Release);
+        *self
+            .owner
+            .metadata
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) =
+            Arc::new(self.state.database().runtime_sql_planning_snapshot());
         let next = if self.refresh {
             match PublishedConcurrentRead::capture(self.state.database()) {
                 Ok(view) => Some(Arc::new(view)),
@@ -227,5 +288,7 @@ impl DerefMut for DatabaseGuard<'_> {
 }
 
 fn poisoned() -> HawDBError {
-    HawDBError::StorageIntegrity("Tokio database publication is poisoned; close and reopen".into())
+    HawDBError::StorageIntegrity(
+        "embedded database publication is poisoned; close and reopen".into(),
+    )
 }

@@ -73,6 +73,15 @@ pub(crate) fn coerce_select(
     for expression in expressions {
         coercion.apply(expression)?;
     }
+    if let Some(predicate) = &mut select.subquery_predicate {
+        let mut result = Ok(());
+        predicate.visit_scalar_expressions_mut(&mut |expression| {
+            if result.is_ok() {
+                result = coercion.apply(expression);
+            }
+        });
+        result?;
+    }
     Ok(())
 }
 

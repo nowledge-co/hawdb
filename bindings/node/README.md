@@ -112,6 +112,7 @@ npm ci
 npm run build -- --native target/debug/libhawdb_node.dylib
 npm run typecheck
 npm test
+node node_modules/electron/install.js
 npm run test:electron
 ```
 
@@ -120,6 +121,11 @@ on Windows. On a headless Linux runner, use `xvfb-run -a npm run test:electron`.
 The fixture's Linux `--no-sandbox` flag is restricted to this CI test; it is not
 an application configuration recommendation. Tests create independent temporary
 database paths. Failures of Electron qualification preserve their artifacts.
+CI installs the lockfile-pinned Electron runtime in a separate step with up to
+three attempts, waiting 5 and 10 seconds between failures, and a 10-minute step
+ceiling. The upstream installer retains its checksum verification and download
+cache. Exhausted installation attempts fail the job; the actual and packaged
+Electron tests run once after installation succeeds.
 
 Lint this independent workspace explicitly:
 

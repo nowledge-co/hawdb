@@ -555,6 +555,29 @@ A metadata-only search projection epoch advance that published nothing raises
 failure: the projection keeps its previous epoch; apply or catch up the range
 normally instead.
 
+Bounded search projection catch-up raises `ExecutionError` with
+`kind == "search_projection_prefix_behind_source"`,
+`complete_through_commit_epoch`, `source_commit_epoch` and
+`retryable == False` when the selected changefeed prefix ends before the
+source head; retrying the same budgets refuses again, so cover the whole
+pending interval or re-prepare. A batch larger than its per-batch limit raises
+`ExecutionError` with `kind == "search_projection_batch_budget_exceeded"`,
+`budget` (`"change_batch"`, `"graph_delta"` or `"projection_delta"`),
+`commit_epoch` (the oversized source commit, or `None`),
+`required_operations`, `limit` and `retryable == False`; it was a
+`StorageError` in 0.37 and earlier but is not a storage failure. Neither publishes
+anything, and both keep their message text.
+
+A qualified out-of-core search open whose production qualification is stale
+raises `ExecutionError` with
+`kind == "search_production_qualification_graph_epoch_mismatch"`,
+`expected_canonical_graph_commit_epoch`, `opened_graph_commit_epoch` and
+`retryable == False` when the graph was written after qualification, and
+`kind == "search_production_qualification_refused"` with the sorted
+`blocker_codes` when the qualification report does not qualify the projection
+for the release. Both were a `StorageError` in 0.37 and earlier but are not storage
+failures and keep their message text: qualify again and reopen.
+
 Memory-ledger and spill-quota refusals, and the read ceilings described under
 [Read budgets](#read-budgets-and-query-plans), raise `exceptions.ResourceBudgetError`,
 a subclass of `ExecutionError`, with `resource`, `scope`, `owner`,
@@ -698,6 +721,85 @@ runs, not by `params`: a `datetime` or plain `Enum` field raises
 a batch. Run statements that must all apply or none in `db.transaction()`.
 Engine errors stay `hawdb.exceptions`.
 
+## Arrow, pandas and Polars (optional)
+
+`QueryResult.to_arrow()` returns every row of a result as a `pyarrow.Table`,
+with one column per result column in result order. `to_pandas()` and
+`to_polars()` convert that table with `pyarrow.Table.to_pandas()` and
+`polars.from_arrow()`. All three convert the whole
+materialized result, whatever has been fetched, and do not move the fetch
+cursor. `import hawdb` imports none of these packages: each method imports
+what it needs when called, and raises `ImportError` naming the extra that
+installs it.
+
+```bash
+pip install 'hawdb[arrow]'    # to_arrow()
+pip install 'hawdb[pandas]'   # to_pandas(), with PyArrow
+pip install 'hawdb[polars]'   # to_polars(), with PyArrow
+```
+
+```python
+result = db.execute("MATCH (s:Stock) RETURN s.code AS code, s.price AS price")
+table = result.to_arrow()     # pyarrow.Table
+frame = result.to_pandas()    # pandas.DataFrame
+```
+
+Results declare no column types, so each column's Arrow type comes from its
+values. The conversion reads the engine's values, not their Python form, so a
+UUID is told apart from a string and temporal values keep their nanoseconds:
+
+| Value | Arrow type |
+| --- | --- |
+| only nulls, or no rows | `null` |
+| boolean, integer, float | `bool`, `int64`, `float64` |
+| decimal | `decimal128(p, s)`, or `decimal256` beyond 38 digits: the largest scale and the most integer digits in the column |
+| string | `string` |
+| UUID | `string`, the canonical text that fetches return |
+| binary | `binary` |
+| vector | `fixed_size_list<float32>[dimension]`, or `list<float32>` when dimensions differ |
+| date | `date32` |
+| local time | `time64[ns]` |
+| local datetime | `timestamp[ns]` |
+| zoned datetime | `timestamp[ns, tz]` of the instant; `tz` is the offset all values share, such as `+02:00`, or `UTC` when they differ or the offset has seconds |
+| duration | `month_day_nano_interval` |
+| list | `list<item>` |
+| map, including a node or relationship | `struct` with a field for every key of any map in the column, null where a map lacks the key |
+
+A map becomes a `struct` rather than an Arrow `map` because its values differ
+in type, such as a node's `name` and `age`, while an Arrow `map` has one
+value type. A node stays one nested value in its column; its properties do
+not become columns. A UUID shares `string` with strings, so a UUID column
+reads back as text, as from `fetchall()`. A `DECIMAL(10, 2)` column holding
+`1.50` and `120.00` becomes `decimal128(5, 2)`, from its values rather than
+its declaration.
+
+A column holds one kind of value besides nulls. A float after integers, a
+string after integers, or a map after lists raises `TypeError` naming the
+column, the row counted from 0 and the place inside a nested value, such as
+`column "n", row 1, at $.age`; cast the values in the query instead. A value
+outside its Arrow type raises `ValueError`: a datetime outside 1677-09-21 to
+2262-04-11 for `timestamp[ns]`, or a duration beyond 32-bit months or days
+or 64-bit nanoseconds. Only the offsets of zoned datetimes can be lost: a
+column whose values have different offsets, or an offset with seconds such as
+`+00:00:30` that Arrow cannot name, is `UTC`. Their instants are kept.
+
+`to_pandas()` keeps integers exact. pandas' default stores an integer column
+with nulls as `float64`, which rounds integers beyond 2^53, so every integer
+column becomes pandas' nullable `Int64` dtype, and integers inside nested
+values stay Python integers next to their nulls. Like pandas' own conversion,
+`to_pandas()` refuses `time64[ns]` values with nonzero nanoseconds and dates
+outside years 1 to 9999; `result.to_arrow().to_pandas(types_mapper=pandas.ArrowDtype)`
+keeps them in Arrow-backed columns.
+
+Polars 1.0 through 2.1 cannot import `month_day_nano_interval` or
+`decimal256`. `to_polars()` raises `TypeError` for a column that needs
+`decimal256`, decimals wider than 38 digits, even inside a nested value,
+because Polars would panic with a `PanicException` that `except Exception`
+does not catch. Use `to_arrow()` for such results.
+
+Arrow conversion builds Python objects for one column at a time, like
+`fetchall()` for that column, before PyArrow copies them.
+
 ## LlamaIndex property graph store
 
 [`integrations/llama-index-graph-stores-hawdb`](../../integrations/llama-index-graph-stores-hawdb/README.md)
@@ -733,7 +835,10 @@ the compiled module's runtime signatures.
 Without Pydantic installed, the extra's tests skip and the rest prove that
 `import hawdb` does not need it. Install `pydantic` to run them. Bazel runs the
 two environments as `//bindings/python:hawdb_python_tests` and
-`//bindings/python:hawdb_python_pydantic_tests`.
+`//bindings/python:hawdb_python_pydantic_tests`. Likewise, the conversions in
+`test_arrow_export.py` skip without PyArrow, pandas or Polars, while its
+missing-package tests run either way; the pip job installs pinned versions
+of the three and runs them.
 
 The default unified target uses the explicit deadline declared by upstream
 main. It includes every ordinary and retained/Arrow test with per-case database
@@ -751,5 +856,8 @@ run `CARGO_BAZEL_REPIN=1 CARGO_BAZEL_REPIN_ONLY=python_crates bazel build //bind
 
 ## Scope and follow-ups
 
-Not included yet: async calls, general-query Arrow output, schema introspection helpers.
+Not included yet: async calls, schema introspection helpers, Arrow output
+streamed from general queries (`to_arrow()` converts the materialized
+result), and loading Arrow tables through `executemany`
+([#942](https://github.com/nowledge-co/hawdb/issues/942)).
 These are tracked for follow-up once the base surface settles.

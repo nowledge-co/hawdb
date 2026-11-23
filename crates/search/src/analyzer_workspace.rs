@@ -185,7 +185,11 @@ where
                 work(worker_workspace)
             })
             .map_err(|error| {
-                HawDBError::Execution(format!("search analyzer worker creation failed: {error}"))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Execution(format!(
+                        "search analyzer worker creation failed: {error}"
+                    ))
+                })
             })?;
         match handle.join() {
             Ok(result) => result,

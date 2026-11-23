@@ -291,3 +291,42 @@ fn concurrent_retained_admission_cannot_overbook_the_governor() {
     drop(permit);
     assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
 }
+
+#[test]
+fn resident_charge_never_refuses_and_holds_admission_until_released() {
+    // Already-resident memory is charged without a process-memory
+    // reservation: the resident sample already includes it.
+    let policy = ProcessMemoryPolicy::new(ProcessMemoryPolicyConfig::new(
+        NonZeroU64::new(1 << 20).unwrap(),
+    ));
+    policy.update(ProcessMemorySnapshot {
+        capabilities: ProcessMemoryCapabilities {
+            resident_memory: true,
+            ..Default::default()
+        },
+        resident_bytes: 0,
+        peak_resident_bytes: 0,
+        total_page_faults: None,
+        minor_page_faults: None,
+        major_page_faults: None,
+    });
+    let governor = governor(Some(policy.clone()));
+    let permit = governor
+        .try_admit(RuntimeWorkRequest::new(
+            RuntimeWorkPriority::Foreground,
+            RuntimeWorkKind::Control,
+        ))
+        .unwrap();
+    let mut owner = permit.resident_memory_owner();
+    assert_eq!(owner.bytes(), 0);
+    assert!(owner.shares_governor_with(&permit));
+    assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+    owner.charge_resident(150);
+    assert_eq!(owner.bytes(), 150);
+    assert_eq!(governor.snapshot().admitted_memory_bytes, 150);
+    assert_eq!(policy.snapshot().unobserved_reserved_bytes, 0);
+    let refused = permit.reserve_retained_memory(1).unwrap_err();
+    assert_eq!(refused.code, RuntimeAdmissionCode::MemorySaturated);
+    drop(owner);
+    assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+}

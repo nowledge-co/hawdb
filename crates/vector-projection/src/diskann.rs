@@ -620,9 +620,7 @@ fn with_distance_work<T>(
             && let Err(reason) = task.checkpoint()
         {
             cancellation = Some(reason);
-            return Err(hawdb_core::HawDBError::Execution(
-                "DiskANN distance cancelled".into(),
-            ));
+            return Err(hawdb_core::HawDBError::RuntimeTaskStopped(reason));
         }
         Ok(())
     });

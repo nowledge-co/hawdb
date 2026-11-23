@@ -208,7 +208,12 @@ fn checkpoint_units_overflow_encoded_reads_match_complete_bytes_and_each_unit_ca
                 .read_encoded_extent_with_work_context(&descriptor, &probe.context(local.clone()))
                 .unwrap_err();
             assert!(
-                error.to_string().contains("checkpoint build I/O stopped"),
+                matches!(
+                    error,
+                    RelationalOverflowPublicationError::Stopped(
+                        hawdb_core::RuntimeCancellationReason::Cancelled
+                    )
+                ),
                 "{error:?}"
             );
             probe.assert_released(&local);

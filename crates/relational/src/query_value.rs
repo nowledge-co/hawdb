@@ -82,6 +82,42 @@ pub fn bind_sql_value(value: &SqlValue, parameters: &[Value]) -> Result<Value> {
     hawdb_expression::sql::bind_sql_value(value, parameters)
 }
 
+pub(crate) fn octet_length_argument(arguments: &[hawdb_sql::SqlFunctionArgument]) -> Result<&Expr> {
+    let [hawdb_sql::SqlFunctionArgument::Expression(expression)] = arguments else {
+        return Err(HawDBError::Semantic(
+            "OCTET_LENGTH requires exactly one scalar argument".into(),
+        ));
+    };
+    Ok(expression)
+}
+
+pub(crate) fn validate_octet_length_type(kind: Option<hawdb_core::LogicalType>) -> Result<()> {
+    if kind.is_some_and(|kind| !kind.is_utf8() && kind != hawdb_core::LogicalType::Binary) {
+        return Err(HawDBError::Semantic(
+            "OCTET_LENGTH requires TEXT or BYTEA input".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Reads byte length from borrowed values or overflow metadata without hydration.
+pub(crate) fn octet_length(value: RelationalValueRef<'_>) -> Result<RelationalValueRef<'static>> {
+    let bytes = match value {
+        RelationalValueRef::Null => return Ok(RelationalValueRef::Null),
+        RelationalValueRef::Text(value) => u64::try_from(value.len()).unwrap_or(u64::MAX),
+        RelationalValueRef::Bytea(value) => u64::try_from(value.len()).unwrap_or(u64::MAX),
+        RelationalValueRef::Overflow(reference) => reference.uncompressed_bytes,
+        _ => {
+            return Err(HawDBError::Semantic(
+                "OCTET_LENGTH requires TEXT or BYTEA input".into(),
+            ));
+        }
+    };
+    Ok(RelationalValueRef::BigInt(
+        i64::try_from(bytes).unwrap_or(i64::MAX),
+    ))
+}
+
 pub fn value_to_relational(value: Value) -> Result<RelationalValue> {
     match value {
         Value::Null => Ok(RelationalValue::Null),

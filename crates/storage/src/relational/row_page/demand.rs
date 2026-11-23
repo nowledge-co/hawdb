@@ -576,12 +576,13 @@ impl RelationalRowPageDemandReader {
                     CheckpointKeyEncodeError::Key(
                         crate::relational::RelationalError::Corruption(message),
                     ) => RelationalRowPageDemandReadError::Admission(message),
+                    CheckpointKeyEncodeError::Key(crate::relational::RelationalError::Stopped(
+                        reason,
+                    )) => RelationalRowPageDemandReadError::Stopped(reason),
                     CheckpointKeyEncodeError::Key(error) => {
                         RelationalRowPageDemandReadError::Admission(error.to_string())
                     }
-                    CheckpointKeyEncodeError::Work(error) => {
-                        RelationalRowPageDemandReadError::Admission(error.to_string())
-                    }
+                    CheckpointKeyEncodeError::Work(error) => checkpoint_key_work_error(error),
                 };
                 let encoding =
                     CheckpointKeyEncoding::new(primary_key, &[], context).map_err(map_error)?;
@@ -1001,6 +1002,15 @@ impl RelationalRowPageDemandReader {
     }
 }
 
+fn checkpoint_key_work_error(
+    error: crate::background::CheckpointWorkError,
+) -> RelationalRowPageDemandReadError {
+    match error.stop_reason() {
+        Some(reason) => RelationalRowPageDemandReadError::Stopped(reason),
+        None => RelationalRowPageDemandReadError::Admission(error.to_string()),
+    }
+}
+
 struct DemandReadContext<'a> {
     reader: &'a RelationalRowPageDemandReader,
     limits: RelationalRowPageDemandReadLimits,
@@ -1337,6 +1347,9 @@ impl<'a> DemandReadContext<'a> {
             RelationalRowPageError::Admission(message) => {
                 RelationalRowPageDemandReadError::Admission(message)
             }
+            RelationalRowPageError::Stopped(reason) => {
+                RelationalRowPageDemandReadError::Stopped(reason)
+            }
             RelationalRowPageError::Corrupt(message) => {
                 RelationalRowPageDemandReadError::Corrupt(message)
             }
@@ -1367,6 +1380,11 @@ impl<'a> DemandReadContext<'a> {
             }
             RelationalOverflowPublicationError::Admission(message) => {
                 RelationalRowPageDemandReadError::Admission(message)
+            }
+            // Demand reads never publish. Preserve the diagnostic if a future
+            // storage implementation nevertheless routes this variant here.
+            RelationalOverflowPublicationError::PublishOutcomeUnknown(error) => {
+                RelationalRowPageDemandReadError::Durability(error.to_string())
             }
             RelationalOverflowPublicationError::Corrupt(message) => {
                 RelationalRowPageDemandReadError::Corrupt(message)
@@ -1640,6 +1658,13 @@ fn map_row_publication_error(
         }
         RelationalRowPagePublicationError::Admission(message) => {
             RelationalRowPageDemandReadError::Admission(message)
+        }
+        RelationalRowPagePublicationError::Stopped(reason) => {
+            RelationalRowPageDemandReadError::Stopped(reason)
+        }
+        // Demand reads never publish; keep the unexpected diagnostic strict.
+        RelationalRowPagePublicationError::PublishOutcomeUnknown(error) => {
+            RelationalRowPageDemandReadError::Durability(error.to_string())
         }
         RelationalRowPagePublicationError::Corrupt(message) => {
             RelationalRowPageDemandReadError::Corrupt(message)

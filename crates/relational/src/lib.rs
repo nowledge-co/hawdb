@@ -67,9 +67,10 @@ pub use read_profile::{
 // These are internal ownership seams. Hosts continue to use the embedded facade.
 #[doc(hidden)]
 pub use statement::{
-    compile_prepared_relational_statement_with_result, compile_relational_statement_sql,
-    compile_relational_statement_sql_with_result, CompiledRelationalStatement,
-    RelationalReturningProjection,
+    compile_prepared_data_modifying_cte_query, compile_prepared_relational_statement_with_result,
+    compile_relational_statement_sql, compile_relational_statement_sql_with_result,
+    materialize_data_modifying_ctes, CompiledDataModifyingCteQuery, CompiledRelationalStatement,
+    RelationalDataModifyingCte, RelationalReturningProjection,
 };
 
 #[doc(hidden)]

@@ -367,6 +367,9 @@ impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
             Some(Err(RelationalIndexShadowError::FileDescriptors(error))) => {
                 Err(HawDBError::FileDescriptors(error))
             }
+            Some(Err(RelationalIndexShadowError::Stopped(reason))) => {
+                Err(HawDBError::RuntimeTaskStopped(reason))
+            }
             Some(Err(RelationalIndexShadowError::Admission(_)))
                 if matches!(self.mode, RelationalIndexReadMode::DemandPaged(_)) =>
             {
@@ -550,6 +553,9 @@ impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
             }
             Some(Err(RelationalIndexShadowError::FileDescriptors(error))) => {
                 Err(HawDBError::FileDescriptors(error))
+            }
+            Some(Err(RelationalIndexShadowError::Stopped(reason))) => {
+                Err(HawDBError::RuntimeTaskStopped(reason))
             }
             Some(Ok(report)) => {
                 self.record_admitted_success(
@@ -752,6 +758,9 @@ impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
             Some(Err(RelationalIndexShadowError::FileDescriptors(error))) => {
                 Err(HawDBError::FileDescriptors(error))
             }
+            Some(Err(RelationalIndexShadowError::Stopped(reason))) => {
+                Err(HawDBError::RuntimeTaskStopped(reason))
+            }
             Some(Ok(report)) => {
                 self.record_admitted_success(
                     table,
@@ -883,7 +892,7 @@ impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
         self.context
             .read_context
             .admit_reported_usage(report)
-            .map_err(|error| HawDBError::Execution(error.to_string()))?;
+            .map_err(HawDBError::from_execution_error)?;
         self.record_admitted_success(
             table,
             index,

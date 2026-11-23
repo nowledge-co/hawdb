@@ -174,12 +174,12 @@ impl EncodeWork for AllocatedRowWork<'_> {
     ) -> Result<Vec<T>, RelationalRowPageError> {
         self.scratch
             .vector_capacity(capacity)
-            .map_err(|error| RelationalRowPageError::Admission(error.to_string()))
+            .map_err(RelationalRowPageError::from_admission)
     }
     fn output_vector_capacity<T>(&self, capacity: usize) -> Result<Vec<T>, RelationalRowPageError> {
         self.output
             .vector_capacity(capacity)
-            .map_err(|error| RelationalRowPageError::Admission(error.to_string()))
+            .map_err(RelationalRowPageError::from_admission)
     }
 }
 

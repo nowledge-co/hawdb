@@ -532,7 +532,9 @@ impl<'a> AdmittedMetadataLookup<'a> {
             .position(|window| window == b"\n\n")
             .ok_or_else(|| HawDBError::Storage("text metadata header is missing".into()))?;
         let header = std::str::from_utf8(&prefix[..header_end]).map_err(|error| {
-            HawDBError::Storage(format!("text metadata header is invalid: {error}"))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!("text metadata header is invalid: {error}"))
+            })
         })?;
         let uncompressed_len = crate::parse_snapshot_header(header)?
             .uncompressed_len

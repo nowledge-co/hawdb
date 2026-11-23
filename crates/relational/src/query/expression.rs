@@ -38,8 +38,18 @@ pub(super) fn projection_uses_non_aggregate_scalar_function(
             | ExprKind::Negate(_)
             | ExprKind::Cast { .. }
             | ExprKind::TimestampCast { .. } => !projection_contains_aggregate(projection),
-            ExprKind::Function { name, .. } => {
+            ExprKind::Function {
+                name, arguments, ..
+            } => {
                 (name == "coalesce"
+                    || (name == "octet_length"
+                        && !matches!(
+                            arguments.as_slice(),
+                            [SqlFunctionArgument::Expression(Expr {
+                                kind: ExprKind::Column(_),
+                                ..
+                            })]
+                        ))
                     || hawdb_core::VectorDistance::from_function_name(name).is_some())
                     && !projection_contains_aggregate(projection)
             }
@@ -48,7 +58,7 @@ pub(super) fn projection_uses_non_aggregate_scalar_function(
     })
 }
 
-pub(super) fn validate_non_aggregate_coalesce_projections(
+pub(super) fn validate_scalar_expressions(
     select: &SelectStatement,
     parameters: &[Value],
     state: &RelationalState,
@@ -63,7 +73,8 @@ pub(super) fn validate_non_aggregate_coalesce_projections(
             | ExprKind::Cast { .. }
             | ExprKind::TimestampCast { .. } => true,
             ExprKind::Function { name, .. } => {
-                name == "coalesce" || hawdb_core::VectorDistance::from_function_name(name).is_some()
+                matches!(name.as_str(), "coalesce" | "octet_length")
+                    || hawdb_core::VectorDistance::from_function_name(name).is_some()
             }
             _ => false,
         };
@@ -71,7 +82,26 @@ pub(super) fn validate_non_aggregate_coalesce_projections(
             infer_coalesce_scalar_type(expression, select, parameters, state)?;
         }
     }
-    Ok(())
+    let mut validation = Ok(());
+    for expression in select
+        .projection
+        .iter()
+        .filter_map(|projection| match projection {
+            SelectProjection::Expression { expression, .. } => Some(expression),
+            SelectProjection::Wildcard => None,
+        })
+        .chain(select.selection.iter())
+        .chain(select.joins.iter().map(|join| &join.on))
+    {
+        expression.visit(&mut |expression| {
+            if validation.is_ok()
+                && matches!(&expression.kind, ExprKind::Function { name, .. } if name == "octet_length")
+            {
+                validation = infer_coalesce_scalar_type(expression, select, parameters, state).map(|_| ());
+            }
+        });
+    }
+    validation
 }
 
 pub(super) fn infer_coalesce_scalar_type(
@@ -106,6 +136,28 @@ pub(super) fn infer_coalesce_scalar_type(
             kind: ExprKind::Value(value),
             ..
         } => Ok(value_to_relational(bind_sql_value(value, parameters)?)?.scalar_type()),
+        Expr {
+            kind:
+                ExprKind::Function {
+                    name,
+                    arguments,
+                    distinct,
+                    filter,
+                },
+            ..
+        } if name == "octet_length" => {
+            if *distinct || filter.is_some() {
+                return Err(HawDBError::Semantic(
+                    "OCTET_LENGTH does not accept DISTINCT or FILTER".into(),
+                ));
+            }
+            let argument = crate::query_value::octet_length_argument(arguments)?;
+            let kind = infer_coalesce_scalar_type(argument, select, parameters, state)?;
+            crate::query_value::validate_octet_length_type(
+                kind.map(RelationalScalarType::logical_type),
+            )?;
+            Ok(Some(RelationalScalarType::BigInt))
+        }
         Expr {
             kind:
                 ExprKind::Function {
@@ -474,6 +526,20 @@ pub(super) fn evaluate_projection_expression(
                     filter: None,
                 },
             ..
+        } if name == "octet_length" => {
+            let argument = crate::query_value::octet_length_argument(arguments)?;
+            let value = evaluate_projection_expression(argument, row, parameters)?;
+            crate::query_value::octet_length(value.as_ref()).map(|value| value.to_owned_value())
+        }
+        Expr {
+            kind:
+                ExprKind::Function {
+                    name,
+                    arguments,
+                    distinct: false,
+                    filter: None,
+                },
+            ..
         } if hawdb_core::VectorDistance::from_function_name(name).is_some() => {
             crate::query_value::evaluate_vector_distance(
                 hawdb_core::VectorDistance::from_function_name(name).expect("recognized function"),
@@ -527,7 +593,9 @@ pub(super) fn evaluate_coalesce(
             Expr {
                 kind: ExprKind::Function { name, .. },
                 ..
-            } if hawdb_core::VectorDistance::from_function_name(name).is_some() => {
+            } if name == "octet_length"
+                || hawdb_core::VectorDistance::from_function_name(name).is_some() =>
+            {
                 evaluate_projection_expression(expression, row, parameters)?
             }
             Expr {

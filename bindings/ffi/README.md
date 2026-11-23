@@ -72,6 +72,19 @@ The on-disk format carries no compatibility promise until HawDB declares one.
   `search_projection_epoch_advance_refused`, also not a storage failure: apply
   or catch up the range normally instead (see
   [SEARCH_PROJECTION_EPOCH_ADVANCE.md](../../docs/SEARCH_PROJECTION_EPOCH_ADVANCE.md));
+  bounded search projection catch-up refuses a changefeed prefix that ends
+  before the source head with `search_projection_prefix_behind_source`, and a
+  batch larger than its per-batch limit with
+  `search_projection_batch_budget_exceeded`; neither published anything or is
+  a storage failure, and both keep their previous message text (see
+  [REGISTERED_CONSUMER_CATCH_UP.md](../../docs/REGISTERED_CONSUMER_CATCH_UP.md#bounded-catch-up-refusals));
+  a qualified out-of-core search open whose production qualification was
+  taken at another graph commit epoch is
+  `search_production_qualification_graph_epoch_mismatch`, and one whose
+  qualification report does not qualify the projection for the release is
+  `search_production_qualification_refused`; both are stale or insufficient
+  qualifications, not storage failures, and keep their previous message text:
+  qualify again and reopen;
   `invalid_argument` marks caller-side contract violations,
   `transaction_open` / `no_transaction` transaction-state misuse, and `panic`
   a contained Rust panic.
@@ -87,8 +100,12 @@ The on-disk format carries no compatibility promise until HawDB declares one.
   Existing descriptor errors and ordinary error JSON remain unchanged. The
   [resource metadata contract](../../docs/EXECUTION_REQUEST_CONTRACT.md#resource-refusal-metadata)
   lists built-in budget origins; hosts must tolerate caller-defined origins.
-- **The handle is thread-safe**: calls on one `HawdbDatabase` are
-  serialized internally. Callers that want per-thread parallelism open
+- **The handle supports concurrent calls**: ordinary reads use immutable MVCC
+  snapshots; writers prepare concurrently and serialize durable commit and
+  publication. SQL and Cypher use the shared embedded admission governor.
+  Explicit transactions, maintenance and catalog/context changes remain exclusive.
+  Callers must finish all calls
+  before closing the handle. Callers that need independent databases open
   multiple handles.
 - **Panic containment**: every entry point runs under `catch_unwind`;
   a panic reports `{"kind": "panic"}` instead of unwinding across FFI.

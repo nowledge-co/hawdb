@@ -575,7 +575,11 @@ impl GraphStore {
         let publication: Result<()> = (|| {
             for selector in candidate.recovery_selectors.iter_mut().flatten() {
                 selector.publish().map_err(|error| {
-                    HawDBError::Storage(format!("publish checkpoint recovery selector: {error}"))
+                    HawDBError::or_stop(&error, || {
+                        HawDBError::Storage(format!(
+                            "publish checkpoint recovery selector: {error}"
+                        ))
+                    })
                 })?;
             }
             if let Some(report) = next.relational_row_pages.recovery_report.as_mut() {
@@ -1414,7 +1418,7 @@ fn wal_op_changes_relational_state(
 fn replay_checkpoint(work: &crate::background::CheckpointWorkContext) -> Result<()> {
     work.checkpoint().map_err(|error| match error {
         crate::background::CheckpointWorkError::Stopped(reason) => {
-            HawDBError::Execution(format!("checkpoint WAL replay stopped: {reason}"))
+            HawDBError::RuntimeTaskStopped(reason)
         }
         error => HawDBError::from_storage_error(error),
     })
@@ -1424,9 +1428,9 @@ fn replay_io_wave(
     work: &crate::background::CheckpointWorkContext,
 ) -> Result<Option<Box<dyn hawdb_core::RuntimeIoWavePermit>>> {
     work.io_wave().map_err(|error| match error {
-        crate::background::CheckpointWorkError::Io(reason) => {
-            HawDBError::Execution(format!("checkpoint WAL replay I/O stopped: {reason}"))
-        }
+        // A wave stop is the typed task stop; a wave larger than the
+        // reservation is a refusal, not a stop, and stays an execution error.
+        crate::background::CheckpointWorkError::Io(error) => HawDBError::from(error),
         error => HawDBError::from_storage_error(error),
     })
 }

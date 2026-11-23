@@ -98,7 +98,9 @@ fn reserve_with<T>(
     // returning its admission. The original allocation and elements stay owned.
     let mut replacement = Vec::new();
     allocate(&mut replacement, capacity).map_err(|error| {
-        HawDBError::Execution(format!("{description} allocation failed: {error}"))
+        HawDBError::or_stop(&error, || {
+            HawDBError::Execution(format!("{description} allocation failed: {error}"))
+        })
     })?;
     if replacement.capacity() != capacity {
         return Err(HawDBError::Execution(format!(

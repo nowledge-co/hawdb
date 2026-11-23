@@ -51,8 +51,12 @@ Files:
   resident in proportion to the spill block count.
 - `wal.<generation>.hawdb`: append-only committed mutation records beginning at
   the replay LSN published by the manifest. The only v1 encoding uses binary
-  fragment framing with the `SKWALB01` file header. Text WAL bytes and unknown
-  headers fail closed rather than entering a compatibility or upgrade path.
+  fragment framing with the `SKWALB01` file header. A header naming a newer
+  binary WAL version (`SKWALB02` and later) is refused as
+  `UnsupportedStorageFormat` with `WAL_FILE_FORMAT` before any record is read
+  or any torn-tail repair is considered. Text WAL bytes and other unknown
+  headers fail closed as corruption rather than entering a compatibility or
+  upgrade path.
 - `projected_graphs.hawdb`: checksummed, checkpoint-generated CSR/CSC
   projection artifacts derived from persisted projected graph definitions,
   written through the default zstd compression envelope.
@@ -67,10 +71,11 @@ Files:
 
 ### Reader compatibility refusals
 
-Relational WAL and full-checkpoint envelopes currently use codec version 3;
-embedded append WAL records (including checkpoint schema records) use version 3.
-A reader accepts its supported version exactly. An intact envelope requiring a
-different version returns `HawDBError::UnsupportedStorageFormat` with
+Relational WAL and full-checkpoint envelopes currently use codec version 6;
+embedded append WAL records (including checkpoint schema records) remain at
+version 3.
+Readers select an explicit decoder for each supported version. An intact envelope
+requiring an unknown version returns `HawDBError::UnsupportedStorageFormat` with
 `StorageFormatError::UnsupportedVersion { format, found, supported }`.
 An unknown materialized-view expression tag returns `UnsupportedFeature` with
 the schema format, feature name, and numeric tag. `StorageFormatError::format()`
@@ -78,23 +83,44 @@ is always one of the constants exported from `hawdb` and `hawdb_core`:
 `STORAGE_MANIFEST_FORMAT`, `RELATIONAL_DURABLE_CODEC_FORMAT`,
 `RELATIONAL_SCHEMA_FORMAT`, `RELATIONAL_ROW_PAGE_FORMAT`,
 `RELATIONAL_CHECKPOINT_LAYOUT_FORMAT`, `APPEND_WAL_FORMAT`,
-`LOGICAL_DUMP_FORMAT` or `SEARCH_PROJECTION_MANIFEST_FORMAT`. Hosts compare
+`LOGICAL_DUMP_FORMAT`, `SEARCH_PROJECTION_MANIFEST_FORMAT` or
+`WAL_FILE_FORMAT`. Hosts compare
 against these constants instead of matching message text. They are recorded in
-`docs/persistent-format.lock`. Current relational schema tags
-0 through 5 represent column, COUNT(*), COUNT(column), SUM, MIN, and MAX.
-This change does not add a feature bitmap or change any encoded bytes.
+`docs/persistent-format.lock`. Relational schema tags 0 through 5 represent
+column, COUNT(*), COUNT(column), SUM, MIN, and MAX. Codec v6 and row-page
+format v5 (`SKRPGM05`) record both covering columns and partial-index
+predicates. Readers decode full-index codec v3 / row-page v2, partial-index
+v4 / v3, and covering-index v5 / v4 using their original field layouts.
+Fixed-slot row-page v1 receives a typed unsupported-version error.
+Row-page manifest magics are `SKRPGM` followed by the row-page format version
+as two ASCII digits. A manifest naming a newer version than this reader
+supports (for example `SKRPGM06` read by a v5 reader) returns
+`UnsupportedVersion { format: RELATIONAL_ROW_PAGE_FORMAT, found, supported }`
+before its body is interpreted; it is not reported as `StorageIntegrity`, and
+the open does not quarantine or rewrite database files. Only a header outside
+that family, a non-digit version or version 0 is corrupt.
 
-`RELATIONAL_CHECKPOINT_LAYOUT_FORMAT` refuses intact checkpoints this reader
+Row-page formats are not backward compatible. HawDB 0.37 writes row-page
+format v5 on its next row-page publication, which 0.36.x (row-page v2 only)
+cannot read. Releases before this classification report a newer manifest
+magic as corruption; 0.36.x therefore reports a database checkpointed by 0.37
+as corrupt rather than unsupported. Do not downgrade to 0.36.x after a 0.37
+checkpoint; carry data across with a logical dump instead.
+
+`RELATIONAL_CHECKPOINT_LAYOUT_FORMAT` refuses intact checkpoints a reader
 cannot serve in the requested configuration, with `UnsupportedFeature` whose
 tag is the checkpoint generation:
 
-- relational rows stored only in the canonical row-page root, without a
-  full-row `relational.<generation>.hawdb` file, opened in any mode other than
-  `OutOfCore` residency with `Authoritative` relational indexes. Releases with
-  [#1737](https://github.com/nowledge-co/hawdb/issues/1737) write that layout,
-  as does any `OutOfCore` + `Authoritative` checkpoint;
 - `Authoritative` relational indexes on a checkpoint that never published a
-  persistent relational index generation.
+  persistent relational index generation;
+- in HawDB 0.33 through 0.37 only: relational rows stored only in the
+  canonical row-page root, without a full-row `relational.<generation>.hawdb`
+  file, opened in any mode other than `OutOfCore` residency with
+  `Authoritative` relational indexes. Persistent format 6
+  ([#1737](https://github.com/nowledge-co/hawdb/issues/1737)) writes that
+  layout by default, as does any `OutOfCore` + `Authoritative` checkpoint.
+  Format 6 readers rebuild resident rows from the row root instead of
+  refusing (see [Persistent format version](#persistent-format-version)).
 
 Both are configuration or layout mismatches, not corruption; the open
 changes no database file (each branch's disposable `runtime/` mount is
@@ -145,22 +171,98 @@ whether it changed. Development formats still break without migrations;
 embedding hosts carry data across a change with a logical dump (export with
 the old release, import with the new one). See [LOGICAL_DUMP.md](LOGICAL_DUMP.md).
 
-Version 3 ([#1737](https://github.com/nowledge-co/hawdb/issues/1737)) stops
+Version 6 ([#1737](https://github.com/nowledge-co/hawdb/issues/1737)) stops
 writing the legacy full-row `relational.<generation>.hawdb` file at checkpoint.
 The checkpoint-bound relational row-page and overflow roots, which every
-version 2 checkpoint already published, carry the relational state, and a
+version 5 checkpoint already published, carry the relational state, and a
 checkpoint writes only their changed generations. No codec, magic or version
-constant changes. Version 3 opens version 2 databases, including their
-full-row files and WAL tails. A version 2 release (0.31 through 0.34) opens a
-version 3 database only with `OutOfCore` residency and `Authoritative`
-relational indexes; in every other configuration it refuses the open with
-"checkpoint stores canonical metadata-only relational rows; reopen requires
-OutOfCore residency with Authoritative relational indexes" and changes
-nothing. A host that must keep downgrading may set
-`DatabaseConfig::legacy_relational_checkpoint_file`, which writes the version
-2 layout at the cost of a full relational rewrite per checkpoint; otherwise
-carry data back with a logical dump. See
+constant changes. Version 6 opens every database version 5 opens, including
+full-row files and WAL tails. A version 5 release (HawDB 0.37) opens a version
+6 database only with `OutOfCore` residency and `Authoritative` relational
+indexes; in every other configuration it refuses the open with
+`UnsupportedStorageFormat` / `RELATIONAL_CHECKPOINT_LAYOUT_FORMAT` (see
+[Reader compatibility refusals](#reader-compatibility-refusals)) and changes
+nothing. Releases before 0.37 already cannot read the row-page v5 manifests
+that version 5 writes. A host that must keep a downgrade path to 0.37 may set
+`DatabaseConfig::legacy_relational_checkpoint_file`, which also writes the
+full-row file at the cost of a full relational rewrite per checkpoint;
+otherwise carry data back with a logical dump. See
 [Checkpoints without the full-row file](specs/ROW_PAGE_AND_DEMAND_PAGED_INDEX_SPEC.md#checkpoints-without-the-full-row-file).
+
+### PostgreSQL partial indexes
+
+HawDB accepts `CREATE [UNIQUE] INDEX name ON table (columns) WHERE predicate`
+for deterministic, single-row predicates composed from column-to-literal
+comparisons, `IS [NOT] NULL`, `AND`, `OR`, and `NOT`. Parameters, column-to-column
+comparisons, arithmetic expressions, functions, subqueries, volatile values,
+index expressions, ordering/`NULLS` clauses, operator classes,
+storage parameters, and `CONCURRENTLY` are rejected instead of being discarded.
+Comparison literals cover NULL, BOOLEAN, BIGINT, finite DOUBLE PRECISION,
+NUMERIC, TEXT, UUID, TIMESTAMP, and TIMESTAMPTZ; BYTEA and VECTOR comparisons
+are outside this first durable/logical-dump-safe subset. `IS [NOT] NULL` remains
+available for every column type.
+TEXT columns used in comparisons remain inline because index membership must be
+decidable during mutation, recovery, and detached index builds without a hidden
+hydration budget. `IS [NOT] NULL` does not require that protection. Hosts should
+prefer compact status/tenant columns for partial predicates. Creating a TEXT
+comparison predicate over rows whose values are already externalized refuses
+the DDL atomically instead of performing an unbudgeted backfill hydration.
+
+Only rows for which the predicate evaluates SQL `TRUE` are members; `FALSE`
+and `UNKNOWN` rows are absent. Insert, update, delete, WAL replay, checkpoint
+rebuild, authoritative live deltas, index-shadow builds, and partial-unique
+checks use that same rule. A partial unique index is not a general conflict
+target or foreign-key target because rows outside its predicate are not unique.
+
+The SQL planner considers a partial index only when every top-level conjunct
+of its normalized predicate appears as an equivalent conjunct in the bound
+query predicate. This proof is deliberately conservative: a stronger but
+non-identical inequality, an `OR`, a join-only condition, or any unrecognized
+shape falls back to another index or a scan. It may miss an optimization, but
+it cannot return rows from an incomplete index as though it covered the whole
+query.
+
+### Relational covering indexes
+
+PostgreSQL-style covering indexes use `CREATE [UNIQUE] INDEX name ON table
+(key, ...) INCLUDE (payload, ...)`. Key and included columns are distinct in
+the SQL AST, catalog, logical dump, checkpoint schema, row-page manifest, and
+runtime index definition. An included column must exist, may appear once, and
+must not repeat a key column.
+
+Only key columns define ordering, range and prefix boundaries, uniqueness, and
+the unique-index NULL policy. The physical leaf key appends each included
+value as a typed, length-bounded payload suffix so a leaf entry and its posting
+remain one generation-bound read. All logical index operations use only the
+declared key prefix. Thus a payload update captures one physical delete and
+insert but leaves the logical posting unchanged; authoritative constraint
+overlays fold that pair instead of treating it as a duplicate logical change.
+Shadow builds and checkpoint rebuilds use the same representation and enforce
+unique keys on the logical prefix.
+
+Field planning may report an index scan as `covering` only when the selected
+key columns, included columns, and implicit primary-key locator contain every
+field required by that execution phase. Ordered scans can then stream the
+projection without base-row hydration. A non-covered projection keeps the
+same index range but fetches the base row. The payload must come from the same
+pinned immutable generation plus its transaction/live overlay; a missing,
+wrongly typed, or malformed payload fails with storage integrity rather than
+silently mixing it with another row generation. Indexes with included columns
+currently decline the exclusive keyset-bound fast path and use the ordinary
+logical-prefix range, preserving cursor semantics.
+
+The complete encoded physical key and payload is limited to 16 KiB. Included
+columns stay inline while the index exists, so an oversized INSERT or UPDATE is
+rejected before publication and the row mutation remains atomic. Updating an
+included value rewrites the affected index entry; applications should
+therefore include read-mostly payloads rather than large or frequently changing
+values. `CREATE INDEX ... INCLUDE` rejects atomically when an existing included
+value has already been externalized; rewrite that value inline before creating
+the index. This avoids turning an overflow reference into an implicit second
+fetch behind an index-only plan.
+Covering columns can precede a partial-index `WHERE` clause. HawDB still makes no production on-disk compatibility promise;
+logical dump format 1 carries `included_columns` while old dumps omit it and
+continue to import as an empty list.
 
 Recovery:
 
@@ -351,6 +453,17 @@ projection capture. A range with projected changes, a change-log gap or an
 unavailable range is refused with the typed, non-storage
 `HawDBError::SearchProjectionEpochAdvanceRefused`. See
 [`SEARCH_PROJECTION_EPOCH_ADVANCE.md`](SEARCH_PROJECTION_EPOCH_ADVANCE.md).
+
+Bounded catch-up (`catch_up_search_projection*`) publishes only a batch that
+reaches the pinned source head. A shorter prefix is refused with the typed,
+non-storage `HawDBError::SearchProjectionPrefixBehindSource`, and a source
+commit, graph delta or combined projection delta (including host-derived
+rows) larger than its per-batch limit with
+`HawDBError::SearchProjectionBatchBudgetExceeded`; neither poisons the handle
+and both keep their previous text. Probe first with
+`EmbeddedStoreHandle::search_projection_change_batch_probe(cap)` and catch up
+only with a budget whose batch `covers_source`. See
+[`REGISTERED_CONSUMER_CATCH_UP.md`](REGISTERED_CONSUMER_CATCH_UP.md#bounded-catch-up-refusals).
 
 A host can flag the search projection as stale from outside, for example
 after an external vector store rebuilt every embedding. Two methods do this:
@@ -1702,6 +1815,132 @@ In-memory databases have no WAL and no such limit. Replay keeps its own limits
 (`WalReplayConfig`) and still reports an oversized or damaged record as a
 storage error.
 
+## Runtime Admission Refusals
+
+The runtime governor can turn away work on an `EmbeddedStoreHandle`, or refuse
+to fund the resident search generation a read pins. Either refusal is the typed
+`HawDBError::RuntimeAdmissionRefused(RuntimeAdmissionRefusal { code,
+requested, available, retryable })`. It displays as an `execution error`
+followed by `runtime admission <code>: requested N, available M`. `code` is the
+governor's stable code, such as `memory_saturated`, `io_saturated` or
+`memory_pressure`. Python raises `ExecutionError` with
+`kind="runtime_admission_refused"` and the same fields. The C ABI kind is
+`runtime_admission_refused`.
+
+Nothing ran and nothing was written, so this is not a storage failure. Hosts
+must not poison or reopen the handle because of it. When `retryable` is true,
+other work holds the capacity or the host is short of memory: drop the request
+and retry it later unchanged. When it is false, the request can never fit the
+configured limits.
+
+A handle's default governor is detected from the host
+(`RuntimeGovernor::detect`). Unless its resources are pinned, admission
+re-samples host and cgroup memory at most once per second, the same default
+interval the Tokio adapter uses. A `memory_pressure` refusal therefore clears on
+its own about a second after the host recovers, and pressure that starts after
+open is seen just as quickly; callers retry unchanged and need no refresh call.
+`refresh_runtime_resources()` remains available to take a sample immediately.
+Governors built with `RuntimeGovernor::new` from a caller-supplied snapshot, and
+pinned governors, are never re-sampled on admission; their owner updates them.
+
+Reads that pin the resident search projection need a second admission step.
+After the read itself is admitted, the read funds the retained search generation
+it pins from the same governor memory. Concurrent readers of one generation
+share that charge. This step is refused with the same typed error. The reads
+that pin the resident projection are:
+- typed search: `search_candidates*`, `retrieve_knowledge*`,
+  `search_projection_documents*` and `search_candidate_shadow_evidence_json`;
+- `with_bounded_read_snapshot*`;
+- Cypher reads seeded by `text_search` or `vector_search`.
+
+Other graph and relational reads do not pin it. Neither do out-of-core
+projections, whose buffers are part of the read's own admission.
+
+Out-of-core construction has two different typed refusals:
+
+- `RuntimeIoWaveReservationExceeded { requested_slots, reserved_slots }`
+  means the task requested more concurrent I/O than its successful admission
+  reserved. This is a permanent request/permit mismatch, not a busy governor:
+  admitted callers wait when another wave temporarily holds their slots.
+  Retrying the same task unchanged cannot succeed. Python reports an
+  `ExecutionError` with `kind="runtime_io_wave_reservation_exceeded"`, both
+  slot counts and `retryable=false`; the C ABI uses the same kind.
+- A mutation-run closure that cannot fit
+  `SearchOutOfCoreConfig.max_mutation_working_bytes` returns
+  `ResourceBudgetExceeded` with resource `memory_bytes`, scope `operator`,
+  owner `search mutation-run reader`, and that option as `budget_option`.
+  Reduce the closure or raise the configured bound; retrying it unchanged
+  cannot fit. The diagnostic text remains unchanged.
+
+Both refusals happen before publication, are non-poisoning, and must not be
+classified as storage corruption or transient runtime saturation.
+
+## Graph Change Commit Epoch
+
+`graph_commit_epoch` (`Database::commit_epoch`) advances on every commit,
+including relational-only ones. A host that keeps a shadow of an external graph
+needs a weaker check: did the graph change since its comparison? For that,
+`Database::graph_change_commit_epoch()` (also on `ConcurrentDatabase`) returns
+the commit epoch of the newest commit that changed graph data or graph schema
+([#1840](https://github.com/nowledge-co/hawdb/issues/1840)).
+
+What advances it:
+- node and relationship creates, property writes and deletes, including
+  relationship-only writes;
+- graph schema: node/relationship tables, labels, relationship types,
+  property definitions and their states, indexes, constraints and projected
+  graphs.
+
+Relational rows and DDL, append records and the initial-import marker do not.
+
+It is part of the graph state, not the search projection change log. It is
+present without a search projection and never regresses when that log is
+pruned. It is not persisted, so the on-disk format is unchanged. On open it
+starts at the checkpoint's commit epoch, which is an upper bound of the last
+graph change. WAL replay then advances it exactly for each graph-changing
+commit.
+
+Monotonicity holds only over surviving history. Within one open handle the
+value never decreases. Across a reopen it may advance once, and it never
+decreases while every acknowledged commit survives. Under relaxed durability
+(`SyncOnCheckpoint`) a crash can lose acknowledged graph commits: the value can
+move back (for example from 11 to 10) and a later commit can reuse 11 for
+different graph content.
+
+Never carry a baseline across a reopen. Under relaxed durability
+(`SyncOnCheckpoint`), a crash can lose acknowledged commits. The next commits
+then reuse their epochs, so one epoch value can describe different graph
+content before and after the crash. A host must discard any baseline or
+comparison value captured before a reopen and capture it again.
+
+A poisoned handle refuses to report the value and returns the storage error
+instead. For example, a failed group-commit durability barrier poisons it:
+the epoch of an uncertain commit cannot be relied on. This applies to every
+accessor, including the transaction accessors and `runtime_status`. Reopen
+the database to read it again.
+
+`EmbeddedRuntimeStatus` reports it as `graph_change_commit_epoch`. The
+production status and operations readiness reports show it as
+`graph.change_commit_epoch`.
+
+For compare-and-publish, read it inside the write transaction with
+`ConcurrentDatabaseTransaction::graph_change_commit_epoch()` (the transaction
+`EmbeddedStoreHandle::with_transaction` passes) or
+`DatabaseTransaction::graph_change_commit_epoch()`. The call returns the value
+at the transaction's base snapshot and makes the commit conditional on it. The
+check runs under the commit's exclusive access. If a graph-changing commit was
+published after that snapshot, the commit fails with the retryable
+`HawDBError::TransactionConflict` whose `key` is
+`hawdb::GRAPH_CHANGE_COMMIT_EPOCH_CONFLICT_KEY` (`"graph_change_commit_epoch"`)
+and writes nothing. Concurrent relational-only commits never cause this
+refusal, and neither do the transaction's own graph writes.
+
+Hosts that must tell this refusal apart from other transaction conflicts use
+`HawDBError::is_graph_change_conflict()` or compare the key with the constant,
+not a string literal. The key value is stable. It names the conflict, not the
+`graph_change_commit_epoch` field of `EmbeddedRuntimeStatus`, which reports
+the epoch value itself.
+
 ## Relationship Locality
 
 The current in-memory adjacency key is:
@@ -1922,7 +2161,18 @@ production read owner. `EmbeddedStoreOpenOptions::with_qualified_out_of_core_sea
 is the production read-owner boundary: it accepts explicit reader budgets and
 opens through the production qualification constructor only after the release
 identity, projection generation, source graph epoch, and opened graph commit
-epoch match. The admitted embedded handle then uses that pinned generation for
+epoch match. A mismatch is a stale or insufficient qualification, not
+storage damage, and refuses the open before anything is changed: an opened
+graph at another commit epoch than the qualification's canonical one (for
+example after a write between qualification and open) returns
+`HawDBError::SearchProductionQualificationGraphEpochMismatch`, and a report
+that does not qualify the opened projection for the release (another
+generation, source epoch or release identity, or unready evidence) returns
+`HawDBError::SearchProductionQualificationRefused` with its blocker codes.
+Neither poisons anything, and both keep their previous `storage error:` text;
+catch the projection up, qualify it again and reopen (#1932). Damaged
+projection files still fail the reader's own open checks as `StorageIntegrity`
+or `Storage`. The admitted embedded handle then uses that pinned generation for
 candidate search, bounded hydration, Knowledge Retrieval graph-context
 expansion, and Cypher vector seed reads without opening the full-residency
 index. Production traffic activation remains gated on representative

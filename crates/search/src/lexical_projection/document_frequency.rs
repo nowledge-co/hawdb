@@ -174,7 +174,11 @@ impl SpillingAnalysis {
                 self.records
                     .try_reserve_exact(capacity - self.records.len())
                     .map_err(|error| {
-                        HawDBError::Storage(format!("reserve document frequency records: {error}"))
+                        HawDBError::or_stop(&error, || {
+                            HawDBError::Storage(format!(
+                                "reserve document frequency records: {error}"
+                            ))
+                        })
                     })?;
             }
         }

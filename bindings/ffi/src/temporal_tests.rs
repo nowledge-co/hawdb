@@ -119,6 +119,31 @@ unsafe fn sql(db: *mut HawdbDatabase, text: &str, params: serde_json::Value) -> 
 }
 
 #[test]
+fn sql_autocommit_clock_advances_without_a_write_through_the_c_api() {
+    use hawdb::temporal::{parse_datetime, with_statement_clock};
+
+    let mut error = HawdbBuffer {
+        ptr: ptr::null_mut(),
+        len: 0,
+    };
+    let db = unsafe { hawdb_open_in_memory(&mut error) };
+    assert!(!db.is_null());
+    for text in ["2026-11-22T01:00:00Z", "2026-11-22T02:00:00Z"] {
+        let clock = parse_datetime(text).unwrap();
+        let output = with_statement_clock(clock, || unsafe {
+            sql(db, "SELECT CURRENT_TIMESTAMP AS t, now() AS n", json!([]))
+        });
+        let expected = value_to_json(&Value::DateTime(clock));
+        assert_eq!(output["rows"][0][0], expected);
+        assert_eq!(output["rows"][0][1], expected);
+    }
+    unsafe {
+        hawdb_close(db);
+        hawdb_buffer_free(&mut error);
+    }
+}
+
+#[test]
 fn sql_timestamp_columns_round_trip_tagged_datetimes_through_the_c_api() {
     let mut error = HawdbBuffer {
         ptr: ptr::null_mut(),

@@ -570,9 +570,11 @@ pub fn relational_checkpoint_metadata(body: &str) -> Result<Option<DurableArtifa
             }
             ["relational_checkpoint_encoded_sha256", raw] if encoded_sha256.is_none() => {
                 encoded_sha256 = Some(raw.parse().map_err(|error| {
-                    HawDBError::Storage(format!(
-                        "invalid relational checkpoint encoded SHA-256: {error}"
-                    ))
+                    HawDBError::or_stop(&error, || {
+                        HawDBError::Storage(format!(
+                            "invalid relational checkpoint encoded SHA-256: {error}"
+                        ))
+                    })
                 })?);
             }
             ["relational_checkpoint_encoded_len", _]

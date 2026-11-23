@@ -178,7 +178,8 @@ pub fn seal_wal_file(
         match WalRecordCursor::open(path, Some(max_record_limit(max_bytes))).map_err(|error| {
             SealedWalError::Io {
                 operation: "open sealed WAL",
-                source: std::io::Error::other(error.to_string()),
+                // Keep the error itself so a typed format refusal survives.
+                source: std::io::Error::other(error),
             }
         })? {
             WalOpenOutcome::Cursor(cursor) => cursor,

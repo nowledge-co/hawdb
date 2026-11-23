@@ -570,7 +570,9 @@ pub(super) fn install_generation(
                 name.as_str().len(),
             )?)?;
             mutation_runs.try_reserve_exact(1).map_err(|error| {
-                HawDBError::Execution(format!("cannot grow mutation manifest: {error}"))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Execution(format!("cannot grow mutation manifest: {error}"))
+                })
             })?;
             if mutation_runs.capacity() > capacity {
                 return Err(HawDBError::Execution(

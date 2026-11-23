@@ -17,9 +17,9 @@ use super::{
 };
 use crate::store::{GraphStore, HawDBError};
 use hawdb_storage::relational::{
-    relational_foreign_key_index_name, RelationalForeignKeySchema, RelationalIndexDefinition,
-    RelationalIndexRole, RelationalKey, RelationalScalarType, RelationalState,
-    RelationalTableSchema, RelationalValue, RELATIONAL_PRIMARY_INDEX_NAME,
+    index_includes_row, relational_foreign_key_index_name, RelationalForeignKeySchema,
+    RelationalIndexDefinition, RelationalIndexRole, RelationalKey, RelationalScalarType,
+    RelationalState, RelationalTableSchema, RelationalValue, RELATIONAL_PRIMARY_INDEX_NAME,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -140,7 +140,10 @@ impl GraphStore {
         for (ordinal, (identity, uses)) in scheduled.into_iter().enumerate() {
             let mut candidate = Vec::new();
             let read = view
-                .visit_exact_postings(
+                // Constraint identities are complete logical keys. INCLUDE
+                // payload is only a physical suffix, so use a prefix read for
+                // both ordinary and covering unique indexes.
+                .visit_prefix_postings(
                     &identity.table,
                     &identity.index,
                     &identity.key,
@@ -246,21 +249,24 @@ fn schedule_unique_target_probes(
         BTreeSet<RelationalConstraintQualificationUse>,
     >,
 ) -> crate::Result<bool> {
-    if let Some((primary_key, row)) = state.rows(&schema.name).take(max_rows).find(|(_, row)| {
+    let mut present = None;
+    for (primary_key, row) in state.rows(&schema.name).take(max_rows) {
         let key = key_from_row(schema, row, &definition.columns);
-        !key_contains_null(&key)
-    }) {
+        if key_contains_null(&key)
+            || !index_includes_row(schema, definition, row)
+                .map_err(HawDBError::from_storage_error)?
+        {
+            continue;
+        }
+        present = Some((primary_key, row));
+        break;
+    }
+    if let Some((primary_key, row)) = present {
         let key = if definition.role == RelationalIndexRole::Primary {
             primary_key.clone()
         } else {
             key_from_row(schema, row, &definition.columns)
         };
-        let mut uses = BTreeSet::from([RelationalConstraintQualificationUse::UpsertConflict]);
-        uses.insert(if definition.role == RelationalIndexRole::Primary {
-            RelationalConstraintQualificationUse::PrimaryKeyIdentity
-        } else {
-            RelationalConstraintQualificationUse::UniqueEnforcement
-        });
         if !schedule_probe(
             scheduled,
             ConstraintProbeIdentity {
@@ -268,7 +274,7 @@ fn schedule_unique_target_probes(
                 index: definition.name.clone(),
                 key,
             },
-            uses,
+            unique_definition_uses(definition),
             max_probes,
         ) {
             return Ok(false);
@@ -295,11 +301,11 @@ fn schedule_unique_target_probes(
                 index: definition.name.clone(),
                 key,
             },
-            BTreeSet::from([
-                RelationalConstraintQualificationUse::UniqueEnforcement,
-                RelationalConstraintQualificationUse::UpsertConflict,
-                RelationalConstraintQualificationUse::NullableUniqueNoConflict,
-            ]),
+            {
+                let mut uses = unique_definition_uses(definition);
+                uses.insert(RelationalConstraintQualificationUse::NullableUniqueNoConflict);
+                uses
+            },
             max_probes,
         ) {
             return Ok(false);
@@ -309,15 +315,8 @@ fn schedule_unique_target_probes(
     let Some(key) = find_absent_key(state, schema, definition)? else {
         return Ok(false);
     };
-    let mut uses = BTreeSet::from([
-        RelationalConstraintQualificationUse::UpsertConflict,
-        RelationalConstraintQualificationUse::AbsentKeyNoConflict,
-    ]);
-    uses.insert(if definition.role == RelationalIndexRole::Primary {
-        RelationalConstraintQualificationUse::PrimaryKeyIdentity
-    } else {
-        RelationalConstraintQualificationUse::UniqueEnforcement
-    });
+    let mut uses = unique_definition_uses(definition);
+    uses.insert(RelationalConstraintQualificationUse::AbsentKeyNoConflict);
     Ok(schedule_probe(
         scheduled,
         ConstraintProbeIdentity {
@@ -328,6 +327,22 @@ fn schedule_unique_target_probes(
         uses,
         max_probes,
     ))
+}
+
+fn unique_definition_uses(
+    definition: &RelationalIndexDefinition,
+) -> BTreeSet<RelationalConstraintQualificationUse> {
+    let mut uses = BTreeSet::from([if definition.role == RelationalIndexRole::Primary {
+        RelationalConstraintQualificationUse::PrimaryKeyIdentity
+    } else {
+        RelationalConstraintQualificationUse::UniqueEnforcement
+    }]);
+    // SQL upsert conflict targets cannot name a partial index in the current
+    // API, so qualifying one must not advertise that unsupported use.
+    if definition.predicate.is_none() {
+        uses.insert(RelationalConstraintQualificationUse::UpsertConflict);
+    }
+    uses
 }
 
 struct ForeignKeyProbeContext<'a> {

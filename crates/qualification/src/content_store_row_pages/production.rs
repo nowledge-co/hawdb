@@ -394,9 +394,11 @@ pub fn run_production_content_store_storage_qualification(
                     .with_blocking(true),
                 )
                 .map_err(|error| {
-                    HawDBError::Execution(format!(
-                        "production Content Store read admission failed: {error}"
-                    ))
+                    HawDBError::or_stop(&error, || {
+                        HawDBError::Execution(format!(
+                            "production Content Store read admission failed: {error}"
+                        ))
+                    })
                 })?;
             let read = execute_qualified_read(
                 &mut database,

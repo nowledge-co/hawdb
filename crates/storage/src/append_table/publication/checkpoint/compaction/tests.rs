@@ -271,7 +271,12 @@ fn checkpoint_units_append_compaction_cancels_each_io_and_recovers_all_source_ro
             &probe.context(scheduler.clone()),
         );
         assert!(
-            matches!(&result, Err(AppendTableError::Admission(message)) if message.contains("checkpoint build") && message.contains("cancelled")),
+            matches!(
+                &result,
+                Err(AppendTableError::Stopped(
+                    hawdb_core::RuntimeCancellationReason::Cancelled
+                ))
+            ),
             "{:?}",
             result.as_ref().err()
         );
@@ -289,7 +294,12 @@ fn checkpoint_units_append_compaction_cancels_each_io_and_recovers_all_source_ro
             &probe.context(scheduler.clone()),
         );
         assert!(
-            matches!(&result, Err(AppendTableError::Admission(message)) if message.contains("checkpoint build") && message.contains("cancelled")),
+            matches!(
+                &result,
+                Err(AppendTableError::Stopped(
+                    hawdb_core::RuntimeCancellationReason::Cancelled
+                ))
+            ),
             "{:?}",
             result.as_ref().err()
         );
@@ -315,8 +325,12 @@ fn checkpoint_units_append_compaction_cancels_each_io_and_recovers_all_source_ro
             &probe.context(scheduler.clone()),
         );
         assert!(
-            matches!(&result, Err(AppendTableError::Admission(message))
-            if message.contains("checkpoint build") && message.contains("cancelled")),
+            matches!(
+                &result,
+                Err(AppendTableError::Stopped(
+                    hawdb_core::RuntimeCancellationReason::Cancelled
+                ))
+            ),
             "{:?}",
             result.as_ref().err()
         );

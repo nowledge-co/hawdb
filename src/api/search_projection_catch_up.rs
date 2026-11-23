@@ -27,6 +27,15 @@ pub use hawdb_search::{
 };
 
 impl Database {
+    /// Catches a persistent search projection up through whole graph
+    /// changefeed commits, at most `max_batches` batches of
+    /// `max_operations_per_batch` changefeed operations each.
+    ///
+    /// Every batch must reach the pinned source head; see
+    /// [`Self::catch_up_search_projection_with_batch_hydrator`] for the typed
+    /// [`HawDBError::SearchProjectionPrefixBehindSource`] and
+    /// [`HawDBError::SearchProjectionBatchBudgetExceeded`] refusals and the
+    /// recommended host reaction.
     pub fn catch_up_search_projection(
         &self,
         search_index: &mut SearchIndex,
@@ -61,7 +70,8 @@ impl Database {
     /// or relational delta, then checkpoints the combined projection before
     /// selecting another batch. Hydration errors and incomplete accounting do
     /// not advance the projection watermark. A prefix ending before the pinned
-    /// snapshot epoch is rejected before the hydrator runs; the selected interval
+    /// snapshot epoch is rejected before the hydrator runs with the typed
+    /// [`HawDBError::SearchProjectionPrefixBehindSource`]; the selected interval
     /// must cover the complete source head within the caller's existing budgets.
     /// See [`Self::catch_up_search_projection_with_batch_hydrator`] for progress
     /// limitations and retry options under ongoing writes.
@@ -109,13 +119,24 @@ impl Database {
     /// is rejected before invoking the host. Partial-prefix progress requires the
     /// separately qualified bounded preparation protocol tracked by #1043.
     ///
-    /// Under sustained writes, a bounded batch can repeatedly miss the pinned
-    /// head and make no progress. Hosts may retry with larger source/projection
-    /// batches within their resource limits or temporarily quiesce writes.
-    /// Increasing `max_batches` alone cannot make a refused prefix publishable.
-    /// Sustained refusal requires the bounded C..E staging protocol in #1043.
-    /// This interim refusal remains [`HawDBError::Execution`]; a typed retry
-    /// condition belongs to that staging protocol rather than error-text parsing.
+    /// A prefix refusal is the typed
+    /// [`HawDBError::SearchProjectionPrefixBehindSource`] (#1924). It is not
+    /// transient: while the pending interval exceeds one batch, retrying with
+    /// the same budgets refuses again, even with no concurrent writes, and
+    /// increasing `max_batches` alone cannot make a refused prefix
+    /// publishable. Probe the interval with
+    /// [`Self::build_search_projection_change_batch_from_freshness`]`(index,
+    /// Some(cap))` (or `EmbeddedStoreHandle::search_projection_change_batch_probe`)
+    /// and catch up with a batch covering all of it, or re-prepare through
+    /// the staged registered-consumer path (`docs/REGISTERED_CONSUMER_CATCH_UP.md`).
+    /// Under sustained writes a bounded batch can repeatedly miss the pinned
+    /// head; a fresh probe covers a write that landed after the previous one.
+    /// A single source commit, a graph delta, or a combined projection delta
+    /// (including host-derived rows) larger than its per-batch limit is the
+    /// typed [`HawDBError::SearchProjectionBatchBudgetExceeded`], whose
+    /// `budget` names the limit.
+    /// Neither refusal is a storage failure, poisons the handle or advances
+    /// the watermark; both keep their previous display text.
     pub fn catch_up_search_projection_with_batch_hydrator<F>(
         &self,
         search_index: &mut SearchIndex,
@@ -187,6 +208,9 @@ impl Database {
         )
     }
 
+    /// Scheduled variant of [`Self::catch_up_search_projection`]. Admission
+    /// deferral stops with a report; prefix and per-batch budget refusals are
+    /// the same typed errors as the unscheduled catch-up.
     pub fn catch_up_search_projection_scheduled(
         &self,
         search_index: &mut SearchIndex,

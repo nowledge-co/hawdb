@@ -113,7 +113,7 @@ impl DurableStore {
     }
 
     /// Writes the legacy full-row relational file, which releases before
-    /// persistent format 3 require outside OutOfCore residency with
+    /// persistent format 6 require outside OutOfCore residency with
     /// Authoritative relational indexes. Checkpoints write it only on request.
     pub(in crate::store) fn write_relational_checkpoint(
         &self,

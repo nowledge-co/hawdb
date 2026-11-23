@@ -271,6 +271,33 @@ pub fn reconcile(
     }
 }
 
+/// Observes the ownership of a projection opened with a non-empty
+/// `requested` set, after [`reconcile`] accepted that open.
+///
+/// Returns the rows state when the record equals `requested`, and
+/// [`HawDBError::SearchProjectionOwnershipMismatch`] when it differs. Without
+/// a record it returns `Ok(None)` for an open that could not record
+/// (`recorded_at_open` false: the projection is not opted in yet, and a later
+/// writable open may record it), and the typed corruption error for an open
+/// that recorded or verified the set, because the record was then removed
+/// out of band and the rows must never look restored.
+pub fn observe(
+    projection: &Path,
+    requested: &BTreeSet<SearchProjectionKind>,
+    recorded_at_open: bool,
+) -> Result<Option<ExternallyOwnedRowsState>> {
+    match read_recorded_kinds(projection)? {
+        Some(recorded) if &recorded == requested => require_rows_state(projection).map(Some),
+        Some(recorded) => Err(HawDBError::SearchProjectionOwnershipMismatch {
+            projection: projection.to_path_buf(),
+            recorded: names(&recorded),
+            requested: names(requested),
+        }),
+        None if recorded_at_open => Err(malformed(projection, MARKER, "is missing")),
+        None => Ok(None),
+    }
+}
+
 fn new_rows_state() -> Result<ExternallyOwnedRowsState> {
     Ok(ExternallyOwnedRowsState {
         token: ExternallyOwnedRowsToken {
@@ -310,10 +337,11 @@ fn write_durably(projection: &Path, name: &str, text: &str) -> Result<()> {
     let target = projection.join(name);
     let temporary = projection.join(format!("{name}.tmp.{}", std::process::id()));
     let written = (|| -> std::io::Result<()> {
-        let mut file = File::create(&temporary)?;
-        file.write_all(text.as_bytes())?;
-        file.sync_all()?;
-        drop(file);
+        {
+            let mut file = File::create(&temporary)?;
+            file.write_all(text.as_bytes())?;
+            file.sync_all()?;
+        }
         hawdb_storage::durability::durable_replace_file(&temporary, &target)
     })();
     if written.is_err() {
@@ -509,6 +537,29 @@ mod tests {
         assert!(!acknowledge_rows_restored(&root, old).unwrap());
         assert_eq!(required_token(&root), replacement);
         assert!(acknowledge_rows_restored(&root, replacement).unwrap());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn observe_follows_the_record_written_after_open() {
+        let root = directory("observe");
+        let owned = BTreeSet::from([SearchProjectionKind::Memory]);
+        // A reader open of an unrecorded projection is not opted in yet.
+        reconcile(&root, &owned, false).unwrap();
+        assert_eq!(observe(&root, &owned, false).unwrap(), None);
+        assert!(matches!(
+            observe(&root, &owned, true),
+            Err(HawDBError::SearchProjectionOwnershipMarkerCorrupt { ref marker, .. }) if marker == MARKER
+        ));
+        // A writer records the set later; the reader sees its fence.
+        reconcile(&root, &owned, true).unwrap();
+        let state = observe(&root, &owned, false).unwrap().unwrap();
+        assert_eq!(state.required_token(), Some(required_token(&root)));
+        let other = BTreeSet::from([SearchProjectionKind::Entity]);
+        assert!(matches!(
+            observe(&root, &other, false),
+            Err(HawDBError::SearchProjectionOwnershipMismatch { .. })
+        ));
         fs::remove_dir_all(root).unwrap();
     }
 

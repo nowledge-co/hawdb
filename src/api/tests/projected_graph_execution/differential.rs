@@ -662,9 +662,8 @@ fn projected_graph_relationship_corruption_fails_without_partial_results() {
             .unwrap();
         let canonical = super::super::active_storage_root(&fixture.path)
             .join(format!("canonical.{generation}.hawdb"));
-        let mut bytes = std::fs::read(&canonical).unwrap();
-        *bytes.last_mut().unwrap() ^= 0xff;
-        std::fs::write(canonical, bytes).unwrap();
+        let length = std::fs::metadata(&canonical).unwrap().len();
+        super::super::flip_test_file_byte(&canonical, length - 1, None);
         let mut nodes = 0;
         GraphExecutionRead::visit_nodes_owned(
             &fixture.db().runtime.get().unwrap().store,

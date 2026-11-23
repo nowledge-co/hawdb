@@ -26,6 +26,19 @@ use std::sync::{Arc, Mutex, RwLock};
 
 static NEXT_ALIAS_CANDIDATE: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(test)]
+thread_local! {
+    pub(crate) static NEXT_ALIAS_LINK_ERROR: std::cell::Cell<Option<io::ErrorKind>> = const { std::cell::Cell::new(None) };
+}
+
+fn link_alias(source: &Path, destination: &Path) -> io::Result<()> {
+    #[cfg(test)]
+    if let Some(kind) = NEXT_ALIAS_LINK_ERROR.with(|slot| slot.take()) {
+        return Err(io::Error::from(kind));
+    }
+    fs::hard_link(source, destination)
+}
+
 mod checkpoint;
 pub(crate) use checkpoint::CheckpointImmutableFileError;
 
@@ -331,7 +344,7 @@ impl ImmutableFileHandles {
         }
         let candidate = loop {
             let candidate = alias_candidate_path(path)?;
-            match fs::hard_link(&binding.object_path, &candidate) {
+            match link_alias(&binding.object_path, &candidate) {
                 Ok(()) => break AliasCandidate(candidate),
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
                 Err(error) => return Err(error),

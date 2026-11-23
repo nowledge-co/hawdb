@@ -25,9 +25,7 @@ pub(crate) mod temporary;
 pub(crate) fn checkpoint(context: &RuntimeTaskContext) -> Result<()> {
     #[cfg(test)]
     observation::record();
-    context
-        .checkpoint()
-        .map_err(|reason| HawDBError::Execution(format!("search generation build {reason}")))
+    context.checkpoint().map_err(HawDBError::RuntimeTaskStopped)
 }
 
 pub(crate) fn write_checksummed(

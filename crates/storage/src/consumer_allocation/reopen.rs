@@ -471,8 +471,7 @@ impl ReopenedConsumerGeneration {
 }
 
 fn checkpoint(task: &RuntimeTaskContext) -> Result<()> {
-    task.checkpoint()
-        .map_err(|reason| HawDBError::Execution(format!("Consumer reopen {reason}")))
+    task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)
 }
 
 fn verify_birth_bytes(

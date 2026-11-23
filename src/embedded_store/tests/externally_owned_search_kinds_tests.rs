@@ -915,3 +915,185 @@ fn corrupt_ownership_records_are_typed_and_reset_by_an_explicit_open() {
         std::fs::remove_dir_all(root).unwrap();
     }
 }
+
+fn assert_not_opted_in(store: &EmbeddedStore) {
+    assert_eq!(store.externally_owned_rows_required().unwrap(), None);
+    let status = store.runtime_status().unwrap();
+    assert!(status.externally_owned_search_kinds.is_empty());
+    assert_eq!(status.externally_owned_rows_required, None);
+    assert_eq!(
+        status.json()["projection"]["externally_owned_kinds"],
+        serde_json::json!([])
+    );
+}
+
+fn assert_opted_in(store: &EmbeddedStore, token: ExternallyOwnedRowsToken) {
+    assert_eq!(store.externally_owned_rows_required().unwrap(), Some(token));
+    let status = store.runtime_status().unwrap();
+    assert_eq!(
+        status.externally_owned_search_kinds,
+        owned().into_iter().collect::<Vec<_>>()
+    );
+    assert_eq!(status.externally_owned_rows_required, Some(token));
+}
+
+/// A read-only open of a projection prepared before the host opted in is
+/// not opted in yet, and observes the fence once a writer records the set,
+/// without reopening (#1845).
+#[test]
+fn read_only_open_of_an_unrecorded_projection_follows_a_later_record() {
+    for layout in [Layout::Resident, Layout::OutOfCore] {
+        let (root, handle) = open_fresh(
+            &format!("owned_unrecorded_reader_{layout:?}"),
+            layout,
+            BTreeSet::new(),
+        );
+        drop(handle);
+        let search = root.join("search");
+        let (reader, _) = EmbeddedStore::open_with_options(options_at(
+            &root,
+            "search",
+            layout,
+            owned(),
+            GraphMode::ShadowReadOnly,
+            None,
+        ))
+        .unwrap();
+        assert!(!search.join(EXTERNALLY_OWNED_KINDS_MARKER).exists());
+        assert!(!search.join(EXTERNALLY_OWNED_ROWS_MARKER).exists());
+        assert_not_opted_in(&reader);
+        assert_eq!(reader.externally_owned_search_kinds(), &owned());
+
+        // A writable open elsewhere records the set while the reader stays
+        // open; this graph is held by the reader, so record as that open does.
+        crate::search::projection_ownership::reconcile(&search, &owned(), true).unwrap();
+        let token = crate::search::projection_ownership::require_rows_state(&search)
+            .unwrap()
+            .required_token()
+            .unwrap();
+        assert_eq!(token.epoch, 1);
+        assert_opted_in(&reader, token);
+        drop(reader);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+/// Qualified out-of-core opens may not record either. A qualified open needs
+/// a production-qualified projection of 100k documents, so the ownership
+/// step is exercised with the decision such an open makes (#1845).
+#[test]
+fn qualified_out_of_core_open_of_an_unrecorded_projection_follows_a_later_record() {
+    let root = unique_embedded_store_test_dir("owned_unrecorded_qualified");
+    let search = root.join("search");
+    let qualified = EmbeddedStoreOpenOptions::with_qualified_out_of_core_search_projection(
+        root.join("graph"),
+        &search,
+        GraphMode::WritableCutover,
+        QualifiedOutOfCoreSearchOptions {
+            config: SearchOutOfCoreConfig::default(),
+            qualification: SearchLexicalProductionQualificationReport::evaluate(
+                0,
+                None,
+                0,
+                false,
+                SearchLexicalFeasibilityCoverage::default(),
+                SearchLexicalFeasibilityMetrics::default(),
+            ),
+            expected_identity: production_identity(0),
+        },
+    )
+    .with_externally_owned_search_kinds(owned());
+    assert!(!qualified.may_record_externally_owned_search_kinds());
+    assert!(matches!(
+        EmbeddedStore::open_with_options(
+            qualified.clone().with_externally_owned_search_kinds_reset()
+        ),
+        Err(HawDBError::Semantic(_))
+    ));
+
+    let (mut store, _) =
+        EmbeddedStore::open_with_options(EmbeddedStoreOpenOptions::with_search_projection(
+            root.join("graph"),
+            &search,
+            GraphMode::WritableCutover,
+        ))
+        .unwrap();
+    store
+        .attach_externally_owned_search_kinds(
+            Some(search.clone()),
+            owned(),
+            qualified.may_record_externally_owned_search_kinds(),
+            false,
+        )
+        .unwrap();
+    assert!(!search.join(EXTERNALLY_OWNED_KINDS_MARKER).exists());
+    assert_not_opted_in(&store);
+
+    // A maintenance open elsewhere records the set later.
+    crate::search::projection_ownership::reconcile(&search, &owned(), true).unwrap();
+    let token = crate::search::projection_ownership::require_rows_state(&search)
+        .unwrap()
+        .required_token()
+        .unwrap();
+    assert_opted_in(&store, token);
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// A record written after open that differs from the requested set is a
+/// mismatch, never silently accepted (#1845).
+#[test]
+fn read_only_open_reports_a_record_that_differs_from_the_requested_set() {
+    let (root, handle) = open_fresh(
+        "owned_unrecorded_mismatch",
+        Layout::Resident,
+        BTreeSet::new(),
+    );
+    drop(handle);
+    let search = root.join("search");
+    let (reader, _) = EmbeddedStore::open_with_options(options_at(
+        &root,
+        "search",
+        Layout::Resident,
+        owned(),
+        GraphMode::ShadowReadOnly,
+        None,
+    ))
+    .unwrap();
+    assert_not_opted_in(&reader);
+    crate::search::projection_ownership::reconcile(
+        &search,
+        &BTreeSet::from([SearchProjectionKind::Memory]),
+        true,
+    )
+    .unwrap();
+    let expected = HawDBError::SearchProjectionOwnershipMismatch {
+        projection: search,
+        recorded: vec!["memory".into()],
+        requested: vec!["memory".into(), "entity".into()],
+    };
+    assert_eq!(
+        reader.externally_owned_rows_required().unwrap_err(),
+        expected
+    );
+    assert_eq!(reader.runtime_status().unwrap_err(), expected);
+    drop(reader);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// A writable open that recorded the set fails closed if the record is
+/// removed out of band while it is open.
+#[test]
+fn recording_open_fails_closed_when_its_record_disappears() {
+    let (root, handle) = open_fresh("owned_record_removed", Layout::Resident, owned());
+    required_token(&handle);
+    let record = root.join("search").join(EXTERNALLY_OWNED_KINDS_MARKER);
+    std::fs::remove_file(&record).unwrap();
+    assert!(matches!(
+        handle.externally_owned_rows_required(),
+        Err(HawDBError::SearchProjectionOwnershipMarkerCorrupt { ref marker, .. })
+            if marker == EXTERNALLY_OWNED_KINDS_MARKER
+    ));
+    drop(handle);
+    std::fs::remove_dir_all(root).unwrap();
+}

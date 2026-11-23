@@ -391,6 +391,9 @@ pub const fn hawdb_error_class(error: &HawDBError) -> &'static str {
         | HawDBError::BranchEvidenceBudgetExceeded { .. }
         | HawDBError::ReadBudgetExceeded(_)
         | HawDBError::WalRecordLimitExceeded(_)
+        | HawDBError::RuntimeAdmissionRefused(_)
+        | HawDBError::RuntimeIoWaveReservationExceeded { .. }
+        | HawDBError::RuntimeTaskStopped(_)
         | HawDBError::ReadOnly { .. }
         | HawDBError::ResourceBudgetExceeded(_)
         | HawDBError::GraphExpansionCandidateLimitExceeded { .. }
@@ -402,7 +405,11 @@ pub const fn hawdb_error_class(error: &HawDBError) -> &'static str {
         | HawDBError::SearchProjectionRebuildRefused { .. }
         | HawDBError::SearchProjectionOwnershipMarkerCorrupt { .. }
         | HawDBError::SearchProjectionOwnershipMismatch { .. }
-        | HawDBError::SearchProjectionEpochAdvanceRefused { .. } => "execution",
+        | HawDBError::SearchProjectionEpochAdvanceRefused { .. }
+        | HawDBError::SearchProjectionPrefixBehindSource { .. }
+        | HawDBError::SearchProjectionBatchBudgetExceeded { .. }
+        | HawDBError::SearchProductionQualificationGraphEpochMismatch { .. }
+        | HawDBError::SearchProductionQualificationRefused { .. } => "execution",
         HawDBError::CapabilityUnavailable { .. } => "capability_unavailable",
     }
 }

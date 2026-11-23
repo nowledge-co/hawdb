@@ -275,6 +275,81 @@ pub fn format_hawdb_error(error: &HawDBError) -> PyErr {
             })();
             attributes.err().unwrap_or(exception)
         }),
+        HawDBError::SearchProjectionPrefixBehindSource {
+            complete_through_commit_epoch,
+            source_commit_epoch,
+        } => Python::attach(|py| {
+            // Nothing was published. Retrying the same budgets refuses again:
+            // cover the whole pending interval or re-prepare (#1924).
+            let exception = ExecutionError::new_err(message);
+            let value = exception.value(py);
+            let attributes = (|| -> PyResult<()> {
+                value.setattr("kind", "search_projection_prefix_behind_source")?;
+                value.setattr(
+                    "complete_through_commit_epoch",
+                    *complete_through_commit_epoch,
+                )?;
+                value.setattr("source_commit_epoch", *source_commit_epoch)?;
+                value.setattr("retryable", false)
+            })();
+            attributes.err().unwrap_or(exception)
+        }),
+        HawDBError::SearchProjectionBatchBudgetExceeded {
+            budget,
+            commit_epoch,
+            required_operations,
+            limit,
+        } => Python::attach(|py| {
+            // A budget refusal, not storage damage: nothing was published
+            // and the handle stays usable (#1924).
+            let exception = ExecutionError::new_err(message);
+            let value = exception.value(py);
+            let attributes = (|| -> PyResult<()> {
+                value.setattr("kind", "search_projection_batch_budget_exceeded")?;
+                value.setattr("budget", budget.as_str())?;
+                value.setattr("commit_epoch", *commit_epoch)?;
+                value.setattr("required_operations", *required_operations)?;
+                value.setattr("limit", *limit)?;
+                value.setattr("retryable", false)
+            })();
+            attributes.err().unwrap_or(exception)
+        }),
+        HawDBError::SearchProductionQualificationGraphEpochMismatch {
+            expected_canonical_graph_commit_epoch,
+            opened_graph_commit_epoch,
+        } => Python::attach(|py| {
+            // A stale qualification, not storage damage: the graph moved
+            // after qualification. Qualify again and reopen (#1932).
+            let exception = ExecutionError::new_err(message);
+            let value = exception.value(py);
+            let attributes = (|| -> PyResult<()> {
+                value.setattr(
+                    "kind",
+                    "search_production_qualification_graph_epoch_mismatch",
+                )?;
+                value.setattr(
+                    "expected_canonical_graph_commit_epoch",
+                    *expected_canonical_graph_commit_epoch,
+                )?;
+                value.setattr("opened_graph_commit_epoch", *opened_graph_commit_epoch)?;
+                value.setattr("retryable", false)
+            })();
+            attributes.err().unwrap_or(exception)
+        }),
+        HawDBError::SearchProductionQualificationRefused { blocker_codes } => {
+            Python::attach(|py| {
+                // The report does not qualify this projection for this
+                // release; nothing is damaged. Qualify again (#1932).
+                let exception = ExecutionError::new_err(message);
+                let value = exception.value(py);
+                let attributes = (|| -> PyResult<()> {
+                    value.setattr("kind", "search_production_qualification_refused")?;
+                    value.setattr("blocker_codes", blocker_codes.clone())?;
+                    value.setattr("retryable", false)
+                })();
+                attributes.err().unwrap_or(exception)
+            })
+        }
         HawDBError::ReadOnly { operation } => Python::attach(|py| {
             // A caller error: the handle is read-only and nothing was written.
             let exception = ExecutionError::new_err(message);
@@ -297,6 +372,48 @@ pub fn format_hawdb_error(error: &HawDBError) -> PyErr {
                 value.setattr("requested", limit.requested)?;
                 value.setattr("maximum", limit.maximum)?;
                 value.setattr("config_option", limit.limit.config_option())?;
+                value.setattr("retryable", false)
+            })();
+            attributes.err().unwrap_or(exception)
+        }),
+        HawDBError::RuntimeTaskStopped(reason) => Python::attach(|py| {
+            // The caller's deadline or cancellation stopped the work before
+            // it committed: nothing was written and the handle stays usable.
+            // A stop is a stop whichever layer raised it.
+            let exception = TaskStoppedError::new_err(message);
+            let value = exception.value(py);
+            let attributes = (|| -> PyResult<()> {
+                value.setattr("kind", "runtime_task_stopped")?;
+                value.setattr("reason", reason.as_str())?;
+                value.setattr("retryable", false)
+            })();
+            attributes.err().unwrap_or(exception)
+        }),
+        HawDBError::RuntimeAdmissionRefused(refusal) => Python::attach(|py| {
+            // The runtime governor had no capacity for this read: nothing
+            // was written, the handle stays usable, and a transient refusal
+            // can be retried once capacity frees up.
+            let exception = ExecutionError::new_err(message);
+            let value = exception.value(py);
+            let attributes = (|| -> PyResult<()> {
+                value.setattr("kind", "runtime_admission_refused")?;
+                value.setattr("code", refusal.code)?;
+                value.setattr("requested", refusal.requested)?;
+                value.setattr("available", refusal.available)?;
+                value.setattr("retryable", refusal.retryable)
+            })();
+            attributes.err().unwrap_or(exception)
+        }),
+        HawDBError::RuntimeIoWaveReservationExceeded {
+            requested_slots,
+            reserved_slots,
+        } => Python::attach(|py| {
+            let exception = ExecutionError::new_err(message);
+            let value = exception.value(py);
+            let attributes = (|| -> PyResult<()> {
+                value.setattr("kind", "runtime_io_wave_reservation_exceeded")?;
+                value.setattr("requested_slots", *requested_slots)?;
+                value.setattr("reserved_slots", *reserved_slots)?;
                 value.setattr("retryable", false)
             })();
             attributes.err().unwrap_or(exception)
@@ -741,6 +858,147 @@ mod tests {
     }
 
     #[test]
+    fn search_projection_prefix_behind_source_is_a_typed_execution_error() {
+        Python::initialize();
+        Python::attach(|py| {
+            let error = HawDBError::SearchProjectionPrefixBehindSource {
+                complete_through_commit_epoch: 3,
+                source_commit_epoch: 7,
+            };
+            let exception = format_hawdb_error(&error);
+            assert!(exception.is_instance_of::<ExecutionError>(py));
+            assert!(!exception.is_instance_of::<StorageError>(py));
+            let value = exception.value(py);
+            assert_eq!(
+                value.str().unwrap().to_str().unwrap(),
+                "execution error: search projection complete-through epoch 3 differs from source snapshot epoch 7; prepare the complete source interval before publishing its watermark"
+            );
+            let text = |name: &str| value.getattr(name).unwrap().extract::<String>().unwrap();
+            let number = |name: &str| value.getattr(name).unwrap().extract::<u64>().unwrap();
+            assert_eq!(text("kind"), "search_projection_prefix_behind_source");
+            assert_eq!(number("complete_through_commit_epoch"), 3);
+            assert_eq!(number("source_commit_epoch"), 7);
+            assert!(!value
+                .getattr("retryable")
+                .unwrap()
+                .extract::<bool>()
+                .unwrap());
+        });
+    }
+
+    #[test]
+    fn search_projection_batch_budget_refusal_is_an_execution_error_not_storage() {
+        Python::initialize();
+        Python::attach(|py| {
+            for (budget, commit_epoch, text) in [
+                (
+                    hawdb::SearchProjectionBatchBudget::ChangeBatch,
+                    Some(5),
+                    "storage error: search projection change at commit epoch 5 requires 9 operations, exceeding configured per-batch limit 4",
+                ),
+                (
+                    hawdb::SearchProjectionBatchBudget::GraphDelta,
+                    None,
+                    "storage error: search projection graph delta operation count 9 exceeded configured limit 4",
+                ),
+                (
+                    hawdb::SearchProjectionBatchBudget::ProjectionDelta,
+                    None,
+                    "storage error: incremental projection update operation count 9 exceeded configured limit 4",
+                ),
+            ] {
+                let error = HawDBError::SearchProjectionBatchBudgetExceeded {
+                    budget,
+                    commit_epoch,
+                    required_operations: 9,
+                    limit: 4,
+                };
+                let exception = format_hawdb_error(&error);
+                assert!(exception.is_instance_of::<ExecutionError>(py));
+                assert!(!exception.is_instance_of::<StorageError>(py));
+                let value = exception.value(py);
+                assert_eq!(value.str().unwrap().to_str().unwrap(), text);
+                let field = |name: &str| value.getattr(name).unwrap();
+                assert_eq!(
+                    field("kind").extract::<String>().unwrap(),
+                    "search_projection_batch_budget_exceeded"
+                );
+                assert_eq!(
+                    field("budget").extract::<String>().unwrap(),
+                    budget.as_str()
+                );
+                assert_eq!(
+                    field("commit_epoch").extract::<Option<u64>>().unwrap(),
+                    commit_epoch
+                );
+                assert_eq!(field("required_operations").extract::<usize>().unwrap(), 9);
+                assert_eq!(field("limit").extract::<usize>().unwrap(), 4);
+                assert!(!field("retryable").extract::<bool>().unwrap());
+            }
+        });
+    }
+
+    #[test]
+    fn stale_search_production_qualification_is_an_execution_error_not_storage() {
+        Python::initialize();
+        Python::attach(|py| {
+            let error = HawDBError::SearchProductionQualificationGraphEpochMismatch {
+                expected_canonical_graph_commit_epoch: 3,
+                opened_graph_commit_epoch: 4,
+            };
+            let exception = format_hawdb_error(&error);
+            assert!(exception.is_instance_of::<ExecutionError>(py));
+            assert!(!exception.is_instance_of::<StorageError>(py));
+            let value = exception.value(py);
+            assert_eq!(
+                value.str().unwrap().to_str().unwrap(),
+                "storage error: qualified out-of-core search expected canonical graph commit epoch 3, opened graph is at 4"
+            );
+            let field = |name: &str| value.getattr(name).unwrap();
+            assert_eq!(
+                field("kind").extract::<String>().unwrap(),
+                "search_production_qualification_graph_epoch_mismatch"
+            );
+            assert_eq!(
+                field("expected_canonical_graph_commit_epoch")
+                    .extract::<u64>()
+                    .unwrap(),
+                3
+            );
+            assert_eq!(
+                field("opened_graph_commit_epoch").extract::<u64>().unwrap(),
+                4
+            );
+            assert!(!field("retryable").extract::<bool>().unwrap());
+
+            let error = HawDBError::SearchProductionQualificationRefused {
+                blocker_codes: vec![
+                    "dataset_too_small".to_owned(),
+                    "projection_identity_mismatch".to_owned(),
+                ],
+            };
+            let exception = format_hawdb_error(&error);
+            assert!(exception.is_instance_of::<ExecutionError>(py));
+            assert!(!exception.is_instance_of::<StorageError>(py));
+            let value = exception.value(py);
+            assert_eq!(
+                value.str().unwrap().to_str().unwrap(),
+                "storage error: segmented lexical projection is not qualified for the current production release: dataset_too_small,projection_identity_mismatch"
+            );
+            let field = |name: &str| value.getattr(name).unwrap();
+            assert_eq!(
+                field("kind").extract::<String>().unwrap(),
+                "search_production_qualification_refused"
+            );
+            assert_eq!(
+                field("blocker_codes").extract::<Vec<String>>().unwrap(),
+                ["dataset_too_small", "projection_identity_mismatch"]
+            );
+            assert!(!field("retryable").extract::<bool>().unwrap());
+        });
+    }
+
+    #[test]
     fn search_projection_ownership_mismatch_is_an_execution_error_with_both_sets() {
         Python::initialize();
         Python::attach(|py| {
@@ -812,6 +1070,77 @@ mod tests {
             assert_eq!(text("limit"), "record_bytes");
             assert_eq!(text("config_option"), "DatabaseConfig.max_wal_record_bytes");
             assert_eq!((number("requested"), number("maximum")), (20, 16));
+            assert!(!value
+                .getattr("retryable")
+                .unwrap()
+                .extract::<bool>()
+                .unwrap());
+        });
+    }
+
+    #[test]
+    fn runtime_task_stop_is_a_task_stopped_error_with_its_reason() {
+        Python::initialize();
+        Python::attach(|py| {
+            let error =
+                HawDBError::RuntimeTaskStopped(hawdb::RuntimeCancellationReason::DeadlineExceeded);
+            let exception = format_hawdb_error(&error);
+            assert!(exception.is_instance_of::<TaskStoppedError>(py));
+            assert!(!exception.is_instance_of::<ExecutionError>(py));
+            assert!(!exception.is_instance_of::<StorageError>(py));
+            let value = exception.value(py);
+            let text = |name: &str| value.getattr(name).unwrap().extract::<String>().unwrap();
+            assert_eq!(text("kind"), "runtime_task_stopped");
+            assert_eq!(text("reason"), "deadline_exceeded");
+        });
+    }
+
+    #[test]
+    fn runtime_admission_refusal_is_a_retryable_execution_error_with_its_code() {
+        Python::initialize();
+        Python::attach(|py| {
+            let error = HawDBError::RuntimeAdmissionRefused(hawdb::RuntimeAdmissionRefusal {
+                code: "memory_saturated",
+                requested: 4096,
+                available: 0,
+                retryable: true,
+            });
+            let exception = format_hawdb_error(&error);
+            assert!(exception.is_instance_of::<ExecutionError>(py));
+            assert!(!exception.is_instance_of::<StorageError>(py));
+            let value = exception.value(py);
+            let text = |name: &str| value.getattr(name).unwrap().extract::<String>().unwrap();
+            let number = |name: &str| value.getattr(name).unwrap().extract::<u64>().unwrap();
+            assert_eq!(text("kind"), "runtime_admission_refused");
+            assert_eq!(text("code"), "memory_saturated");
+            assert_eq!((number("requested"), number("available")), (4096, 0));
+            assert!(value
+                .getattr("retryable")
+                .unwrap()
+                .extract::<bool>()
+                .unwrap());
+        });
+    }
+
+    #[test]
+    fn io_wave_reservation_refusal_is_a_non_retryable_execution_error() {
+        Python::initialize();
+        Python::attach(|py| {
+            let error = HawDBError::RuntimeIoWaveReservationExceeded {
+                requested_slots: 2,
+                reserved_slots: 1,
+            };
+            let exception = format_hawdb_error(&error);
+            assert!(exception.is_instance_of::<ExecutionError>(py));
+            assert!(!exception.is_instance_of::<StorageError>(py));
+            let value = exception.value(py);
+            let text = |name: &str| value.getattr(name).unwrap().extract::<String>().unwrap();
+            let number = |name: &str| value.getattr(name).unwrap().extract::<usize>().unwrap();
+            assert_eq!(text("kind"), "runtime_io_wave_reservation_exceeded");
+            assert_eq!(
+                (number("requested_slots"), number("reserved_slots")),
+                (2, 1)
+            );
             assert!(!value
                 .getattr("retryable")
                 .unwrap()

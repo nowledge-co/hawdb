@@ -106,10 +106,14 @@ pub(super) fn encode_segment_payload_with_context<T: crate::document_encoding::R
         checkpoint(task).map_err(io::Error::other)?;
         Ok(compressed)
     })();
+    // Encoding runs before publication: a stop carried in the I/O error is
+    // the typed task stop.
     result.map_err(|error: io::Error| {
-        HawDBError::Storage(format!(
-            "search generation {name} segment {segment_id} encoding failed: {error}"
-        ))
+        HawDBError::or_stop(&error, || {
+            HawDBError::Storage(format!(
+                "search generation {name} segment {segment_id} encoding failed: {error}"
+            ))
+        })
     })
 }
 

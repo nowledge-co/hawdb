@@ -30,6 +30,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 mod published;
+mod sealed;
 pub(crate) use published::skip_rehash as skip_published_rehash;
 pub(crate) use published::WrittenStamp as ObjectStamp;
 #[doc(hidden)]
@@ -74,16 +75,35 @@ impl BlockWork<'_> {
     }
 }
 
-/// The work context records the typed error for its classifier; the object
-/// layer reports it as an ordinary I/O failure of the block.
 fn block_work_error(error: crate::background::CheckpointWorkError) -> ImmutableObjectError {
-    ImmutableObjectError::Io {
-        operation: "admit checkpoint object work",
-        source: io::Error::other(error.to_string()),
+    match error.stop_reason() {
+        Some(reason) => ImmutableObjectError::Stopped(reason),
+        None => ImmutableObjectError::Io {
+            operation: "admit checkpoint object work",
+            source: io::Error::other(error),
+        },
     }
 }
 
 static STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// An operation owns every staging name until installation consumes it.
+/// Errors and a losing concurrent publisher must not retain an extra inode.
+struct StagedFile(PathBuf);
+
+impl std::ops::Deref for StagedFile {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for StagedFile {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
@@ -208,6 +228,7 @@ pub enum PublishOutcome {
 
 #[derive(Debug)]
 pub enum ImmutableObjectError {
+    Stopped(hawdb_core::RuntimeCancellationReason),
     InvalidFormatVersion,
     ObjectTooLarge {
         length: u64,
@@ -238,6 +259,9 @@ pub enum ImmutableObjectError {
 impl Display for ImmutableObjectError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Stopped(reason) => {
+                write!(formatter, "immutable object operation stopped: {reason}")
+            }
             Self::InvalidFormatVersion => {
                 formatter.write_str("immutable object format version is zero")
             }
@@ -291,6 +315,7 @@ impl Display for ImmutableObjectError {
 impl std::error::Error for ImmutableObjectError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Stopped(reason) => Some(reason),
             Self::Io { source, .. } | Self::PublicationUncertain { source } => Some(source),
             Self::InvalidSealedRoot { source } => Some(source),
             Self::ReclamationRoot { source, .. } => Some(source.as_ref()),
@@ -1309,18 +1334,14 @@ impl ImmutableObjectStore {
         }
 
         let staging = self.stage_payload(payload)?;
-        let install_result = self.install_staged(
+        self.install_staged(
             reference,
             Some(payload),
             None,
             &staging,
             &destination,
             BlockWork::default(),
-        );
-        if install_result.is_err() {
-            let _ = fs::remove_file(&staging);
-        }
-        install_result
+        )
     }
 
     /// Publishes a file-backed payload without buffering it. The source is
@@ -1363,12 +1384,7 @@ impl ImmutableObjectStore {
         }
 
         let (staging, written) = self.stage_file(reference, source, work)?;
-        let install_result =
-            self.install_staged(reference, None, written, &staging, &destination, work);
-        if install_result.is_err() {
-            let _ = fs::remove_file(&staging);
-        }
-        install_result
+        self.install_staged(reference, None, written, &staging, &destination, work)
     }
 
     /// Establishes the object namespace and kind directory name barriers and
@@ -1411,7 +1427,7 @@ impl ImmutableObjectStore {
         Ok(destination)
     }
 
-    fn stage_payload(&self, payload: &[u8]) -> Result<PathBuf, ImmutableObjectError> {
+    fn stage_payload(&self, payload: &[u8]) -> Result<StagedFile, ImmutableObjectError> {
         let staging_directory = self.root.join(OBJECTS_DIRECTORY).join(STAGING_DIRECTORY);
         let sequence = STAGING_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let path = staging_directory.join(format!("{}-{sequence}.stage", std::process::id()));
@@ -1419,8 +1435,9 @@ impl ImmutableObjectStore {
             "create immutable object staging file",
             OpenOptions::new().write(true).create_new(true).open(&path),
         )?;
+        let path = StagedFile(path);
         if let Err(error) = file.write_all(payload).and_then(|_| file.sync_all()) {
-            let _ = fs::remove_file(&path);
+            drop(file);
             return Err(ImmutableObjectError::Io {
                 operation: "write and sync immutable object staging file",
                 source: error,
@@ -1434,7 +1451,7 @@ impl ImmutableObjectStore {
         reference: ObjectReference,
         source: &Path,
         work: BlockWork<'_>,
-    ) -> Result<(PathBuf, Option<published::WrittenStamp>), ImmutableObjectError> {
+    ) -> Result<(StagedFile, Option<published::WrittenStamp>), ImmutableObjectError> {
         let mut input = map_io("open immutable object source", File::open(source))?;
         let staging_directory = self.root.join(OBJECTS_DIRECTORY).join(STAGING_DIRECTORY);
         let sequence = STAGING_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -1443,6 +1460,7 @@ impl ImmutableObjectStore {
             "create immutable object staging file",
             OpenOptions::new().write(true).create_new(true).open(&path),
         )?;
+        let path = StagedFile(path);
         let copied = (|| -> Result<Option<published::WrittenStamp>, ImmutableObjectError> {
             let mut identity = ObjectReferenceWriter::new(
                 reference.kind,
@@ -1476,14 +1494,8 @@ impl ImmutableObjectStore {
             // stamp, installation falls back to a complete read-back.
             Ok(file.with_native(published::WrittenStamp::of_native).ok())
         })();
-        match copied {
-            Ok(written) => Ok((path, written)),
-            Err(error) => {
-                drop(file);
-                let _ = fs::remove_file(&path);
-                Err(error)
-            }
-        }
+        drop(file);
+        copied.map(|written| (path, written))
     }
 
     /// `written` is the stamp of a streamed staging file whose exact bytes
@@ -1531,7 +1543,14 @@ impl ImmutableObjectStore {
                 Ok(PublishOutcome::Published)
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                self.validate_existing(reference, payload, destination, work)
+                self.validate_existing(reference, payload, destination, work)?;
+                if let Err(source) = fs::remove_file(staging)
+                    .and_then(|_| crate::durability::sync_parent_directory(staging))
+                {
+                    self.poisoned = true;
+                    return Err(ImmutableObjectError::PublicationUncertain { source });
+                }
+                Ok(PublishOutcome::Reused)
             }
             Err(error) => Err(ImmutableObjectError::Io {
                 operation: "install immutable object exclusively",

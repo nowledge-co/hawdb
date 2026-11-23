@@ -195,9 +195,7 @@ struct RelationalRowCompactionCheckpoint<'a> {
 }
 
 fn row_compaction_checkpoint(task: &RuntimeTaskContext) -> Result<()> {
-    task.checkpoint().map_err(|reason| {
-        HawDBError::Execution(format!("relational row-page compaction stopped: {reason}"))
-    })
+    task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)
 }
 
 fn row_compaction_publication_error(
@@ -231,8 +229,12 @@ fn exact_overflow_publication_error(
         | hawdb_storage::relational::RelationalOverflowPublicationError::StaleGeneration {
             ..
         } => HawDBError::Storage(message),
-        hawdb_storage::relational::RelationalOverflowPublicationError::Stopped(_) => {
-            HawDBError::Execution(message)
+        hawdb_storage::relational::RelationalOverflowPublicationError::PublishOutcomeUnknown(
+            error,
+        ) => *error,
+        // Every overflow publisher stop is before its rename.
+        hawdb_storage::relational::RelationalOverflowPublicationError::Stopped(reason) => {
+            HawDBError::RuntimeTaskStopped(reason)
         }
     }
 }
@@ -418,6 +420,7 @@ impl GraphStore {
                         memory_bytes: admitted_memory_bytes,
                         io_slots: 1,
                     })
+                    // A string admission refusal carries no task stop.
                     .map_err(|error| {
                         HawDBError::Storage(format!(
                             "row-page compaction admission denied: {error}"
@@ -508,9 +511,7 @@ impl GraphStore {
         task: &RuntimeTaskContext,
     ) -> Result<RelationalOverflowCompactionReport> {
         self.ensure_usable()?;
-        task.checkpoint().map_err(|reason| {
-            HawDBError::Execution(format!("relational overflow compaction stopped: {reason}"))
-        })?;
+        task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)?;
         let durable = self.durable.as_ref().ok_or_else(|| {
             HawDBError::Storage(
                 "relational overflow compaction requires durable storage".to_string(),
@@ -530,6 +531,7 @@ impl GraphStore {
                         memory_bytes: admitted_memory_bytes,
                         io_slots: 1,
                     })
+                    // A string admission refusal carries no task stop.
                     .map_err(|error| {
                         HawDBError::Storage(format!(
                             "relational overflow compaction admission denied: {error}"
@@ -541,9 +543,7 @@ impl GraphStore {
         let generation = durable.next_checkpoint_generation()?;
         let (references, scan) =
             self.collect_exact_relational_overflow_closure(generation, config, task)?;
-        task.checkpoint().map_err(|reason| {
-            HawDBError::Execution(format!("relational overflow compaction stopped: {reason}"))
-        })?;
+        task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)?;
         let prepared = self
             .prepare_checkpoint_with_maintenance(
                 catalog,

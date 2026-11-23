@@ -200,9 +200,7 @@ impl<'a> Source<'a> {
         self.require_admission(Some(admission))?;
         let _scratch = admission.scratch(8192)?;
         let mut file = {
-            let _io = admission
-                .io()
-                .map_err(|error| HawDBError::Execution(error.to_string()))?;
+            let _io = admission.io().map_err(HawDBError::from_execution_error)?;
             self.publication.open_captured_child(name)?
         };
         if self.admit_verified(&file, object.reference())? {
@@ -274,7 +272,7 @@ impl<'a> Source<'a> {
         let _io = admission
             .map(|admission| admission.io())
             .transpose()
-            .map_err(|error| HawDBError::Execution(error.to_string()))?;
+            .map_err(HawDBError::from_execution_error)?;
         let file = match self
             .publication
             .open_captured_child(OUT_OF_CORE_MANIFEST_FILE)
@@ -305,7 +303,7 @@ impl<'a> Source<'a> {
         let _io = admission
             .map(|admission| admission.io())
             .transpose()
-            .map_err(|error| HawDBError::Execution(error.to_string()))?;
+            .map_err(HawDBError::from_execution_error)?;
         self.publication.with_captured_directory(|directory| {
             directory.visit_children(&directory.operation_context(), self.limits.files, |name| {
                 self.task
@@ -388,7 +386,7 @@ impl<'a> Source<'a> {
         let _io = admission
             .map(|admission| admission.io())
             .transpose()
-            .map_err(|error| HawDBError::Execution(error.to_string()))?;
+            .map_err(HawDBError::from_execution_error)?;
         let mut file = match self
             .publication
             .open_captured_child(crate::SEARCH_SNAPSHOT_FILE)
@@ -432,7 +430,7 @@ impl<'a> Source<'a> {
         let _io = admission
             .map(|admission| admission.io())
             .transpose()
-            .map_err(|error| HawDBError::Execution(error.to_string()))?;
+            .map_err(HawDBError::from_execution_error)?;
         if receipt.object.byte_length > decode_limit
             || resident::decoded_len(&mut file, self.task)? > decode_limit
         {
@@ -575,7 +573,7 @@ fn read_file(
     let mut bytes = Vec::new();
     bytes
         .try_reserve_exact(length)
-        .map_err(|error| HawDBError::Execution(error.to_string()))?;
+        .map_err(HawDBError::from_execution_error)?;
     let mut scratch = [0u8; 8192];
     loop {
         crate::build_control::checkpoint(task)?;

@@ -148,24 +148,22 @@ pub unsafe extern "C" fn hawdb_export(
                 "dest_path",
             )
         }?;
-        let inner = database
-            .inner
-            .lock()
-            .map_err(|_| FfiError::invalid("hawdb: database mutex poisoned"))?;
-        if inner.transaction_active() {
-            // Built inline, like the maintenance exports, so the transaction
-            // and maintenance changes need no shared constructor.
-            return Err(FfiError {
-                kind: "transaction_open".to_string(),
-                message: "hawdb: export is refused while a transaction is open on this handle"
-                    .to_string(),
-                resource_budget: None,
-            });
-        }
-        inner
-            .export_logical_dump(destination)
-            .map(|report| export_report_json(&report))
-            .map_err(|error| FfiError::open(&error))
+        database.with_embedded_mut(|inner| {
+            if inner.transaction_active() {
+                // Built inline, like the maintenance exports, so the transaction
+                // and maintenance changes need no shared constructor.
+                return Err(FfiError {
+                    kind: "transaction_open".to_string(),
+                    message: "hawdb: export is refused while a transaction is open on this handle"
+                        .to_string(),
+                    resource_budget: None,
+                });
+            }
+            inner
+                .export_logical_dump(destination)
+                .map(|report| export_report_json(&report))
+                .map_err(|error| FfiError::open(&error))
+        })
     }));
     unsafe { finish(result, report_out, err_out) }
 }

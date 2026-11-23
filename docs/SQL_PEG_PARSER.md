@@ -411,6 +411,11 @@ flat arithmetic and cast chains cannot bypass the height limit.
 These compatibility results do not resolve the throughput, heap, rendered-error,
 or end-to-end performance gates described above.
 
+The covering-index transition fixture records the source-bound INCLUDE grammar
+and AST change from main `058085fa2`. The partial-index transition fixture
+records the subsequent WHERE grammar and AST change from main `ebc2c9c4a`.
+Tests check each transition against its predecessor and the current parser.
+
 `frontend_main_1514_numeric_alias_peg_baseline_v1.jsonl` adds 1,005 independent
 main outcomes across SELECT, INSERT, UPDATE, DELETE, and column defaults. It
 covers integer aliases, FLOAT precision, signed scale modifiers with comments,

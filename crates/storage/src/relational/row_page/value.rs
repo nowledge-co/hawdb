@@ -225,7 +225,7 @@ pub(super) fn decode_row_fields_with_allocations(
     let mut fields = match allocations {
         Some(context) => context
             .vector_capacity(capacity)
-            .map_err(|error| RelationalRowPageError::Admission(error.to_string()))?,
+            .map_err(RelationalRowPageError::from_admission)?,
         None => Vec::with_capacity(capacity),
     };
     let mut requested_index = 0usize;
@@ -484,8 +484,7 @@ fn decode_validated_value_with_allocations(
     encoded: &[u8],
     context: &crate::background::CheckpointDecodeContext,
 ) -> Result<RelationalValue, RelationalRowPageError> {
-    let admission =
-        |error: hawdb_core::HawDBError| RelationalRowPageError::Admission(error.to_string());
+    let admission = RelationalRowPageError::from_admission;
     match encoded[0] {
         4 => context
             .string(std::str::from_utf8(&encoded[5..]).expect("validated TEXT value is UTF-8"))

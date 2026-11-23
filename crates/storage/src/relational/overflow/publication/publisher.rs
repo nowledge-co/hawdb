@@ -449,83 +449,83 @@ impl RelationalOverflowPublisher {
         )?;
 
         checkpoint::publish(&paths.extent_tmp, &paths.extent, work)?;
-        maybe_stop(
-            stop_after,
-            RelationalOverflowPublicationPhase::CandidateExtentsDurable,
-        )?;
-        checkpoint::publish(&paths.descriptor_tmp, &paths.descriptor, work)?;
-        maybe_stop(
-            stop_after,
-            RelationalOverflowPublicationPhase::CandidateRootDurable,
-        )?;
-        checkpoint::publish(
-            &paths.generation_manifest_tmp,
-            &paths.generation_manifest,
-            work,
-        )?;
-        maybe_stop(
-            stop_after,
-            RelationalOverflowPublicationPhase::CandidateManifestDurable,
-        )?;
-
-        if select_latest {
-            let actual_previous = manifest::read_manifest_if_exists_with_work_context(
-                &paths.latest_manifest,
-                self.config,
-                work,
-            )?
-            .map(|manifest| manifest.generation);
-            if actual_previous != expected_previous_generation {
-                return Err(RelationalOverflowPublicationError::StaleGeneration {
-                    expected_previous: expected_previous_generation,
-                    actual_previous,
-                });
-            }
-        }
-        maybe_stop(
-            stop_after,
-            RelationalOverflowPublicationPhase::BaseRevalidated,
-        )?;
-        if select_latest {
-            write_synced(
-                &paths.latest_manifest_tmp,
-                &encoded_manifest,
-                temporary,
+        let publication = (|| {
+            maybe_stop(
+                stop_after,
+                RelationalOverflowPublicationPhase::CandidateExtentsDurable,
+            )?;
+            checkpoint::publish(&paths.descriptor_tmp, &paths.descriptor, work)?;
+            maybe_stop(
+                stop_after,
+                RelationalOverflowPublicationPhase::CandidateRootDurable,
+            )?;
+            checkpoint::publish(
+                &paths.generation_manifest_tmp,
+                &paths.generation_manifest,
                 work,
             )?;
-            checkpoint::io(work, || {
-                durable_replace_file(&paths.latest_manifest_tmp, &paths.latest_manifest)
-                    .map_err(durability("publish latest overflow manifest"))
-            })?;
-        }
+            maybe_stop(
+                stop_after,
+                RelationalOverflowPublicationPhase::CandidateManifestDurable,
+            )?;
 
-        let manifest_digest = checkpoint::integrity(&encoded_manifest, work)?;
+            if select_latest {
+                let actual_previous = manifest::read_manifest_if_exists_with_work_context(
+                    &paths.latest_manifest,
+                    self.config,
+                    work,
+                )?
+                .map(|manifest| manifest.generation);
+                if actual_previous != expected_previous_generation {
+                    return Err(RelationalOverflowPublicationError::StaleGeneration {
+                        expected_previous: expected_previous_generation,
+                        actual_previous,
+                    });
+                }
+            }
+            maybe_stop(
+                stop_after,
+                RelationalOverflowPublicationPhase::BaseRevalidated,
+            )?;
+            let manifest_digest = checkpoint::integrity(&encoded_manifest, work)?;
 
-        Ok(RelationalOverflowPublicationReport {
-            generation,
-            source_commit_epoch,
-            extent_count: manifest.extent_count,
-            new_extent_count: manifest.new_extent_count,
-            reused_extent_count: artifacts.reused_extent_count,
-            extent_artifact_bytes: manifest.extent_artifact.encoded_len,
-            descriptor_artifact_bytes: manifest.descriptor_artifact.encoded_len,
-            manifest_bytes: encoded_manifest.len() as u64,
-            generation_artifacts: super::RelationalOverflowGenerationArtifacts {
-                generation: manifest.generation,
-                source_commit_epoch: manifest.source_commit_epoch,
-                root_set_digest: manifest.root_set_digest,
-                manifest_artifact: RelationalOverflowArtifactMetadata {
-                    encoded_len: encoded_manifest.len() as u64,
-                    encoded_crc32c: manifest_digest.crc32c.get(),
-                    encoded_sha256: manifest_digest.sha256,
+            if select_latest {
+                write_synced(
+                    &paths.latest_manifest_tmp,
+                    &encoded_manifest,
+                    temporary,
+                    work,
+                )?;
+                checkpoint::select(&paths.latest_manifest_tmp, &paths.latest_manifest, work)?;
+            }
+
+            Ok(RelationalOverflowPublicationReport {
+                generation,
+                source_commit_epoch,
+                extent_count: manifest.extent_count,
+                new_extent_count: manifest.new_extent_count,
+                reused_extent_count: artifacts.reused_extent_count,
+                extent_artifact_bytes: manifest.extent_artifact.encoded_len,
+                descriptor_artifact_bytes: manifest.descriptor_artifact.encoded_len,
+                manifest_bytes: encoded_manifest.len() as u64,
+                generation_artifacts: super::RelationalOverflowGenerationArtifacts {
+                    generation: manifest.generation,
+                    source_commit_epoch: manifest.source_commit_epoch,
+                    root_set_digest: manifest.root_set_digest,
+                    manifest_artifact: RelationalOverflowArtifactMetadata {
+                        encoded_len: encoded_manifest.len() as u64,
+                        encoded_crc32c: manifest_digest.crc32c.get(),
+                        encoded_sha256: manifest_digest.sha256,
+                    },
                 },
-            },
-            events: if select_latest {
-                COMPLETE_PUBLICATION_TRACE
-            } else {
-                CANDIDATE_PUBLICATION_TRACE
-            },
-        })
+                events: if select_latest {
+                    COMPLETE_PUBLICATION_TRACE
+                } else {
+                    CANDIDATE_PUBLICATION_TRACE
+                },
+            })
+        })();
+        checkpoint::after_publication(publication, &paths.extent)
     }
 }
 
@@ -1191,6 +1191,7 @@ fn validate_encoded_extent(
         None => decode_overflow_envelope(reference, encoded, &mut budget, None).map(|_| ()),
     }
     .map_err(|error| match error {
+        RelationalError::Stopped(reason) => RelationalOverflowPublicationError::Stopped(reason),
         RelationalError::Admission(message) => {
             RelationalOverflowPublicationError::Admission(message)
         }

@@ -99,7 +99,7 @@ fn checkpoint_units_projected_graph_codec_cancels_inside_numeric_arrays() {
         };
         assert_eq!(
             error,
-            HawDBError::Storage("checkpoint build stopped: cancelled".into())
+            HawDBError::RuntimeTaskStopped(hawdb_core::RuntimeCancellationReason::Cancelled)
         );
         assert_eq!(probe.completed.load(Ordering::SeqCst), limit);
         probe.assert_released(&scheduler);
@@ -763,7 +763,7 @@ fn checkpoint_units_projected_definition_names_cancel_and_preserve_legacy_errors
         };
         assert_eq!(
             error,
-            HawDBError::Storage("checkpoint build stopped: cancelled".to_string())
+            HawDBError::RuntimeTaskStopped(hawdb_core::RuntimeCancellationReason::Cancelled)
         );
         assert_eq!(probe.completed.load(Ordering::SeqCst), 2);
         probe.assert_released(&scheduler);
@@ -804,7 +804,7 @@ fn checkpoint_units_projected_definition_names_cancel_and_preserve_legacy_errors
             append_projected_name_list(&mut CheckpointProjectedGraphText::new(), &names, &work)
                 .unwrap_err()
         };
-        assert!(error.to_string().contains("checkpoint build stopped"));
+        assert!(error.to_string().contains("runtime task stopped"));
         assert_eq!(probe.completed.load(Ordering::SeqCst), 7);
         probe.assert_released(&scheduler);
     }
@@ -883,7 +883,7 @@ fn checkpoint_units_projected_text_cancels_before_complete_line_or_field() {
         };
         assert_eq!(
             error,
-            HawDBError::Storage("checkpoint build stopped: cancelled".to_string())
+            HawDBError::RuntimeTaskStopped(hawdb_core::RuntimeCancellationReason::Cancelled)
         );
         assert_eq!(probe.completed.load(Ordering::SeqCst), 2);
         probe.assert_released(&scheduler);
