@@ -5466,6 +5466,20 @@ mod tests {
         let prepared = store
             .prepare_immutable_root_handoff(&objects)
             .expect("prepare immutable root");
+        #[cfg(unix)]
+        {
+            let immutable = ImmutableObjectStore::open(&objects).unwrap();
+            for binding in &prepared.root.checkpoint_bindings {
+                let source = database.join(&binding.relative_path);
+                let object = immutable.object_path(binding.reference);
+                assert_eq!(
+                    crate::native_file_identity::of_metadata(&std::fs::metadata(&source).unwrap()),
+                    crate::native_file_identity::of_metadata(&std::fs::metadata(&object).unwrap()),
+                    "initial handoff must share {}",
+                    source.display(),
+                );
+            }
+        }
         prepared.root.validate().expect("valid root");
         assert!(!prepared.root.checkpoint_references.is_empty());
         assert!(

@@ -21,8 +21,14 @@ its original data, and reopening must preserve the recovered result. Completed
 checkpoint acknowledgment must retain the whole transaction.
 
 Local macOS arm64 execution on 2026-11-23 passed the facade case (600.49s)
-and the storage regression selection (39 cases). Unix native inode assertions
-also cover fresh checkpoint sharing and managed COW. These are implementation
+and the storage regression selection (39 cases, extended to 40 with the
+initial/handoff inode oracle in
+`store::immutable_root::tests::graph_store_prepares_root_and_private_successor_wal`).
+Four independent focused mutations also fail the intended assertions: restoring
+copying at initial handoff, removing producer synchronization, holding one cold
+validation wave for the whole object, and retrying unavailable links after
+copy fallback. Restoring the candidate passes all 40 selected cases. Unix
+native inode assertions cover fresh checkpoint sharing and managed COW. These are implementation
 results for the candidate change, not Linux/Windows runtime qualification.
 The existing Windows directory-flush assumption remains unqualified; no
 storage bytes, reference domain, selector or persistent-format version changed.
