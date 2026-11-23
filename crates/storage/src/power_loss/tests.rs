@@ -658,6 +658,47 @@ fn immutable_publication_persists_every_new_directory_name() {
 }
 
 #[test]
+fn sealed_publication_syncs_unsynced_source_without_staging_payload_writes() {
+    use crate::immutable_object::{BlockWork, ImmutableObjectStore, ObjectKind, ObjectReference};
+    let fixture = Fixture::new(ImageLimits::default());
+    let source = fixture.root.join("producer");
+    let payload = b"producer data not synchronized by its creator";
+    fs::write(&source, payload).unwrap();
+    let mut objects = ImmutableObjectStore::open(&fixture.root).unwrap();
+    let reference = ObjectReference::for_bytes(ObjectKind::CheckpointArtifact, 1, payload);
+    fixture
+        .model
+        .observe(ObservationPoint {
+            event: IoEvent::Write,
+            relative_path: PathBuf::from("objects/.staging"),
+            boundary: ObservationBoundary::After,
+            skip_matches: 0,
+            include_descendants: true,
+            keep_last: false,
+        })
+        .unwrap();
+    objects
+        .publish_sealed_file_with_work(reference, &source, BlockWork::default())
+        .unwrap();
+    assert!(
+        fixture.model.take_observation().unwrap().is_none(),
+        "sealed publication must not copy payload into staging"
+    );
+    let snapshot = fixture.model.capture().unwrap();
+    let relative = objects
+        .object_path(reference)
+        .strip_prefix(&fixture.root)
+        .unwrap()
+        .to_path_buf();
+    for plan in [CrashPlan::default(), snapshot.persist_all_plan()] {
+        let image = snapshot.crash(&plan).unwrap();
+        assert_eq!(image.bytes(&relative).unwrap(), payload);
+    }
+    // Only the recorder's counted root remains after publication.
+    assert_eq!(fixture.model.project().metrics().open, 1);
+}
+
+#[test]
 fn immutable_reuse_repeats_an_uncertain_final_namespace_barrier() {
     use crate::immutable_object::{
         ImmutableObjectError, ImmutableObjectStore, ObjectKind, ObjectReference, PublishOutcome,
