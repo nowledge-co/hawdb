@@ -81,6 +81,7 @@ crates/storage/src/wal/frame.rs const WAL_BINARY_MAGIC_PREFIX: &[u8; 6] = b"SKWA
 crates/search/src/cjk_tokenizer.rs pub(super) const ANALYZER_FORMAT_VERSION: &[u8] = b"hawdb-search-analyzer-v3-jieba-0.11.0-search-han-ngrams";
 crates/search/src/consumer/generation_metadata.rs const MAGIC: &[u8; 8] = b"HAWCGM02";
 crates/search/src/lexical_readiness.rs pub const SEARCH_LEXICAL_QUALIFICATION_PROTOCOL_VERSION: u64 = 2;
+crates/search/src/out_of_core/content_blocks/frames.rs const FRAME_MAGIC: u32 = 0xfd2f_b528;
 crates/search/src/out_of_core/content_blocks.rs pub(super) const MAGIC: &[u8; 8] = b"HDCBLK01";
 crates/search/src/out_of_core/content_blocks.rs pub(super) const LAYOUT_VERSION: u16 = 2;
 crates/search/src/out_of_core/manifest_version.rs pub(super) const BASE_VERSION: u16 = 1;
