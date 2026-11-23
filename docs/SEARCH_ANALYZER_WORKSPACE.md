@@ -60,9 +60,9 @@ call is not internally interruptible.
 
 ## Qualified dependency envelope
 
-The model is tied to Rust 1.97.1 and Jieba 0.11.0. The retained legacy regex
-allowance is qualified with regex 1.13.1, regex-automata 0.4.18 and regex-syntax
-0.8.11. Exact dependency requirements prevent
+The workspace bounds are qualified on Rust 1.99.1 with Jieba 0.11.0,
+regex 1.13.1, regex-automata 0.4.19 and regex-syntax 0.8.12.
+Exact dependency requirements prevent
 a downstream compatible-version update from silently changing the opaque layout
 or algorithm. Requalify the model when updating these requirements. Bounds use
 8-byte words and cover the supported 32/64-bit layouts. Rust allocation requests,
@@ -164,6 +164,7 @@ bounds. The test does not infer a universal bound by rounding a sampled peak.
 ```sh
 cargo test -p hawdb-search
 cargo test -p hawdb-search --no-default-features --lib
+cargo test -p hawdb-search --lib analyzer_workspace::bounds::tests
 cargo test -p hawdb-search --test analyzer_workspace_allocation --features regex-automata/dfa-build,regex-automata/dfa-onepass
 cargo clippy -p hawdb-search --all-targets -- -D warnings
 bazel test //crates/search:all //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests //:hawdb_linux_ci_fuzz_smoke_test
