@@ -61,17 +61,23 @@ function files(root: string): string[] {
   });
 }
 
-// The canonical checkpoint file a handle reads: beside the storage manifest in
-// a backup, under branches/<branch>/data/ in an opened project.
+// The canonical graph file a handle reads. Graph G can precede checkpoint C;
+// v1 manifests use C for both. Prefer the active branch copy after restore.
 function canonicalCheckpoint(root: string): string {
   const all = files(root);
   const generation = all
     .filter((path) => basename(path) === "manifest.hawdb")
-    .map((path) => /^checkpoint_generation\t(\d+)$/m.exec(readFileSync(path, "utf8"))?.[1])
+    .map((path) => {
+      const manifest = readFileSync(path, "utf8");
+      return /^graph_artifact_generation\t(\d+)$/m.exec(manifest)?.[1]
+        ?? /^checkpoint_generation\t(\d+)$/m.exec(manifest)?.[1];
+    })
     .find((value) => value !== undefined);
   expect(generation).toBeDefined();
   const candidates = all.filter((path) => basename(path) === `canonical.${generation}.hawdb`);
-  return candidates.find((path) => basename(dirname(path)) === "data") ?? candidates[0];
+  const selected = candidates.find((path) => basename(dirname(path)) === "data") ?? candidates[0];
+  expect(selected).toBeDefined();
+  return selected;
 }
 
 function flipMiddleByte(path: string): void {
@@ -139,13 +145,15 @@ describe("Bun backup, restore and scrub", () => {
     const database = seeded(join(root, "database"));
     mkdirSync(join(root, "occupied"));
     expect(failure(() => database.backup(join(root, "occupied"))).message).toContain("already exists");
-    database.backup(join(root, "backup"));
+    const backup = database.backup(join(root, "backup"));
     expect(failure(() => library.restore(join(root, "backup"), join(root, "occupied"))).message).toContain(
       "already exists",
     );
     database.close();
 
-    flipMiddleByte(canonicalCheckpoint(join(root, "backup")));
+    const canonical = canonicalCheckpoint(join(root, "backup"));
+    expect(basename(canonical)).not.toBe(`canonical.${backup.generation}.hawdb`);
+    flipMiddleByte(canonical);
     failure(() => library.restore(join(root, "backup"), join(root, "restored")));
     expect(existsSync(join(root, "restored"))).toBe(false);
 
