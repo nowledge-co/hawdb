@@ -26,8 +26,10 @@ bazel test --test_output=errors --test_env=PATH --test_env=HOME \
 
 The suite tests Rust handle lifecycles and MoonBit's real embedded-engine
 behavior: SQL/Cypher, typed values, transactions, durable reopen, errors, and
-read-only access. The macOS native linker flags are set by
-`tools/configure_native_link.py`.
+read-only access. Native link flags are supplied at build time by the
+`--moonbit-unstable-prebuild` hook in `tools/native_link.mbtx`, which resolves
+the cargo-built static archive for the host platform; no link paths are stored
+in the MoonBit manifests.
 
 Windows native executable conformance also runs in that workflow until the
 same executable test can run through Bazel on Windows. That job builds the

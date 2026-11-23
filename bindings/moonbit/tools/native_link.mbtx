@@ -1,0 +1,46 @@
+----
+import {
+  "moonbitlang/core/async",
+  "moonbitlang/core/async/fs",
+  "moonbitlang/core/env",
+  "moonbitlang/core/json",
+  "moonbitlang/core/string",
+}
+----
+
+///|
+async fn main {
+  if @env.get_env_var("MOON_BACKEND") != Some("native") {
+    println("{}")
+    return
+  }
+  let (name, system_flags) = match @env.get_env_var("MOON_HOST_OS") {
+    Some("macos") =>
+      (
+        "libhawdb_moonbit.a", "-ldl -lpthread -framework CoreFoundation -framework IOKit",
+      )
+    Some("linux") => ("libhawdb_moonbit.a", "-ldl -lpthread")
+    Some("windows") =>
+      (
+        "hawdb_moonbit.lib", "ws2_32.lib userenv.lib bcrypt.lib advapi32.lib ntdll.lib shell32.lib secur32.lib crypt32.lib iphlpapi.lib ole32.lib",
+      )
+    _ => fail("Unsupported MOON_HOST_OS for HawDB native linking")
+  }
+  let path = "native/target/release/\{name}"
+  guard @fs.exists(path) else {
+    fail(
+      "Missing HawDB archive \{path}; run cargo build --manifest-path native/Cargo.toml --release from the HawDB MoonBit module",
+    )
+  }
+  let archive = @fs.realpath(path)
+  let quoted = "'" + archive.replace_all(old="'", new="'\"'\"'") + "'"
+  let config : Json = {
+    "link_configs": [
+      {
+        "package": "nowledge-co/hawdb",
+        "link_flags": "\{quoted} \{system_flags}",
+      },
+    ],
+  }
+  println(config.stringify())
+}

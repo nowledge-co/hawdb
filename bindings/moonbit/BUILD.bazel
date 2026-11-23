@@ -10,7 +10,7 @@ filegroup(
         "*.mbt",
         "tests/**/*.mbt",
         "tests/**/moon.pkg",
-        "tools/configure_native_link.py",
+        "tools/native_link.mbtx",
     ]) + [
         "moon.mod",
         "moon.pkg",
