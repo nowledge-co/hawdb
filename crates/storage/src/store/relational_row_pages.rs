@@ -125,6 +125,15 @@ impl GraphStore {
         self.relational_row_pages.monotonic_append_fast_path_enabled = enabled;
     }
 
+    /// Selects whether checkpoints also write the legacy full-row relational
+    /// file. The canonical row-page and overflow roots carry the complete
+    /// relational state either way; the legacy file only lets releases before
+    /// persistent format 6 reopen the database outside OutOfCore residency
+    /// with Authoritative relational indexes (#1737).
+    pub fn set_legacy_relational_checkpoint_file_enabled(&mut self, enabled: bool) {
+        self.legacy_relational_checkpoint_file = enabled;
+    }
+
     pub(super) fn activate_out_of_core_relational_rows(&mut self) -> crate::error::Result<()> {
         if self.residency_mode != StorageResidencyMode::OutOfCore
             || !matches!(
@@ -1991,6 +2000,7 @@ fn map_sparse_snapshot_read_error(error: RelationalRowPageSnapshotReadError) -> 
 #[cfg(test)]
 mod tests {
     mod overflow_compaction;
+    mod relational_checkpoint_writes;
     mod relational_row_bytes;
 
     use super::*;

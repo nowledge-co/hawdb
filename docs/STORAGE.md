@@ -107,17 +107,20 @@ magic as corruption; 0.36.x therefore reports a database checkpointed by 0.37
 as corrupt rather than unsupported. Do not downgrade to 0.36.x after a 0.37
 checkpoint; carry data across with a logical dump instead.
 
-`RELATIONAL_CHECKPOINT_LAYOUT_FORMAT` refuses intact checkpoints this reader
+`RELATIONAL_CHECKPOINT_LAYOUT_FORMAT` refuses intact checkpoints a reader
 cannot serve in the requested configuration, with `UnsupportedFeature` whose
 tag is the checkpoint generation:
 
-- relational rows stored only in the canonical row-page root, without a
-  full-row `relational.<generation>.hawdb` file, opened in any mode other than
-  `OutOfCore` residency with `Authoritative` relational indexes. Releases with
-  [#1737](https://github.com/nowledge-co/hawdb/issues/1737) write that layout,
-  as does any `OutOfCore` + `Authoritative` checkpoint;
 - `Authoritative` relational indexes on a checkpoint that never published a
-  persistent relational index generation.
+  persistent relational index generation;
+- in HawDB 0.33 through 0.37 only: relational rows stored only in the
+  canonical row-page root, without a full-row `relational.<generation>.hawdb`
+  file, opened in any mode other than `OutOfCore` residency with
+  `Authoritative` relational indexes. Persistent format 6
+  ([#1737](https://github.com/nowledge-co/hawdb/issues/1737)) writes that
+  layout by default, as does any `OutOfCore` + `Authoritative` checkpoint.
+  Format 6 readers rebuild resident rows from the row root instead of
+  refusing (see [Persistent format version](#persistent-format-version)).
 
 Both are configuration or layout mismatches, not corruption; the open
 changes no database file (each branch's disposable `runtime/` mount is
@@ -167,6 +170,24 @@ Format` workflow fails while they disagree and states in each release's notes
 whether it changed. Development formats still break without migrations;
 embedding hosts carry data across a change with a logical dump (export with
 the old release, import with the new one). See [LOGICAL_DUMP.md](LOGICAL_DUMP.md).
+
+Version 6 ([#1737](https://github.com/nowledge-co/hawdb/issues/1737)) stops
+writing the legacy full-row `relational.<generation>.hawdb` file at checkpoint.
+The checkpoint-bound relational row-page and overflow roots, which every
+version 5 checkpoint already published, carry the relational state, and a
+checkpoint writes only their changed generations. No codec, magic or version
+constant changes. Version 6 opens every database version 5 opens, including
+full-row files and WAL tails. A version 5 release (HawDB 0.37) opens a version
+6 database only with `OutOfCore` residency and `Authoritative` relational
+indexes; in every other configuration it refuses the open with
+`UnsupportedStorageFormat` / `RELATIONAL_CHECKPOINT_LAYOUT_FORMAT` (see
+[Reader compatibility refusals](#reader-compatibility-refusals)) and changes
+nothing. Releases before 0.37 already cannot read the row-page v5 manifests
+that version 5 writes. A host that must keep a downgrade path to 0.37 may set
+`DatabaseConfig::legacy_relational_checkpoint_file`, which also writes the
+full-row file at the cost of a full relational rewrite per checkpoint;
+otherwise carry data back with a logical dump. See
+[Checkpoints without the full-row file](specs/ROW_PAGE_AND_DEMAND_PAGED_INDEX_SPEC.md#checkpoints-without-the-full-row-file).
 
 ### PostgreSQL partial indexes
 
@@ -699,8 +720,9 @@ checkpoint after recovery removes. Each WAL directory therefore holds at most
 the current and previous generation after a checkpoint.
 
 Every checkpoint of an admitted branch also publishes its closure (durable
-manifest, relational checkpoint, canonical/adjacency/property artifacts, row
-pages, index shadow, append segments) and a sealed root into the project's
+manifest, the legacy relational checkpoint when one is written,
+canonical/adjacency/property artifacts, row pages, index shadow, append
+segments) and a sealed root into the project's
 content-addressed object store (`branches/objects/objects/<kind>/<digest>`).
 A sealed root has no parent link, so a closure no longer referenced by any
 retained root is garbage. The same post-publication pass (foreground

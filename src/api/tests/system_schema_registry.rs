@@ -358,14 +358,23 @@ fn writable_metadata_only_transaction_checkpoints_rows_and_indexes() {
         committed_epoch
     };
 
-    let incompatible = Database::open(&path).unwrap().commit_epoch().unwrap_err();
-    let HawDBError::UnsupportedStorageFormat(format) = &incompatible else {
-        panic!("expected a typed layout refusal, got {incompatible:?}");
-    };
-    assert_eq!(format.format(), crate::RELATIONAL_CHECKPOINT_LAYOUT_FORMAT);
-    assert!(incompatible
-        .to_string()
-        .contains("reopen with OutOfCore residency and Authoritative relational indexes"));
+    // Default residency rebuilds resident rows from the same row root (#1737).
+    {
+        let mut materialized = Database::open(&path).unwrap();
+        assert_eq!(materialized.commit_epoch().unwrap(), committed_epoch);
+        assert!(!materialized
+            .runtime
+            .get()
+            .unwrap()
+            .store
+            .relational_state()
+            .canonical_row_metadata_only());
+        let rows = materialized
+            .query_sql("SELECT id, body FROM content_documents ORDER BY id")
+            .unwrap();
+        assert_eq!(rows.rows.len(), 2);
+        assert_eq!(rows.rows[1]["body"], Value::String("private".to_string()));
+    }
 
     let mut reopened = Database::open_with_config(&path, config).unwrap();
     assert_eq!(reopened.commit_epoch().unwrap(), committed_epoch);

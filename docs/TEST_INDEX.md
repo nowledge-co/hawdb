@@ -4656,6 +4656,11 @@ Specification: [LOGICAL_DUMP.md](LOGICAL_DUMP.md).
     imports with exact values. These bytes must never change. Regenerate a
     new golden version only with the `#[ignore]`d `write_golden_format_1_dump`
     and `HAWDB_GOLDEN_OUT=<dir>`.
+  - `round_trip_from_incremental_relational_checkpoints_after_reopen`
+    (#1737): two checkpoints and a WAL tail leave no `relational.N.hawdb`
+    file; the reopened source (rows rebuilt from the row-page root) exports,
+    the import (a growing import that checkpoints every 16 records) writes no
+    full-row file, queries match, and the re-export is byte-identical.
   - a legacy store whose storage manifest declares `hawdb-storage-v0` is
     refused through the embedded open with
     `UnsupportedStorageFormat(UnsupportedVersion { "storage manifest", 0, 1 })`,
@@ -4701,24 +4706,85 @@ Specification: [LOGICAL_DUMP.md](LOGICAL_DUMP.md).
   workflow on every pull request. On a published release, the same workflow
   appends `Persistent format changed: yes|no (...)` to the release notes.
 
-## Typed refusal of newer relational checkpoint layouts
+## Relational checkpoint write amplification (#1737)
+
+Specification: [Checkpoints without the full-row file](specs/ROW_PAGE_AND_DEMAND_PAGED_INDEX_SPEC.md#checkpoints-without-the-full-row-file).
+Checkpoints write only changed relational row-page and overflow generations
+and no legacy `relational.N.hawdb` file; persistent format 6.
+
+- Storage unit owner `store::relational_row_pages::tests::relational_checkpoint_writes`
+  (`cargo test --locked -p hawdb-storage --lib relational_checkpoint_writes`):
+  `row_root_decode_enforces_checkpoint_value_limits` proves reconstruction
+  preserves the legacy decoder's exact `max_values` and per-value byte
+  admission; `small_change_checkpoint_writes_relational_bytes_proportional_to_the_change`
+  asserts a three-row checkpoint creates under a tenth of the full relational
+  generation's bytes, and that doubling the table grows that cost by less than
+  a tenth of the full state, then reopens in Auto, Materialized and
+  OutOfCore/Shadow with every row and file-backed overflow segment;
+  `reopened_row_root_state_rebuilds_indexes_and_accepts_writes` checks unique
+  index postings rebuilt from the row root, an update, a delete and a further
+  checkpoint; `interrupted_incremental_relational_checkpoint_recovers_every_committed_row`
+  reuses the `CheckpointPublishStage` failpoints (persisted, WAL prepared,
+  manifest published); `legacy_full_row_checkpoint_reopens_and_moves_to_incremental_checkpoints`
+  writes the pre-format-6 full-row layout with `legacy_relational_checkpoint_file`, reopens it
+  with a WAL tail, and checks that overflow values stay readable in the same
+  session after reclamation removes the old full-row file;
+  `row_root_rebuild_and_overflow_rebind_keep_descriptor_exhaustion_typed`
+  exhausts a 64-descriptor project budget and checks that row-root
+  reconstruction and checkpoint overflow rebinding both return
+  `FileDescriptors`, succeed once descriptors are released, and still report
+  `Corruption` for an overflow extent missing from the root and a damaged row
+  page.
+- Storage unit owner `relational::codec::row_root::tests`
+  (`cargo test --locked -p hawdb-storage --lib relational::codec::row_root`):
+  `row_page_read_failures_keep_their_type` and
+  `overflow_read_failures_keep_their_type` map every row-page and overflow
+  read error variant and check that `FileDescriptors`, `UnsupportedFormat`
+  and `Stopped` reach hosts as `HawDBError::FileDescriptors`,
+  `UnsupportedStorageFormat` and `RuntimeTaskStopped`, while only checksum,
+  missing-table, missing-extent and stale-generation mismatches become
+  `Corruption`.
+- Root unit owner `api::tests::relational_checkpoint_format`
+  (`cargo test --locked -p hawdb --lib relational_checkpoint_format`) unpacks
+  `tests/fixtures/format_2_relational_checkpoint.bundle`, written by HawDB
+  0.33.0 (main `150ffe84d`: full-row checkpoint, overflow bodies, composite and
+  foreign keys, a keyless table and a WAL tail). It opens it read-only and
+  writable, checks values and constraints, checkpoints twice without writing a
+  full-row file, and reopens.
+- Root power-loss family `api::tests::power_loss::relational_checkpoint`
+  (`cargo test --locked -p hawdb --features test-support --lib api::tests::power_loss::relational_checkpoint -- --test-threads=1`)
+  cuts before and after the branch head and runtime manifest renames of an
+  incremental relational checkpoint under both durability policies; every
+  lost, reordered or isolated image recovers the covered or new epoch with
+  every row and overflow value, a live unique index, and a further checkpoint
+  without a full-row file. It falls in the Windows `remaining` partition.
+- `api::tests::system_schema_registry::writable_metadata_only_transaction_checkpoints_rows_and_indexes`
+  now expects a default-residency reopen of a metadata-only checkpoint to
+  materialize its rows instead of refusing.
+
+No new lane, profile, timeout or feature. Recorder images do not qualify
+physical devices.
+
+## Relational row-root checkpoint compatibility
 
 Root unit owner `api::tests::relational_checkpoint_layout_refusal`
 (`cargo test --locked -p hawdb --lib relational_checkpoint_layout_refusal`)
-unpacks `tests/fixtures/row_root_relational_checkpoint.bundle`, written by the
-#1737 change (nowledge-co/hawdb#1778, head `17499379f`, default config: rows
-only in the row-page root, no relational index generation). It opens it in all
-24 residency, index and read-only configurations. Each refuses with
-`UnsupportedStorageFormat` whose `format()` is
-`RELATIONAL_CHECKPOINT_LAYOUT_FORMAT` and leaves every durable byte unchanged
-(lock files and the disposable branch `runtime/` mount excluded).
+writes a current-format default-configuration checkpoint (one `docs` table,
+20 rows, no full-row file and no persistent index generation) and checks all
+24 residency, index and read-only configurations:
+18 reconstruct and read every exact `(id, body)` row; the six `Authoritative`
+configurations retain the typed `UnsupportedStorageFormat` /
+`RELATIONAL_CHECKPOINT_LAYOUT_FORMAT` refusal for the absent persistent index
+generation. Every open, successful or refused, leaves all durable bytes
+unchanged (lock files and the disposable branch `runtime/` mount excluded).
 `newer_row_root_layout_with_index_generation_opens_out_of_core_authoritative`
-unpacks the zstd-compressed `tests/fixtures/row_root_shadow_index_checkpoint.bundle.zst`
-(the same #1778 writer with `Shadow` indexes, so it binds a relational index
-generation) and checks the one configuration that must keep working:
-`OutOfCore` + `Authoritative` opens it read-only and writable with every row,
-enforces the primary key, checkpoints an insert and reopens, while a default
-open still refuses with the typed error.
+writes a Shadow then `OutOfCore` + `Authoritative` checkpoint (binding a
+relational index generation) and checks read-only and writable authoritative
+opens with every row, primary-key enforcement, insert/checkpoint/reopen and a
+complete default-mode read of the same checkpoint.
+`legacy_partial_index_v4_reopens_and_preserves_membership` and
+`legacy_covering_index_v5_reopens_and_upgrades_after_checkpoint` reopen the
+`partial_index_v4` and `covering_index_v5` fixtures.
 `v2_row_root_with_named_index_reopens_read_only_and_writable` unpacks the
 `17499379f` v2-writer fixture
 `tests/fixtures/row_root_shadow_named_index_v2.bundle.zst`, whose `docs` table
@@ -4729,7 +4795,8 @@ authoritative open, indexed lookup, writable checkpoint, and reopen.
 by `761d5b3ed` with one standalone CREATE INDEX WAL record after a checkpoint.
 It checks the replay boundary, recovered named index, and its resident postings.
 `api::tests::system_schema_registry::writable_metadata_only_transaction_checkpoints_rows_and_indexes`
-checks the same typed refusal on an `OutOfCore` + `Authoritative` checkpoint
-reopened with defaults. FFI `error_tests::newer_relational_checkpoint_layout_reports_unsupported_storage_format`
-checks the `unsupported_storage_format` kind. No new lane, profile, timeout or
-feature; `PERSISTENT_FORMAT_VERSION` is unchanged.
+checks default resident reconstruction of an `OutOfCore` + `Authoritative`
+checkpoint reopened with defaults. FFI
+`error_tests::newer_relational_checkpoint_layout_reports_unsupported_storage_format`
+continues to check the `unsupported_storage_format` kind mapping.
+No fixture, configuration, lane, profile, feature or timeout was removed.

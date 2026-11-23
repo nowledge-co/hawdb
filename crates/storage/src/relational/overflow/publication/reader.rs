@@ -153,9 +153,37 @@ impl RelationalOverflowRootReader {
         self.find_descriptor_inner(reference, None)
     }
 
+    /// Finds the descriptor of one content digest without checking caller
+    /// reference metadata. The descriptor carries the authoritative metadata.
+    pub fn find_descriptor_by_digest(
+        &self,
+        digest: &Sha256Digest,
+    ) -> Result<Option<RelationalOverflowExtentDescriptor>, RelationalOverflowPublicationError>
+    {
+        self.find_digest_descriptor(digest, None)
+    }
+
     fn find_descriptor_inner(
         &self,
         reference: &RelationalOverflowRef,
+        work: Option<&crate::background::CheckpointWorkContext>,
+    ) -> Result<Option<RelationalOverflowExtentDescriptor>, RelationalOverflowPublicationError>
+    {
+        let Some(descriptor) = self.find_digest_descriptor(&reference.digest, work)? else {
+            return Ok(None);
+        };
+        if descriptor.reference != *reference {
+            return Err(RelationalOverflowPublicationError::Corrupt(format!(
+                "overflow descriptor {} metadata differs from its content identity",
+                reference.digest
+            )));
+        }
+        Ok(Some(descriptor))
+    }
+
+    fn find_digest_descriptor(
+        &self,
+        digest: &Sha256Digest,
         work: Option<&crate::background::CheckpointWorkContext>,
     ) -> Result<Option<RelationalOverflowExtentDescriptor>, RelationalOverflowPublicationError>
     {
@@ -170,7 +198,7 @@ impl RelationalOverflowRootReader {
             let middle = lower + (upper - lower) / 2;
             let descriptor = io(work, || self.read_descriptor_from(&mut descriptors, middle))?;
             cpu(work, || {
-                if descriptor.reference.digest < reference.digest {
+                if descriptor.reference.digest < *digest {
                     lower = middle.checked_add(1).ok_or_else(|| {
                         RelationalOverflowPublicationError::Corrupt(
                             "overflow descriptor search overflow".to_string(),
@@ -186,14 +214,8 @@ impl RelationalOverflowRootReader {
             return Ok(None);
         }
         let descriptor = io(work, || self.read_descriptor_from(&mut descriptors, lower))?;
-        if descriptor.reference.digest != reference.digest {
+        if descriptor.reference.digest != *digest {
             return Ok(None);
-        }
-        if descriptor.reference != *reference {
-            return Err(RelationalOverflowPublicationError::Corrupt(format!(
-                "overflow descriptor {} metadata differs from its content identity",
-                reference.digest
-            )));
         }
         check(work)?;
         Ok(Some(descriptor))
