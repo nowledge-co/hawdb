@@ -753,7 +753,9 @@ empty fields, no/empty vectors, signed zero, subnormal and extreme
 components), account `search_document_bytes` without decoding, and re-encode
 as the canonical text lines byte for byte across 1-, 3-, 7-byte and 8-KiB
 reads; the streaming record walk and in-place scan refuse wrong counts,
-bounds, order, oversized ids and every truncation. A record above the
+bounds, order, oversized ids and every truncation, and a last id longer than
+the walk's limit cannot match an indexed last id that is its prefix in either
+the walk or the scan. A record above the
 1-MiB buffered-block limit hydrates and deep-verifies through the streaming
 re-encoder. An index whose boundary between two frames is moved (spans still
 tiling the range, CRCs and inflated lengths recomputed) is refused by both a

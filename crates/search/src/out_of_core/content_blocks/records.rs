@@ -368,7 +368,12 @@ pub(super) struct RecordWalk {
     id: Vec<u8>,
     last: Vec<u8>,
     first_ok: bool,
+    /// The current record's id exceeded `limit` and was truncated.
     overflow: bool,
+    /// The previous record's (`last`) id was truncated, so it can match no
+    /// indexed id: a truncated id may equal a shorter indexed id that is its
+    /// prefix, which the sparse scan rejects.
+    last_overflow: bool,
     limit: usize,
 }
 
@@ -410,7 +415,7 @@ impl RecordWalk {
         self.records += 1;
         std::mem::swap(&mut self.last, &mut self.id);
         self.id.clear();
-        self.overflow = false;
+        self.last_overflow = std::mem::take(&mut self.overflow);
         self.stage = Stage::Prefix;
         self.filled = 0;
     }
@@ -498,6 +503,7 @@ impl RecordWalk {
             && self.filled == 0
             && self.records == u64::from(entry.document_count)
             && self.first_ok
+            && !self.last_overflow
             && self.last == last.as_bytes()
     }
 }

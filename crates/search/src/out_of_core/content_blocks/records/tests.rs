@@ -174,6 +174,25 @@ fn record_walk_and_scan_check_counts_bounds_and_truncation() {
     assert!(!walk.finish(&entry(4), last));
 
     let bounds = |first, last, count| Bounds { first, last, count };
+    // A last id longer than the limit cannot match an indexed last id that is
+    // its prefix: the walk and the sparse scan accept the same indexes.
+    let mut long_last = documents[..2].to_vec();
+    long_last[1].id = "abcdef".into();
+    let long_body = encode(&long_last);
+    let long_entry = super::super::Entry {
+        uncompressed_len: long_body.len() as u32,
+        ..entry(2)
+    };
+    for (indexed_last, accepted) in [("abc", false), ("abcdef", true)] {
+        let mut walk = RecordWalk::default();
+        walk.start(first.len().max(indexed_last.len()));
+        walk.feed(&long_body, first);
+        assert_eq!(walk.finish(&long_entry, indexed_last), accepted);
+        assert_eq!(
+            scan(&long_body, bounds(first, indexed_last, 2), |_| Ok(())).is_ok(),
+            accepted
+        );
+    }
     let mut seen = Vec::new();
     scan(&body, bounds(first, last, 4), |record| {
         seen.push(record.id.to_string());
