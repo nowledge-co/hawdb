@@ -1104,6 +1104,7 @@ mod tests {
                 requested: 4096,
                 available: 0,
                 retryable: true,
+                waited: None,
             });
             let exception = format_hawdb_error(&error);
             assert!(exception.is_instance_of::<ExecutionError>(py));

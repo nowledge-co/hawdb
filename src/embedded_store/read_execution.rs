@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::{
-    embedded_query_report, try_admit_runtime, EmbeddedQueryOutput, EmbeddedQueryReportInput,
-    EmbeddedQueryReportOptions, EmbeddedReadOptions, EmbeddedStoreHandle, GraphMode,
-    SearchProjectionExternalReadOperator,
+    admit_runtime, embedded_query_report, prioritized_request, try_admit_runtime,
+    EmbeddedQueryOutput, EmbeddedQueryReportInput, EmbeddedQueryReportOptions, EmbeddedReadOptions,
+    EmbeddedStoreHandle, GraphMode, SearchProjectionExternalReadOperator,
 };
 use crate::api::PreparedRuntimeQuery;
 use crate::{
@@ -67,9 +67,10 @@ impl EmbeddedStoreHandle {
         task_context
             .checkpoint()
             .map_err(HawDBError::RuntimeTaskStopped)?;
-        let planning = try_admit_runtime(
+        let planning = admit_runtime(
             &source.governor,
             crate::api::runtime_planning_request(cypher.len(), RuntimeWorkPriority::Foreground),
+            task_context,
         )?;
         let prepared = self.prepare_query_from_source(source, cypher, parameters)?;
         // Keep preparation memory charged, but release the source view and
@@ -140,9 +141,10 @@ impl EmbeddedStoreHandle {
                     governor.snapshot(),
                 )
                 .with_retained_memory_bytes(prepared.planning_memory_bytes());
-            let (permit, prepared) = admit_reusable_prepared(prepared, governor, request, || {
-                self.prepare_query_from_source(&source, cypher, parameters)
-            })?;
+            let (permit, prepared) =
+                admit_reusable_prepared(prepared, governor, request, task_context, || {
+                    self.prepare_query_from_source(&source, cypher, parameters)
+                })?;
             let context = permit.bind_task_context(task_context.clone());
             let (view, mode) = {
                 let publication = self.lock_published_read()?;
@@ -186,7 +188,7 @@ impl EmbeddedStoreHandle {
             let uses_external_seed = prepared.uses_external_seed();
             let request = source.execution_request(&prepared, result_budget);
             let (permit, prepared) =
-                admit_reusable_prepared(prepared, &source.governor, request, || {
+                admit_reusable_prepared(prepared, &source.governor, request, task_context, || {
                     self.prepare_query_from_source(&source, cypher, parameters)
                 })?;
             let permit = Arc::new(permit);
@@ -318,21 +320,34 @@ impl EmbeddedStoreHandle {
     }
 }
 
+/// Admits a prepared query, keeping its planning memory on the first attempt.
+///
+/// The first attempt never waits. On refusal the plan and its planning memory
+/// are released before the retry, which follows the task context's admission
+/// policy: a caller that waits in the queue holds no planning reservation.
 pub(super) fn admit_reusable_prepared(
     prepared: PreparedRuntimeQuery,
     governor: &RuntimeGovernor,
     request: RuntimeWorkRequest,
+    task_context: &RuntimeTaskContext,
     reprepare: impl FnOnce() -> Result<PreparedRuntimeQuery>,
 ) -> Result<(RuntimePermit, PreparedRuntimeQuery)> {
     let request =
         request.with_memory_bytes(request.memory_bytes.max(prepared.planning_memory_bytes()));
-    match try_admit_runtime(governor, request) {
-        Ok(permit) => Ok((permit, prepared)),
+    match try_admit_runtime(governor, prioritized_request(request, task_context)) {
+        Ok(permit) => {
+            task_context.record_admission(std::time::Duration::ZERO);
+            Ok((permit, prepared))
+        }
         Err(_) => {
             let admission = prepared.admission().clone();
             let external = prepared.uses_external_seed();
             drop(prepared);
-            let permit = try_admit_runtime(governor, request.with_retained_memory_bytes(0))?;
+            let permit = admit_runtime(
+                governor,
+                request.with_retained_memory_bytes(0),
+                task_context,
+            )?;
             let prepared = reprepare()?;
             // A writer can change the source while admission invokes the host.
             // Never execute a newly bound plan under an older resource request.

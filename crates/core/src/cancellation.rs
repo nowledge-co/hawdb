@@ -302,8 +302,10 @@ impl Error for RuntimeIoWaveError {
     }
 }
 
+mod admission;
 mod memory;
 mod work;
+pub use admission::{RuntimeAdmissionTrace, RuntimeAdmissionWait, RuntimeWorkPriority};
 pub use memory::{
     RuntimeMemoryController, RuntimeMemoryError, RuntimeMemoryPermit, RuntimeMemoryTarget,
 };
@@ -319,6 +321,9 @@ pub struct RuntimeTaskContext {
     memory_target: Option<Arc<dyn RuntimeMemoryTarget>>,
     io_wave_controller: Option<Arc<dyn RuntimeIoWaveController>>,
     work_budget: Option<Arc<work::RuntimeWorkBudget>>,
+    admission_priority: RuntimeWorkPriority,
+    admission_wait: RuntimeAdmissionWait,
+    admission_trace: Option<RuntimeAdmissionTrace>,
 }
 
 /// Memory already reserved for one task by the runtime governor.
@@ -372,6 +377,9 @@ impl RuntimeTaskContext {
             memory_target: None,
             io_wave_controller: None,
             work_budget: None,
+            admission_priority: RuntimeWorkPriority::Foreground,
+            admission_wait: RuntimeAdmissionWait::Refuse,
+            admission_trace: None,
         }
     }
 
@@ -401,6 +409,9 @@ impl RuntimeTaskContext {
             memory_target: self.memory_target.clone(),
             io_wave_controller: self.io_wave_controller.clone(),
             work_budget: self.work_budget.clone(),
+            admission_priority: self.admission_priority,
+            admission_wait: self.admission_wait,
+            admission_trace: self.admission_trace.clone(),
         }
     }
 
@@ -461,7 +472,96 @@ impl RuntimeTaskContext {
                 &self.work_budget,
                 &request.work_budget,
             ),
+            // Either scope may lower the priority; neither may raise it. The
+            // enclosing wait policy wins unless it only refuses.
+            admission_priority: self
+                .admission_priority
+                .lowered_by(request.admission_priority),
+            admission_wait: match self.admission_wait {
+                RuntimeAdmissionWait::Refuse => request.admission_wait,
+                wait => wait,
+            },
+            admission_trace: self
+                .admission_trace
+                .clone()
+                .or_else(|| request.admission_trace.clone()),
         })
+    }
+
+    /// Selects the priority of runtime admissions made for this task.
+    ///
+    /// Synchronous embedded entry points (`EmbeddedStoreHandle` reads,
+    /// queries, transactions and typed maintenance) admit at the lower of this
+    /// priority and the priority the operation would otherwise use: a context
+    /// can mark foreground work as `Background`, never promote background
+    /// maintenance. Defaults to `Foreground`. Background work has its own task
+    /// pool and I/O depth and yields under critical memory pressure, but CPU
+    /// slots, memory and blocking-task slots are shared, so pair it with
+    /// [`Self::with_admission_wait`] for fairness on small hosts.
+    pub fn with_admission_priority(mut self, priority: RuntimeWorkPriority) -> Self {
+        self.admission_priority = priority;
+        self
+    }
+
+    pub fn admission_priority(&self) -> RuntimeWorkPriority {
+        self.admission_priority
+    }
+
+    /// Waits up to `timeout` in the runtime governor's priority-ordered
+    /// admission queue instead of refusing at once when capacity is short.
+    ///
+    /// The wait window starts now. Ordering, highest first:
+    ///
+    /// 1. immediate (non-waiting) Foreground requests take free capacity
+    ///    ahead of queued Background waiters until those have queued for
+    ///    100 ms, or always on a governor with strict Foreground precedence
+    ///    (`RuntimeGovernor::set_foreground_preempts_queued_background`);
+    /// 2. queued waiters, Foreground before Background and FIFO within a
+    ///    priority, except that a Background waiter queued for 100 ms is
+    ///    selected once ahead of Foreground waiters so it cannot starve;
+    /// 3. other immediate requests yield to the selected waiter with a
+    ///    retryable `queued_ahead` refusal, even when capacity is free.
+    ///
+    /// When the window ends, the admission returns the typed
+    /// `RuntimeAdmissionRefused` with the last shortage and `waited` set to
+    /// the time queued; cancellation or the task deadline while queued returns
+    /// `RuntimeTaskStopped`. A timeout that overflows the clock waits without
+    /// an admission deadline. No store lock is held while queued. Attach a
+    /// [`RuntimeAdmissionTrace`] to observe how long granted admissions queued.
+    pub fn with_admission_wait(self, timeout: crate::time::Duration) -> Self {
+        let wait = Instant::now()
+            .checked_add(timeout)
+            .map_or(RuntimeAdmissionWait::Unbounded, RuntimeAdmissionWait::Until);
+        self.with_admission_wait_policy(wait)
+    }
+
+    /// Like [`Self::with_admission_wait`] with an explicit policy, including
+    /// [`RuntimeAdmissionWait::Refuse`] to restore the default.
+    pub fn with_admission_wait_policy(mut self, wait: RuntimeAdmissionWait) -> Self {
+        self.admission_wait = wait;
+        self
+    }
+
+    pub fn admission_wait(&self) -> RuntimeAdmissionWait {
+        self.admission_wait
+    }
+
+    /// Records each runtime admission made for this task, and how long it
+    /// queued, in a caller-held trace (see [`RuntimeAdmissionTrace`]).
+    pub fn with_admission_trace(mut self, trace: RuntimeAdmissionTrace) -> Self {
+        self.admission_trace = Some(trace);
+        self
+    }
+
+    pub fn admission_trace(&self) -> Option<&RuntimeAdmissionTrace> {
+        self.admission_trace.as_ref()
+    }
+
+    /// Called by admission adapters when they grant this task an admission.
+    pub fn record_admission(&self, queued_for: crate::time::Duration) {
+        if let Some(trace) = &self.admission_trace {
+            trace.record(queued_for);
+        }
     }
 
     /// Carries the CPU parallelism already reserved by the runtime governor.
@@ -870,6 +970,64 @@ mod tests {
         fn wake(self: Arc<Self>) {
             self.0.fetch_add(1, Ordering::AcqRel);
         }
+    }
+
+    #[test]
+    fn admission_policy_defaults_to_refusing_foreground_work_and_survives_scoping() {
+        let default = RuntimeTaskContext::default();
+        assert_eq!(
+            default.admission_priority(),
+            RuntimeWorkPriority::Foreground
+        );
+        assert_eq!(default.admission_wait(), RuntimeAdmissionWait::Refuse);
+
+        let unbounded = default
+            .clone()
+            .with_admission_wait(crate::time::Duration::MAX);
+        assert_eq!(unbounded.admission_wait(), RuntimeAdmissionWait::Unbounded);
+        let shadow = RuntimeTaskContext::default()
+            .with_admission_priority(RuntimeWorkPriority::Background)
+            .with_admission_wait(crate::time::Duration::from_secs(1));
+        assert!(matches!(
+            shadow.admission_wait(),
+            RuntimeAdmissionWait::Until(_)
+        ));
+        let trace = RuntimeAdmissionTrace::new();
+        let traced = shadow.clone().with_admission_trace(trace.clone());
+        traced
+            .child()
+            .record_admission(crate::time::Duration::from_millis(3));
+        default
+            .constrained_by(&traced)
+            .unwrap()
+            .record_admission(crate::time::Duration::ZERO);
+        assert_eq!(trace.admissions(), 2);
+        assert_eq!(trace.queued_for(), crate::time::Duration::from_millis(3));
+        default.record_admission(crate::time::Duration::from_secs(1));
+        let child = shadow.child();
+        assert_eq!(child.admission_priority(), RuntimeWorkPriority::Background);
+        assert_eq!(child.admission_wait(), shadow.admission_wait());
+
+        // Either scope lowers the priority; the enclosing wait wins unless it
+        // only refuses.
+        let combined = default.constrained_by(&shadow).unwrap();
+        assert_eq!(
+            combined.admission_priority(),
+            RuntimeWorkPriority::Background
+        );
+        assert_eq!(combined.admission_wait(), shadow.admission_wait());
+        let combined = shadow.constrained_by(&unbounded).unwrap();
+        assert_eq!(
+            combined.admission_priority(),
+            RuntimeWorkPriority::Background
+        );
+        assert_eq!(combined.admission_wait(), shadow.admission_wait());
+        assert_eq!(
+            shadow
+                .with_admission_wait_policy(RuntimeAdmissionWait::Refuse)
+                .admission_wait(),
+            RuntimeAdmissionWait::Refuse
+        );
     }
 
     #[test]
