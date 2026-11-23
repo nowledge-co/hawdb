@@ -17,6 +17,7 @@
 
 use super::*;
 use crate::store::{set_checkpoint_failpoint, CheckpointPublishStage};
+use hawdb_core::HawDBError;
 
 const TABLE: &str = "accounts";
 
@@ -440,5 +441,137 @@ fn legacy_full_row_checkpoint_reopens_and_moves_to_incremental_checkpoints() {
     drop(store);
     let (store, _) = open_with(&path, WalReplayConfig::default());
     assert_accounts(&store, &expected);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+/// Opens files in the project until its descriptor budget refuses one.
+fn exhaust_descriptors(root: &std::path::Path) -> Vec<crate::file_io::File> {
+    let mut held = Vec::new();
+    loop {
+        match crate::file_io::File::create(root.join(format!("held-{}", held.len()))) {
+            Ok(file) => held.push(file),
+            Err(error) => {
+                assert!(
+                    matches!(
+                        HawDBError::from(error),
+                        HawDBError::FileDescriptors(
+                            hawdb_core::error::FileDescriptorError::BudgetExceeded { .. }
+                        )
+                    ),
+                    "descriptor budget was not reached"
+                );
+                return held;
+            }
+        }
+    }
+}
+
+#[test]
+fn row_root_rebuild_and_overflow_rebind_keep_descriptor_exhaustion_typed() {
+    use crate::file_descriptors::ProjectFileDescriptors;
+    use hawdb_core::error::FileDescriptorError;
+
+    const LIMIT: usize = 64;
+    let path = unique_test_dir("checkpoint-writes-descriptor-exhaustion");
+    std::fs::create_dir_all(&path).unwrap();
+    let project = ProjectFileDescriptors::acquire_with_capacity_limit(&path, LIMIT, true).unwrap();
+    let replay = WalReplayConfig {
+        max_open_files: LIMIT,
+        strict_capacity_limit: true,
+        ..WalReplayConfig::default()
+    };
+    {
+        // A legacy full-row checkpoint leaves resident overflow values that
+        // the next checkpoint rebinds to the published overflow root.
+        let (mut store, mut catalog) = open_with(&path, replay);
+        store.set_legacy_relational_checkpoint_file_enabled(true);
+        store
+            .commit_relational_transaction(
+                &mut catalog,
+                RelationalTransaction {
+                    writes: vec![RelationalWrite::CreateTable(upsert_schema())],
+                },
+            )
+            .unwrap();
+        insert(&mut store, &mut catalog, 0..200);
+        store.checkpoint(&catalog).unwrap();
+    }
+    let (mut store, mut catalog) = open_with(&path, replay);
+    let durable = store.durable.as_ref().unwrap();
+    let root = durable.root_path().to_path_buf();
+    let overflow = durable.open_bound_relational_overflow().unwrap();
+    let rows = durable.open_bound_relational_row_pages(&overflow).unwrap();
+    let rebuild = || {
+        hawdb_storage::relational::decode_relational_checkpoint_from_row_root(
+            &root,
+            &rows,
+            &overflow,
+            hawdb_storage::relational::RelationalDecodeLimits::checkpoint(),
+            hawdb_storage::relational::RelationalCheckpointIndexLoad::MaterializedPostings,
+        )
+    };
+    let rebind =
+        |state: &RelationalState| state.with_overflow_segments_bound_to_root(&root, &overflow);
+    let exhausted = |error: RelationalError| {
+        assert!(
+            matches!(
+                error,
+                RelationalError::FileDescriptors(FileDescriptorError::BudgetExceeded { .. })
+            ),
+            "descriptor exhaustion lost its type: {error:?}"
+        );
+        assert!(matches!(
+            HawDBError::from_storage_error(error),
+            HawDBError::FileDescriptors(FileDescriptorError::BudgetExceeded { .. })
+        ));
+    };
+
+    let held = exhaust_descriptors(&root);
+    assert_eq!(project.metrics().open, LIMIT);
+    exhausted(rebuild().unwrap_err());
+    exhausted(rebind(store.relational_state()).unwrap_err());
+    drop(held);
+
+    // Both succeed once descriptors are available again.
+    let rebuilt = rebuild().unwrap();
+    assert_eq!(rebuilt.state.row_count(TABLE), 200);
+    let rebound = rebind(store.relational_state())
+        .unwrap()
+        .expect("legacy-backed overflow values are rebound");
+    assert_eq!(rebound.file_backed_overflow_segment_count(), 200 / 50);
+
+    // A resident value whose extent the root lacks is a real mismatch.
+    update(&mut store, &mut catalog, &[0], 1);
+    let missing = rebind(store.relational_state()).unwrap_err();
+    assert!(
+        matches!(&missing, RelationalError::Corruption(message) if message.contains("missing resident extent")),
+        "{missing:?}"
+    );
+    assert!(matches!(
+        HawDBError::from_storage_error(missing),
+        HawDBError::Storage(_)
+    ));
+    // So is a row page whose bytes no longer match the root.
+    let page = std::fs::read_dir(&root)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .ends_with(".pages.hawdb")
+        })
+        .expect("row-page artifact");
+    let mut bytes = std::fs::read(&page).unwrap();
+    for byte in bytes.iter_mut().step_by(97) {
+        *byte ^= 0xff;
+    }
+    std::fs::write(&page, bytes).unwrap();
+    let damaged = rebuild().unwrap_err();
+    assert!(
+        matches!(damaged, RelationalError::Corruption(_)),
+        "{damaged:?}"
+    );
+    drop((rows, overflow, store));
     std::fs::remove_dir_all(path).unwrap();
 }

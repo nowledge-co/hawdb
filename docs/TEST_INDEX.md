@@ -4727,7 +4727,22 @@ and no legacy `relational.N.hawdb` file; persistent format 6.
   manifest published); `legacy_full_row_checkpoint_reopens_and_moves_to_incremental_checkpoints`
   writes the pre-format-6 full-row layout with `legacy_relational_checkpoint_file`, reopens it
   with a WAL tail, and checks that overflow values stay readable in the same
-  session after reclamation removes the old full-row file.
+  session after reclamation removes the old full-row file;
+  `row_root_rebuild_and_overflow_rebind_keep_descriptor_exhaustion_typed`
+  exhausts a 64-descriptor project budget and checks that row-root
+  reconstruction and checkpoint overflow rebinding both return
+  `FileDescriptors`, succeed once descriptors are released, and still report
+  `Corruption` for an overflow extent missing from the root and a damaged row
+  page.
+- Storage unit owner `relational::codec::row_root::tests`
+  (`cargo test --locked -p hawdb-storage --lib relational::codec::row_root`):
+  `row_page_read_failures_keep_their_type` and
+  `overflow_read_failures_keep_their_type` map every row-page and overflow
+  read error variant and check that `FileDescriptors`, `UnsupportedFormat`
+  and `Stopped` reach hosts as `HawDBError::FileDescriptors`,
+  `UnsupportedStorageFormat` and `RuntimeTaskStopped`, while only checksum,
+  missing-table, missing-extent and stale-generation mismatches become
+  `Corruption`.
 - Root unit owner `api::tests::relational_checkpoint_format`
   (`cargo test --locked -p hawdb --lib relational_checkpoint_format`) unpacks
   `tests/fixtures/format_2_relational_checkpoint.bundle`, written by HawDB

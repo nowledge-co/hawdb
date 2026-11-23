@@ -29,8 +29,8 @@ use super::{
 use crate::cache::ContentDigest;
 use crate::relational::{
     relational_overflow_extent_file, relational_row_page_artifact_file,
-    RelationalOverflowExtentDescriptor, RelationalOverflowRef, RelationalOverflowRootReader,
-    RelationalRowPageRootReader,
+    RelationalOverflowExtentDescriptor, RelationalOverflowPublicationError, RelationalOverflowRef,
+    RelationalOverflowRootReader, RelationalRowPagePublicationError, RelationalRowPageRootReader,
 };
 use crate::scan::{FileSegmentRangeReader, SegmentReadRange};
 use hawdb_integrity::Sha256Digest;
@@ -173,6 +173,68 @@ impl RowRootDecodeAdmission {
     }
 }
 
+/// Keeps a typed overflow-root read failure typed. Descriptor exhaustion,
+/// a newer format, a stopped task, admission and I/O failures are not store
+/// damage; only content or structure that disagrees with the root is
+/// `Corruption`.
+fn overflow_error(error: RelationalOverflowPublicationError) -> RelationalError {
+    match error {
+        RelationalOverflowPublicationError::FileDescriptors(error) => {
+            RelationalError::FileDescriptors(error)
+        }
+        RelationalOverflowPublicationError::UnsupportedFormat(error) => {
+            RelationalError::UnsupportedFormat(error)
+        }
+        RelationalOverflowPublicationError::Stopped(reason) => RelationalError::Stopped(reason),
+        RelationalOverflowPublicationError::Admission(message) => {
+            RelationalError::Admission(message)
+        }
+        RelationalOverflowPublicationError::Durability(message) => {
+            RelationalError::Durability(message)
+        }
+        // Reads never publish; keep an unexpected diagnostic as an I/O
+        // failure rather than an integrity alarm.
+        RelationalOverflowPublicationError::PublishOutcomeUnknown(error) => {
+            RelationalError::Durability(error.to_string())
+        }
+        RelationalOverflowPublicationError::Corrupt(message) => {
+            RelationalError::Corruption(message)
+        }
+        error @ (RelationalOverflowPublicationError::MissingExtent(_)
+        | RelationalOverflowPublicationError::StaleGeneration { .. }) => {
+            RelationalError::Corruption(error.to_string())
+        }
+    }
+}
+
+/// Keeps a typed row-page root read failure typed; see [`overflow_error`].
+fn row_page_error(error: RelationalRowPagePublicationError) -> RelationalError {
+    match error {
+        RelationalRowPagePublicationError::FileDescriptors(error) => {
+            RelationalError::FileDescriptors(error)
+        }
+        RelationalRowPagePublicationError::UnsupportedFormat(error) => {
+            RelationalError::UnsupportedFormat(error)
+        }
+        RelationalRowPagePublicationError::Stopped(reason) => RelationalError::Stopped(reason),
+        RelationalRowPagePublicationError::Admission(message) => {
+            RelationalError::Admission(message)
+        }
+        RelationalRowPagePublicationError::Durability(message) => {
+            RelationalError::Durability(message)
+        }
+        RelationalRowPagePublicationError::PublishOutcomeUnknown(error) => {
+            RelationalError::Durability(error.to_string())
+        }
+        RelationalRowPagePublicationError::Corrupt(message) => RelationalError::Corruption(message),
+        // The manifest names the table, so its pages must exist.
+        error @ (RelationalRowPagePublicationError::MissingTable(_)
+        | RelationalRowPagePublicationError::StaleGeneration { .. }) => {
+            RelationalError::Corruption(error.to_string())
+        }
+    }
+}
+
 fn overflow_artifact_id(physical_generation: u64) -> Result<u64, RelationalError> {
     if physical_generation >= OVERFLOW_EXTENT_ARTIFACT_BASE {
         return Err(RelationalError::Corruption(format!(
@@ -203,9 +265,6 @@ fn overflow_segments_from_root(
     overflow: &RelationalOverflowRootReader,
     references: &BTreeMap<Sha256Digest, RelationalOverflowRef>,
 ) -> Result<BTreeMap<Sha256Digest, RelationalOverflowSegment>, RelationalError> {
-    let corrupt = |error: crate::relational::RelationalOverflowPublicationError| {
-        RelationalError::Corruption(error.to_string())
-    };
     let mut descriptors = Vec::with_capacity(references.len());
     // A small closure uses bounded binary searches; a large closure scans the
     // sorted descriptor artifact once.
@@ -216,7 +275,7 @@ fn overflow_segments_from_root(
         for reference in references.values() {
             let descriptor = overflow
                 .find_descriptor(reference)
-                .map_err(corrupt)?
+                .map_err(overflow_error)?
                 .ok_or_else(|| {
                     RelationalError::Corruption(format!(
                         "overflow root is missing reachable extent {}",
@@ -239,21 +298,17 @@ fn overflow_segments_from_root(
                     && reference.digest == descriptor.reference.digest
                 {
                     if **reference != descriptor.reference {
-                        return Err(
-                            crate::relational::RelationalOverflowPublicationError::Corrupt(
-                                format!(
-                                    "overflow descriptor {} metadata differs from its row reference",
-                                    reference.digest
-                                ),
-                            ),
-                        );
+                        return Err(RelationalOverflowPublicationError::Corrupt(format!(
+                            "overflow descriptor {} metadata differs from its row reference",
+                            reference.digest
+                        )));
                     }
                     descriptors.push(*descriptor);
                     wanted.next();
                 }
                 Ok(())
             })
-            .map_err(corrupt)?;
+            .map_err(overflow_error)?;
         if descriptors.len() != references.len() {
             let found = descriptors
                 .iter()
@@ -283,7 +338,7 @@ pub(in crate::relational) fn overflow_segments_by_digest_from_root(
         .map(|digest| {
             overflow
                 .find_descriptor_by_digest(digest)
-                .map_err(|error| RelationalError::Corruption(error.to_string()))?
+                .map_err(overflow_error)?
                 .ok_or_else(|| {
                     RelationalError::Corruption(format!(
                         "overflow root is missing resident extent {digest}"
@@ -418,21 +473,15 @@ pub fn decode_relational_checkpoint_from_row_root(
             })?;
         // Collect the descriptors first so the descriptor and key artifacts
         // are closed before page reads: open holds one file at a time.
-        let publication_error = |error| match error {
-            crate::relational::RelationalRowPagePublicationError::Admission(message) => {
-                RelationalError::Admission(message)
-            }
-            error => RelationalError::Corruption(error.to_string()),
-        };
         let mut descriptors = Vec::new();
         rows.visit_table_pages(&table.table, |descriptor| {
             descriptors.push(descriptor.clone());
             Ok(())
         })
-        .map_err(publication_error)?;
+        .map_err(row_page_error)?;
         let mut table_rows = BTreeMap::new();
         for descriptor in &descriptors {
-            let page = rows.read_page(descriptor).map_err(publication_error)?;
+            let page = rows.read_page(descriptor).map_err(row_page_error)?;
             if page.schema_digest != table.schema_digest {
                 return Err(RelationalError::Corruption(format!(
                     "row page {} schema digest differs from table {}",
@@ -526,3 +575,7 @@ pub fn decode_relational_checkpoint_from_row_root(
         state,
     })
 }
+
+#[cfg(test)]
+#[path = "row_root/tests.rs"]
+mod tests;
