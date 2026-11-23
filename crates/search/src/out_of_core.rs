@@ -103,6 +103,9 @@ enum DocumentTargetRequest {
     /// Hits produced by this reader's own index. A hit without a visible
     /// document route is index damage.
     SearchHits,
+    /// Hits of a text-only query, which never rescore a stored embedding:
+    /// their decimal-text vectors are left unparsed (#1917).
+    TextHits,
     /// Ids named by the caller of [`SearchOutOfCoreReader::hydrate_documents`].
     /// An id that is absent or deleted is the caller's mistake.
     ById,
@@ -116,10 +119,15 @@ enum DocumentTargetRequest {
 }
 
 impl DocumentTargetRequest {
+    /// Whether the loaded documents carry their stored embeddings.
+    fn embeddings(self) -> bool {
+        !matches!(self, Self::TextHits)
+    }
+
     /// The operation named in messages; the budget owner is `search {operation}`.
     fn operation(self) -> &'static str {
         match self {
-            Self::SearchHits => "hydration",
+            Self::SearchHits | Self::TextHits => "hydration",
             Self::ById => "hydration by id",
             Self::LookupById => "lookup by id",
             #[cfg(test)]
@@ -135,7 +143,7 @@ impl DocumentTargetRequest {
                 "search hydration by id requested document {id}, which the published search projection does not contain"
             ))),
             Self::LookupById => None,
-            Self::SearchHits => Some(HawDBError::Storage(format!(
+            Self::SearchHits | Self::TextHits => Some(HawDBError::Storage(format!(
                 "search document {id} is outside the published document ranges"
             ))),
             #[cfg(test)]
@@ -4052,9 +4060,18 @@ impl SearchOutOfCoreReader {
         &self,
         document_ids: &BTreeSet<String>,
         metrics: &mut SearchOutOfCoreMetrics,
+        embeddings: bool,
     ) -> Result<BTreeMap<String, SearchDocument>> {
         Ok(self
-            .load_document_targets(document_ids, metrics, DocumentTargetRequest::SearchHits)?
+            .load_document_targets(
+                document_ids,
+                metrics,
+                if embeddings {
+                    DocumentTargetRequest::SearchHits
+                } else {
+                    DocumentTargetRequest::TextHits
+                },
+            )?
             .into_iter()
             .map(|(id, target)| (id, target.document))
             .collect())
@@ -4126,7 +4143,10 @@ impl SearchOutOfCoreReader {
             for document in artifact.read_selected_hydration_segment(
                 &self.config,
                 segment,
-                &ids,
+                hydration::Wanted {
+                    ids: &ids,
+                    embeddings: request.embeddings(),
+                },
                 hydrated_bytes,
                 metrics,
                 &self.content_cache,

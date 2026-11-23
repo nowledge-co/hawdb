@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::*;
-use crate::{decode_search_document_line, parse_snapshot_header};
+use crate::parse_snapshot_header;
 use hawdb_core::{ResourceBudgetError, ResourceBudgetKind, ResourceBudgetScope};
 use hawdb_integrity::Crc32cHasher;
 use std::io::{self, BufRead, BufReader};
@@ -135,6 +135,14 @@ pub(super) struct Selection {
     peak_document_bytes: u64,
 }
 
+/// The ids a selective read must release, and whether their documents carry
+/// the stored embedding (text-only hits never rescore it, #1917).
+#[derive(Clone, Copy)]
+pub(super) struct Wanted<'a> {
+    pub(super) ids: &'a BTreeSet<String>,
+    pub(super) embeddings: bool,
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct HydrationBudget {
     pub(super) limit: u64,
@@ -146,7 +154,7 @@ impl SearchOutOfCoreSegmentReader {
         &self,
         config: &SearchOutOfCoreConfig,
         segment: &SearchSegmentDescriptorEntry,
-        ids: &BTreeSet<String>,
+        wanted: Wanted<'_>,
         hydrated_bytes: u64,
         metrics: &mut SearchOutOfCoreMetrics,
         cache: &super::content_blocks::ContentCache,
@@ -160,7 +168,14 @@ impl SearchOutOfCoreSegmentReader {
                 self.payload_sha256,
                 self.payload_generation,
             );
-            return self.read_selected_blocks(config, segment, ids, hydrated_bytes, metrics, cache);
+            return self.read_selected_blocks(
+                config,
+                segment,
+                wanted,
+                hydrated_bytes,
+                metrics,
+                cache,
+            );
         }
         let input = RangeReader {
             file: &self.payload,
@@ -172,7 +187,7 @@ impl SearchOutOfCoreSegmentReader {
             range.length,
             range.checksum,
             segment,
-            ids,
+            wanted,
             config.max_uncompressed_segment_bytes.get(),
             HydrationBudget {
                 limit: config.max_hydrated_bytes.get(),
@@ -197,11 +212,12 @@ impl SearchOutOfCoreSegmentReader {
         &self,
         config: &SearchOutOfCoreConfig,
         segment: &SearchSegmentDescriptorEntry,
-        ids: &BTreeSet<String>,
+        wanted: Wanted<'_>,
         hydrated_bytes: u64,
         metrics: &mut SearchOutOfCoreMetrics,
         cache: Option<super::content_blocks::CacheScope<'_>>,
     ) -> Result<Vec<SearchDocument>> {
+        let ids = wanted.ids;
         use super::content_blocks::{self as blocks, Expect, Reads};
         let range = segment
             .payload_range
@@ -230,15 +246,15 @@ impl SearchOutOfCoreSegmentReader {
                 None,
                 &mut reads,
             )?;
-            let mut wanted = ids
+            let mut needed = ids
                 .iter()
                 .filter_map(|id| index.find(id))
                 .collect::<Vec<_>>();
-            wanted.dedup();
+            needed.dedup();
             let mut decoder = None;
             let mut documents = Vec::new();
             let mut bytes = 0u64;
-            for block in wanted {
+            for block in needed {
                 let entry = index.entries()[block];
                 let bounds = Bounds::of_block(&index, &entry);
                 let budget = HydrationBudget {
@@ -261,7 +277,7 @@ impl SearchOutOfCoreSegmentReader {
                         &index,
                         block..block + 1,
                         None,
-                        |text| select_documents(text, bounds, ids, budget),
+                        |text| select_documents(text, bounds, wanted, budget),
                     )?
                 } else {
                     let decoder = match &mut decoder {
@@ -278,7 +294,7 @@ impl SearchOutOfCoreSegmentReader {
                         None,
                         &mut reads,
                     )?;
-                    select_documents(&mut &body[..], bounds, ids, budget)?
+                    select_documents(&mut &body[..], bounds, wanted, budget)?
                 };
                 peak = peak.max(bytes.saturating_add(selected.peak_document_bytes));
                 bytes = bytes.saturating_add(selected.bytes);
@@ -297,7 +313,7 @@ fn read_selected(
     length: u64,
     checksum: u64,
     segment: &SearchSegmentDescriptorEntry,
-    ids: &BTreeSet<String>,
+    wanted: Wanted<'_>,
     max_uncompressed_bytes: u64,
     budget: HydrationBudget,
 ) -> Result<Selection> {
@@ -307,7 +323,7 @@ fn read_selected(
         checksum,
         max_uncompressed_bytes,
         None,
-        |text| select_documents(text, Bounds::of(segment), ids, budget),
+        |text| select_documents(text, Bounds::of(segment), wanted, budget),
     )
 }
 
@@ -605,9 +621,10 @@ fn summarize_document_line(line: &str) -> Result<(String, u64)> {
 pub(super) fn select_documents(
     text: &mut dyn BufRead,
     segment: Bounds<'_>,
-    ids: &BTreeSet<String>,
+    wanted: Wanted<'_>,
     budget: HydrationBudget,
 ) -> Result<Selection> {
+    let ids = wanted.ids;
     let remaining_bytes = budget.limit - budget.used;
     let mut selected = Selection {
         documents: Vec::new(),
@@ -652,8 +669,8 @@ pub(super) fn select_documents(
         let selected_line = ids.contains(&id);
         previous = Some(id);
         if selected_line {
-            let document = decode_search_document_line(line)?;
-            debug_assert_eq!(search_document_bytes(&document), bytes);
+            let document = crate::decode_search_document_line_with(line, wanted.embeddings)?;
+            debug_assert!(!wanted.embeddings || search_document_bytes(&document) == bytes);
             let previous_bytes = selected.bytes;
             selected.bytes = selected
                 .bytes

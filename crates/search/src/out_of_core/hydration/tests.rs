@@ -165,7 +165,10 @@ fn streamed(
         bytes.len() as u64,
         checksum_bytes(bytes),
         segment,
-        ids,
+        Wanted {
+            ids,
+            embeddings: true,
+        },
         max_bytes,
         HydrationBudget {
             limit: output_bytes,
@@ -293,7 +296,10 @@ fn complete_integrity_covers_frames_lengths_and_every_fault_prefix() {
             bytes.len() as u64,
             checksum_bytes(&bytes),
             &segment,
-            &ids,
+            Wanted {
+                ids: &ids,
+                embeddings: true,
+            },
             u64::MAX,
             UNLIMITED_HYDRATION,
         );
@@ -303,7 +309,10 @@ fn complete_integrity_covers_frames_lengths_and_every_fault_prefix() {
             bytes.len() as u64,
             checksum_bytes(&bytes),
             &segment,
-            &ids,
+            Wanted {
+                ids: &ids,
+                embeddings: true,
+            },
             u64::MAX,
             UNLIMITED_HYDRATION
         )
@@ -320,7 +329,10 @@ fn complete_integrity_covers_frames_lengths_and_every_fault_prefix() {
         bytes.len() as u64,
         checksum_bytes(&bytes) ^ 1,
         &segment,
-        &ids,
+        Wanted {
+            ids: &ids,
+            embeddings: true,
+        },
         u64::MAX,
         UNLIMITED_HYDRATION
     )
@@ -395,6 +407,7 @@ fn public_hydration_preserves_order_budgets_and_old_reader() {
         .load_documents(
             &BTreeSet::from(["missing".to_string()]),
             &mut SearchOutOfCoreMetrics::default(),
+            true,
         )
         .unwrap_err();
     assert!(matches!(damaged, HawDBError::Storage(_)), "{damaged:?}");

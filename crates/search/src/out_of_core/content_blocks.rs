@@ -1059,7 +1059,10 @@ impl SearchOutOfCoreReader {
                         super::hydration::select_documents(
                             text,
                             super::hydration::Bounds::of(segment),
-                            &BTreeSet::new(),
+                            super::hydration::Wanted {
+                                ids: &BTreeSet::new(),
+                                embeddings: true,
+                            },
                             super::hydration::HydrationBudget {
                                 limit: u64::MAX,
                                 used: 0,

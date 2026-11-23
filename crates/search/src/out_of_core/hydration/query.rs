@@ -51,7 +51,7 @@ impl Loaded {
                     .iter()
                     .map(|candidate| candidate.id.clone())
                     .collect();
-                Storage::Legacy(reader.load_documents(&ids, metrics)?)
+                Storage::Legacy(reader.load_documents(&ids, metrics, embeddings)?)
             }
         };
         Ok(Self { storage })

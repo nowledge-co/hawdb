@@ -149,8 +149,13 @@ read, not the whole range.
 ## Remaining work
 
 - Records still carry the decimal-text embedding that the vector sidecar also
-  stores (spec Q9). Hit hydration skips parsing it for text-only queries;
-  removing it from the records needs a sidecar join for whole-document reads.
+  stores (spec Q9). Hit hydration of text-only queries leaves it unparsed
+  (`DocumentTargetRequest::TextHits`, `decode_record`); vector and hybrid hits
+  still parse it to rescore. Removing it from the records needs a vector
+  sidecar join for whole-document reads and would shrink blocks several-fold.
+- After this change, Documents hydration on BEIR is dominated by matched
+  term/span analysis of each hit body and the per-hit lexical id probe, not by
+  content reads.
 - Adjacent needed blocks are read one positioned read each; coalescing reads
   is left for measurement to justify.
 - The metadata sidecar keeps the envelope framing.

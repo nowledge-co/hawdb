@@ -164,7 +164,10 @@ fn hydration_integrity_checks_precede_byte_refusals_after_draining() {
             bytes.len() as u64,
             checksum,
             &segment,
-            &ids,
+            Wanted {
+                ids: &ids,
+                embeddings: true,
+            },
             u64::MAX,
             HydrationBudget {
                 limit: 20,

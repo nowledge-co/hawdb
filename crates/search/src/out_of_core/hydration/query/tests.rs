@@ -150,8 +150,15 @@ fn query_hydration_preserves_wire_grammar_budgets_and_unselected_integrity() {
             },
             HydrationBudget { limit: 1, used: 0 },
         ] {
-            let expected =
-                select_documents(&mut Cursor::new(&text), Bounds::of(&segment), &ids, budget);
+            let expected = select_documents(
+                &mut Cursor::new(&text),
+                Bounds::of(&segment),
+                Wanted {
+                    ids: &ids,
+                    embeddings: true,
+                },
+                budget,
+            );
             let actual = select_records(
                 &mut Cursor::new(&text),
                 Bounds::of(&segment),

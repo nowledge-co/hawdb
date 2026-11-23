@@ -8446,6 +8446,12 @@ fn decode_metadata(input: &str) -> Result<BTreeMap<String, String>> {
 }
 
 fn decode_search_document_line(line: &str) -> Result<SearchDocument> {
+    decode_search_document_line_with(line, true)
+}
+
+/// Decodes one document line; without `embeddings` its decimal-text vector
+/// is left unparsed and the document carries none (#1917 text-only hits).
+fn decode_search_document_line_with(line: &str, embeddings: bool) -> Result<SearchDocument> {
     let line = line.strip_suffix('\n').unwrap_or(line);
     let fields = line.split('\t').collect::<Vec<_>>();
     match fields.as_slice() {
@@ -8454,7 +8460,11 @@ fn decode_search_document_line(line: &str) -> Result<SearchDocument> {
                 id: decode_string(raw_id)?,
                 title: decode_string(raw_title)?,
                 content: decode_string(raw_content)?,
-                embedding: decode_embedding(raw_embedding)?,
+                embedding: if embeddings {
+                    decode_embedding(raw_embedding)?
+                } else {
+                    None
+                },
                 metadata: decode_metadata(raw_metadata)?,
             })
         }
