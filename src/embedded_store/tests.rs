@@ -3292,7 +3292,7 @@ fn embedded_store_recall_validation_requires_search_projection() {
 
     assert_eq!(
         error.to_string(),
-        "storage error: nowledge mem search projection is not configured"
+        "semantic error: nowledge mem search projection is not configured"
     );
 }
 
@@ -3407,7 +3407,7 @@ fn embedded_store_search_projection_evidence_requires_projection() {
 
     assert_eq!(
         error.to_string(),
-        "storage error: nowledge mem search projection is not configured"
+        "semantic error: nowledge mem search projection is not configured"
     );
 }
 
@@ -3425,7 +3425,7 @@ fn embedded_store_search_projection_shadow_evidence_requires_projection() {
 
     assert_eq!(
         error.to_string(),
-        "storage error: nowledge mem search projection is not configured"
+        "semantic error: nowledge mem search projection is not configured"
     );
 }
 
@@ -6837,7 +6837,7 @@ fn embedded_store_retrieval_requires_search_projection() {
 
     assert_eq!(
         error.to_string(),
-        "storage error: nowledge mem search projection is not configured"
+        "semantic error: nowledge mem search projection is not configured"
     );
 }
 
@@ -8056,6 +8056,7 @@ fn grouped_evidence_complete_text_preserves_graph_eligibility_and_retained_reads
 mod catch_up_admission_tests;
 mod externally_owned_search_kinds_tests;
 mod initial_import_checkpoint_tests;
+mod missing_search_projection_tests;
 mod object_reclamation_tests;
 mod resident_snapshot_admission_tests;
 mod schema_change_log_gap_tests;

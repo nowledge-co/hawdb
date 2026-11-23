@@ -1962,9 +1962,7 @@ impl SearchProjectionExternalReadOperator<'_> {
             return Ok(output);
         }
         if self.projection.is_some() {
-            return Err(HawDBError::Storage(
-                "nowledge mem search projection ownership is ambiguous".to_string(),
-            ));
+            return Err(ambiguous_search_projection_error());
         }
         Err(missing_search_projection_error())
     }
@@ -2006,11 +2004,7 @@ impl crate::executor::ExternalReadOperator for SearchProjectionExternalReadOpera
             (None, Some(projection)) => projection
                 .search_candidates_with_report_context(&search_request, vector_execution_options)?,
             (None, None) => return Err(missing_search_projection_error()),
-            (Some(_), Some(_)) => {
-                return Err(HawDBError::Storage(
-                    "nowledge mem search projection ownership is ambiguous".to_string(),
-                ));
-            }
+            (Some(_), Some(_)) => return Err(ambiguous_search_projection_error()),
         };
         // This executor implements a bounded vector seed, not source exhaustion.
         let output = output.into_bounded();
@@ -3699,12 +3693,21 @@ impl EmbeddedStore {
     }
 }
 
+/// A store without an attached search projection, including one whose
+/// incremental reader was detached after a failed re-attach, is a state or
+/// configuration condition: nothing was read, written or damaged. Report it
+/// as a non-poisoning `Semantic` refusal, like an unconfigured incremental
+/// maintenance request, never as `Storage`, which hosts treat as damage
+/// (#1927). Genuine integrity failures on these paths keep their own errors.
 fn missing_search_projection_error() -> HawDBError {
-    HawDBError::Storage("nowledge mem search projection is not configured".to_string())
+    HawDBError::Semantic("nowledge mem search projection is not configured".to_string())
 }
 
+/// Both a resident and an out-of-core projection attached is an ownership
+/// state no constructor produces; it is refused as `Semantic` for the same
+/// reason as [`missing_search_projection_error`] (#1927).
 fn ambiguous_search_projection_error() -> HawDBError {
-    HawDBError::Storage("nowledge mem search projection ownership is ambiguous".to_string())
+    HawDBError::Semantic("nowledge mem search projection ownership is ambiguous".to_string())
 }
 
 fn require_search_projection_mut(
