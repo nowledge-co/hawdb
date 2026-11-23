@@ -10,6 +10,11 @@ default. Python bindings do not expose this execution option. Canonical
 `vector_index_search` bypasses the ordinary reader setting; its single-graph
 recall qualification remains protected at 1024.
 
+The measurement revision is `728195fdb5f90951f4a30fb0f80df9b13e96a795`.
+The subsequent main integration adds unrelated catch-up budget error typing;
+the ANN query kernel/defaults are unchanged. Recorded source hashes bind the
+measurement revision, rather than claiming a later binary was measured.
+
 The fresh macOS arm64 release run uses SIFT's first 100,000 training vectors
 (128 dimensions) and first 128 held-out test vectors from the ANN Benchmarks
 [dataset](https://ann-benchmarks.com/sift-128-euclidean.hdf5). `provenance.json`

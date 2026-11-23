@@ -1295,7 +1295,10 @@ fn legacy_registered_prefix_1043_refuses_before_hydration_and_reopens_complete_r
             Ok(SearchProjectionRelationalDelta::default())
         })
         .unwrap_err();
-    assert!(matches!(error, Error::Database(HawDBError::Execution(_))));
+    assert!(matches!(
+        error,
+        Error::Database(HawDBError::SearchProjectionPrefixBehindSource { .. })
+    ));
     assert!(!hydrated.get());
     assert_eq!(
         consumer

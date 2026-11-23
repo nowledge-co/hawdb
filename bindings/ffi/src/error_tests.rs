@@ -139,6 +139,57 @@ fn search_projection_epoch_advance_refusal_reports_its_kind_and_keeps_its_messag
 }
 
 #[test]
+fn search_projection_catch_up_refusals_report_their_kinds_and_keep_their_messages() {
+    for (error, kind, message) in [
+        (
+            HawDBError::SearchProjectionPrefixBehindSource {
+                complete_through_commit_epoch: 3,
+                source_commit_epoch: 7,
+            },
+            "search_projection_prefix_behind_source",
+            "execution error: search projection complete-through epoch 3 differs from source snapshot epoch 7; prepare the complete source interval before publishing its watermark",
+        ),
+        (
+            HawDBError::SearchProjectionBatchBudgetExceeded {
+                budget: hawdb::SearchProjectionBatchBudget::ChangeBatch,
+                commit_epoch: Some(5),
+                required_operations: 9,
+                limit: 4,
+            },
+            "search_projection_batch_budget_exceeded",
+            "storage error: search projection change at commit epoch 5 requires 9 operations, exceeding configured per-batch limit 4",
+        ),
+        (
+            HawDBError::SearchProjectionBatchBudgetExceeded {
+                budget: hawdb::SearchProjectionBatchBudget::GraphDelta,
+                commit_epoch: None,
+                required_operations: 9,
+                limit: 4,
+            },
+            "search_projection_batch_budget_exceeded",
+            "storage error: search projection graph delta operation count 9 exceeded configured limit 4",
+        ),
+        (
+            HawDBError::SearchProjectionBatchBudgetExceeded {
+                budget: hawdb::SearchProjectionBatchBudget::ProjectionDelta,
+                commit_epoch: None,
+                required_operations: 9,
+                limit: 4,
+            },
+            "search_projection_batch_budget_exceeded",
+            "storage error: incremental projection update operation count 9 exceeded configured limit 4",
+        ),
+    ] {
+        let expected = json!({"kind": kind, "message": message});
+        assert_eq!(delivered(FfiError::open(&error)), expected);
+        assert_eq!(
+            delivered(FfiError::query(&EmbeddedQueryError::Database(error))),
+            expected
+        );
+    }
+}
+
+#[test]
 fn newer_search_projection_manifest_reports_unsupported_storage_format() {
     let error =
         HawDBError::UnsupportedStorageFormat(hawdb::StorageFormatError::UnsupportedVersion {

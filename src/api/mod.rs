@@ -899,9 +899,12 @@ fn require_search_projection_source_epoch(expected: Option<u64>, actual: u64) ->
                 "search projection graph delta complete-through epoch {expected} is ahead of graph commit epoch {actual}"
             )));
         }
-        return Err(HawDBError::Execution(format!(
-            "search projection complete-through epoch {expected} differs from source snapshot epoch {actual}; prepare the complete source interval before publishing its watermark"
-        )));
+        // A prefix behind the pinned source is a typed, non-poisoning refusal
+        // (#1924): hosts must cover the whole interval or re-prepare.
+        return Err(HawDBError::SearchProjectionPrefixBehindSource {
+            complete_through_commit_epoch: expected,
+            source_commit_epoch: actual,
+        });
     }
     Ok(())
 }
@@ -918,9 +921,12 @@ fn search_projection_graph_delta_for(
     if let Some(limit) = request.max_operations
         && operation_count > limit
     {
-        return Err(HawDBError::Storage(format!(
-                "search projection graph delta operation count {operation_count} exceeded configured limit {limit}"
-            )));
+        return Err(HawDBError::SearchProjectionBatchBudgetExceeded {
+            budget: hawdb_core::SearchProjectionBatchBudget::GraphDelta,
+            commit_epoch: None,
+            required_operations: operation_count,
+            limit,
+        });
     }
     // A changefeed prefix describes IDs, not a historical read view.
     // Hydrating it from a newer head would publish future data under an old watermark.

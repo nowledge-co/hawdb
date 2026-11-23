@@ -467,7 +467,9 @@ impl ExpectedErrorClass {
             | HawDBError::SearchProjectionRebuildRefused { .. }
             | HawDBError::SearchProjectionOwnershipMarkerCorrupt { .. }
             | HawDBError::SearchProjectionOwnershipMismatch { .. }
-            | HawDBError::SearchProjectionEpochAdvanceRefused { .. } => Self::Execution,
+            | HawDBError::SearchProjectionEpochAdvanceRefused { .. }
+            | HawDBError::SearchProjectionPrefixBehindSource { .. }
+            | HawDBError::SearchProjectionBatchBudgetExceeded { .. } => Self::Execution,
             HawDBError::CapabilityUnavailable { .. } => Self::CapabilityUnavailable,
         }
     }
