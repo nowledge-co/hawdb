@@ -192,6 +192,8 @@ fn hydration_integrity_checks_precede_byte_refusals_after_draining() {
 /// Text-only hits are charged the bytes they hold, one count from selection
 /// through the cross-segment check and the metric, so two hits fit or are
 /// refused alike whether they share a segment or not (#1917 review).
+/// Text hits need lexical retrieval, so this needs full-text search.
+#[cfg(feature = "full-text-search")]
 #[test]
 fn text_hit_budget_is_the_same_within_and_across_segments() {
     let root = super::super::super::tests::test_dir("hydration-text-budget");
