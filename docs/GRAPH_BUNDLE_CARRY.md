@@ -45,7 +45,9 @@ preceding graph root before reclamation.
 a detached snapshot. `PhysicalGenerationPins` keeps checkpoint and graph sets
 separate; hidden low-level Rust publication/reclamation methods now take this
 typed set rather than a bare set of checkpoint integers. Callers construct it
-from their actual published views. Public host transaction APIs retain pins
+from their actual published views. Low-level owners can separately declare an
+explicit branch-private WAL with `with_branch_wal_generation`; that declaration
+retains only that WAL family and acquires no lease or descriptor. Public host transaction APIs retain pins
 automatically. Retaining G never retains an unrelated old row/WAL family G.
 
 Generation cleanup protects current G, preceding G and reader-owned G; a
@@ -70,6 +72,11 @@ controls permit dirty reuse, forget current G or forget reader G. This finite
 model abstracts bytes, hash validation and filesystem barriers. Existing
 `HawDBAutomaticCheckpoint` and `HawDBImmutableRootBindings` qualify complementary
 publication/closure invariants; their unchanged passes alone do not prove G!=C.
+
+Storage regressions also checkpoint after reopening a carried bundle and track
+projection debt in both live and detached views: a bundle valid through the
+checkpoint has no graph debt after relational-only commits or reopen, while
+new graph mutations report debt until rebuilt.
 
 Storage regressions cover complete graph-file names/bytes (and Unix inode
 identity), repeated relational writes/DDL, backup/restore, scrub, direct Catalog

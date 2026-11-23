@@ -72,6 +72,12 @@ The on-disk format carries no compatibility promise until HawDB declares one.
   `search_projection_epoch_advance_refused`, also not a storage failure: apply
   or catch up the range normally instead (see
   [SEARCH_PROJECTION_EPOCH_ADVANCE.md](../../docs/SEARCH_PROJECTION_EPOCH_ADVANCE.md));
+  bounded search projection catch-up refuses a changefeed prefix that ends
+  before the source head with `search_projection_prefix_behind_source`, and a
+  batch larger than its per-batch limit with
+  `search_projection_batch_budget_exceeded`; neither published anything or is
+  a storage failure, and both keep their previous message text (see
+  [REGISTERED_CONSUMER_CATCH_UP.md](../../docs/REGISTERED_CONSUMER_CATCH_UP.md#bounded-catch-up-refusals));
   `invalid_argument` marks caller-side contract violations,
   `transaction_open` / `no_transaction` transaction-state misuse, and `panic`
   a contained Rust panic.

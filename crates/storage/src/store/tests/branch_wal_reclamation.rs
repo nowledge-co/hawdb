@@ -333,7 +333,7 @@ fn branch_wal_reclamation_keeps_newer_names_and_reader_pinned_generations() {
         .publish_prepared_checkpoint_with_reader_generations(
             prepared,
             Some(store.commit_epoch()),
-            &crate::read_view::PhysicalGenerationPins::from_views([store.published_read_view()]),
+            &crate::read_view::PhysicalGenerationPins::default().with_branch_wal_generation(pinned),
             None,
         )
         .unwrap();

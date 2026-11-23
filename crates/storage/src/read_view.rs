@@ -408,6 +408,7 @@ pub struct PublishedReadView {
 pub struct PhysicalGenerationPins {
     checkpoints: std::collections::BTreeSet<u64>,
     graphs: std::collections::BTreeSet<u64>,
+    branch_wals: std::collections::BTreeSet<u64>,
 }
 
 impl PhysicalGenerationPins {
@@ -416,6 +417,19 @@ impl PhysicalGenerationPins {
     }
     pub(crate) fn graph_generations(&self) -> &std::collections::BTreeSet<u64> {
         &self.graphs
+    }
+
+    pub(crate) fn retains_branch_wal(&self, generation: u64) -> bool {
+        self.checkpoints.contains(&generation) || self.branch_wals.contains(&generation)
+    }
+
+    /// Declare an explicitly owned branch-private WAL for reclamation only.
+    /// This does not acquire a lease/handle or retain other artifact families.
+    /// Ordinary API read snapshots own their visible tail in memory.
+    #[doc(hidden)]
+    pub fn with_branch_wal_generation(mut self, generation: u64) -> Self {
+        self.branch_wals.insert(generation);
+        self
     }
 
     pub fn from_views(views: impl IntoIterator<Item = PublishedReadView>) -> Self {

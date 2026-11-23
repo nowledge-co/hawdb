@@ -453,6 +453,17 @@ unavailable range is refused with the typed, non-storage
 `HawDBError::SearchProjectionEpochAdvanceRefused`. See
 [`SEARCH_PROJECTION_EPOCH_ADVANCE.md`](SEARCH_PROJECTION_EPOCH_ADVANCE.md).
 
+Bounded catch-up (`catch_up_search_projection*`) publishes only a batch that
+reaches the pinned source head. A shorter prefix is refused with the typed,
+non-storage `HawDBError::SearchProjectionPrefixBehindSource`, and a source
+commit, graph delta or combined projection delta (including host-derived
+rows) larger than its per-batch limit with
+`HawDBError::SearchProjectionBatchBudgetExceeded`; neither poisons the handle
+and both keep their previous text. Probe first with
+`EmbeddedStoreHandle::search_projection_change_batch_probe(cap)` and catch up
+only with a budget whose batch `covers_source`. See
+[`REGISTERED_CONSUMER_CATCH_UP.md`](REGISTERED_CONSUMER_CATCH_UP.md#bounded-catch-up-refusals).
+
 A host can flag the search projection as stale from outside, for example
 after an external vector store rebuilt every embedding. Two methods do this:
 - `EmbeddedStoreHandle::mark_search_projection_full_reindex_needed(reason)`

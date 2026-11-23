@@ -319,8 +319,9 @@ impl DurableStore {
     /// after a crash may still have an unsynchronized rename; it is made
     /// durable here before anything it superseded is removed. Generations at
     /// or above the selected one (prepared successors, in-flight checkpoint
-    /// candidates, interrupted-publication evidence) and reader-pinned
-    /// generations are never removed. An interrupted-publication name below
+    /// candidates, interrupted-publication evidence), checkpoint-number pins
+    /// and explicit branch-WAL retention declarations are never removed. API
+    /// read snapshots do not open branch-private WALs. A publication name below
     /// the selected generation can no longer be selected (head generations
     /// and their WAL generations only advance), so it is reclaimed like a
     /// data-root generation below the selected checkpoint. A failure leaves
@@ -372,8 +373,7 @@ impl DurableStore {
                 continue;
             };
             if generation >= selected_generation
-                || pinned_reader_generations
-                    .is_some_and(|pins| pins.checkpoint_generations().contains(&generation))
+                || pinned_reader_generations.is_some_and(|pins| pins.retains_branch_wal(generation))
             {
                 continue;
             }

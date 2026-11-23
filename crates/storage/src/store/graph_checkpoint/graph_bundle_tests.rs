@@ -122,10 +122,130 @@ fn relational_only_checkpoint_carries_graph_files_across_generations_and_reopen(
     fs::remove_dir_all(backup).unwrap();
     fs::remove_dir_all(restored).unwrap();
     drop(store);
-    let reopened = GraphStore::open(&path, &mut catalog).unwrap();
+    let mut reopened = GraphStore::open(&path, &mut catalog).unwrap();
     assert_eq!(reopened.node_count_for_label(None), 100);
     assert_eq!(reopened.relational_state().row_count("messages"), 4);
+    reopened
+        .commit_relational_transaction(
+            &mut catalog,
+            RelationalTransaction {
+                writes: vec![RelationalWrite::Insert {
+                    table: "messages".into(),
+                    rows: vec![RelationalRow::new(vec![RelationalValue::Text(
+                        "after-reopen".into(),
+                    )])],
+                    mode: RelationalInsertMode::Error,
+                }],
+            },
+        )
+        .unwrap();
+    reopened.checkpoint(&catalog).unwrap();
+    assert_eq!(reopened.relational_state().row_count("messages"), 5);
+    assert_eq!(graph_files(&path), baseline);
+    for (name, bytes) in &baseline_bytes {
+        assert_eq!(fs::read(path.join(name)).unwrap(), *bytes);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(
+                fs::metadata(path.join(name)).unwrap().ino(),
+                baseline_inodes[name]
+            );
+        }
+    }
     drop(reopened);
+    fs::remove_dir_all(path).unwrap();
+}
+
+fn assert_projection_debt(store: &GraphStore, has_debt: bool) {
+    let pressure = store.storage_pressure_snapshot(None);
+    assert_eq!(
+        pressure.projection_debt_operations > 0,
+        has_debt,
+        "{pressure:?}"
+    );
+    assert_eq!(
+        pressure
+            .reason_codes
+            .contains(&crate::pressure::StoragePressureReasonCode::ProjectionDebt),
+        has_debt
+    );
+}
+
+#[test]
+fn carried_projection_debt_tracks_graph_changes_in_live_and_detached_views() {
+    let path = std::env::temp_dir().join(format!(
+        "hawdb-graph-debt-{}",
+        hawdb_core::generate_uuidv7().unwrap()
+    ));
+    let mut catalog = Catalog::default();
+    let mut store = GraphStore::open_with_durability_and_replay_config(
+        &path,
+        &mut catalog,
+        DurabilityPolicy::SyncOnEveryWrite,
+        WalReplayConfig {
+            residency_mode: StorageResidencyMode::OutOfCore,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    store
+        .create_node(&mut catalog, "Note", BTreeMap::new())
+        .unwrap();
+    store.checkpoint(&catalog).unwrap();
+    store
+        .commit_relational_transaction(
+            &mut catalog,
+            RelationalTransaction {
+                writes: vec![RelationalWrite::CreateTable(RelationalTableSchema {
+                    materialized_view: None,
+                    name: "debt_rows".into(),
+                    columns: vec![RelationalColumnSchema {
+                        name: "id".into(),
+                        scalar_type: RelationalScalarType::BigInt,
+                        nullable: false,
+                        default: None,
+                    }],
+                    primary_key: vec!["id".into()],
+                    unique_constraints: vec![],
+                    foreign_keys: vec![],
+                    indexes: vec![],
+                })],
+            },
+        )
+        .unwrap();
+    store.checkpoint(&catalog).unwrap();
+    assert!(store.is_out_of_core());
+    assert!(store.persistent_property_projection.is_some());
+    let manifest =
+        crate::durable_manifest::DurableManifest::load(&path.join("manifest.hawdb")).unwrap();
+    assert!(manifest.graph_generation().unwrap() < manifest.checkpoint_epoch);
+    assert_projection_debt(&store, false);
+    assert_projection_debt(&store.snapshot(), false);
+    drop(store);
+    let mut store = GraphStore::open_with_durability_and_replay_config(
+        &path,
+        &mut catalog,
+        DurabilityPolicy::SyncOnEveryWrite,
+        WalReplayConfig {
+            residency_mode: StorageResidencyMode::OutOfCore,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_projection_debt(&store, false);
+    assert_projection_debt(&store.snapshot(), false);
+    store
+        .create_node(&mut catalog, "Note", BTreeMap::new())
+        .unwrap();
+    assert_projection_debt(&store, true);
+    let dirty_snapshot = store.snapshot();
+    assert_projection_debt(&dirty_snapshot, true);
+    store.checkpoint(&catalog).unwrap();
+    assert_projection_debt(&store, false);
+    assert_projection_debt(&dirty_snapshot, true);
+    drop(dirty_snapshot);
+    drop(store);
     fs::remove_dir_all(path).unwrap();
 }
 

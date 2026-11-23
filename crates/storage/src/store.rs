@@ -974,6 +974,7 @@ impl AdvancedStatisticsDirtyState {
 #[derive(Debug, Clone)]
 struct SnapshotResidencyObserver {
     segment_cache: Arc<SegmentCache>,
+    checkpoint_commit_epoch: u64,
     graph_manifest_open_budget_bytes: u64,
     graph_manifest_encoded_bytes: u64,
 }

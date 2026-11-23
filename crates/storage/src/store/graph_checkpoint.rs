@@ -1795,6 +1795,7 @@ impl GraphStore {
                 // Manifest admission metadata belongs to the captured roots.
                 Some(SnapshotResidencyObserver {
                     segment_cache: Arc::clone(&durable.segment_cache),
+                    checkpoint_commit_epoch: durable.checkpoint_commit_epoch,
                     graph_manifest_open_budget_bytes: durable.graph_manifest_open_budget_bytes(),
                     graph_manifest_encoded_bytes: durable.graph_manifest_encoded_bytes(),
                 })
@@ -1968,11 +1969,23 @@ impl GraphStore {
             self.persistent_property_projection
                 .as_ref()
                 .map_or(0, |reader| {
-                    usize::try_from(
-                        self.commit_epoch
-                            .saturating_sub(reader.manifest().source_commit_epoch),
-                    )
-                    .unwrap_or(usize::MAX)
+                    // A carried graph projection remains valid through its
+                    // latest checkpoint even though serialized E stays older.
+                    // Detached views retain that captured coverage, not a
+                    // live writer clock. Only later graph changes create debt.
+                    let valid_through = self
+                        .durable
+                        .as_ref()
+                        .map(|durable| durable.checkpoint_commit_epoch)
+                        .or_else(|| {
+                            self.snapshot_residency_observer
+                                .as_ref()
+                                .map(|observer| observer.checkpoint_commit_epoch)
+                        })
+                        .unwrap_or(reader.manifest().source_commit_epoch)
+                        .max(reader.manifest().source_commit_epoch);
+                    usize::try_from(self.graph_change_commit_epoch.saturating_sub(valid_through))
+                        .unwrap_or(usize::MAX)
                 });
 
         StoragePressureSignals {

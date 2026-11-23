@@ -619,7 +619,13 @@ fn durable_search_projection_catch_up_refuses_an_incoherent_prefix_and_retries_c
     let error = db
         .catch_up_search_projection(&mut search_index, 1, 1)
         .unwrap_err();
-    assert!(matches!(error, HawDBError::Execution(_)));
+    assert_eq!(
+        error,
+        HawDBError::SearchProjectionPrefixBehindSource {
+            complete_through_commit_epoch: 1,
+            source_commit_epoch: 2,
+        }
+    );
     assert_eq!(search_index.document_count(), 0);
     assert_eq!(
         search_index
@@ -847,9 +853,15 @@ fn unified_projection_batch_hydrator_enforces_fanout_budget() {
         )
         .unwrap_err();
 
-    assert!(error
-        .to_string()
-        .contains("operation count 2 exceeded configured limit 1"));
+    assert_eq!(
+        error,
+        HawDBError::SearchProjectionBatchBudgetExceeded {
+            budget: crate::SearchProjectionBatchBudget::ProjectionDelta,
+            commit_epoch: None,
+            required_operations: 2,
+            limit: 1,
+        }
+    );
     assert!(search_index.document("memory:m1").is_none());
     assert!(search_index.document("message:derived").is_none());
     assert_eq!(
@@ -1131,10 +1143,19 @@ fn search_projection_changefeed_does_not_split_one_commit_across_batches() {
         .build_search_projection_graph_delta_request_after(0, Some(1))
         .unwrap_err();
 
-    assert!(error
-        .to_string()
-        .contains("exceeding configured per-batch limit 1"));
-    assert!(error.to_string().contains("commit epoch 1"));
+    assert_eq!(
+        error,
+        HawDBError::SearchProjectionBatchBudgetExceeded {
+            budget: crate::SearchProjectionBatchBudget::ChangeBatch,
+            commit_epoch: Some(1),
+            required_operations: 2,
+            limit: 1,
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "storage error: search projection change at commit epoch 1 requires 2 operations, exceeding configured per-batch limit 1"
+    );
 }
 
 #[test]
@@ -1729,7 +1750,10 @@ fn legacy_prefix_1043_refuses_before_hydration_and_complete_retry_reopens_as_ful
         });
     let error = outcome.expect_err("prefix must not hydrate at a later head");
     assert!(
-        matches!(&error, HawDBError::Execution(message) if message.contains("differs from source snapshot epoch")),
+        matches!(&error, HawDBError::SearchProjectionPrefixBehindSource { source_commit_epoch, .. } if *source_commit_epoch == db.commit_epoch().unwrap())
+            && error
+                .to_string()
+                .contains("differs from source snapshot epoch"),
         "{error:?}"
     );
     assert!(!hydrated.get());
@@ -1790,7 +1814,10 @@ fn legacy_delayed_batch_1043_rejects_hydration_after_the_source_head_advances() 
     );
     let error = outcome.expect_err("old cursor must not acknowledge later-head data");
     assert!(
-        matches!(&error, HawDBError::Execution(message) if message.contains("differs from source snapshot epoch")),
+        matches!(&error, HawDBError::SearchProjectionPrefixBehindSource { source_commit_epoch, .. } if *source_commit_epoch == db.commit_epoch().unwrap())
+            && error
+                .to_string()
+                .contains("differs from source snapshot epoch"),
         "{error:?}"
     );
     assert_eq!(index.document("memory:m1"), Some(&before));
@@ -1844,7 +1871,10 @@ fn legacy_relational_prefix_1043_refuses_before_host_reads_and_reopens_as_full_s
             hydrate_thread_message_changes(snapshot, batch)
         })
         .unwrap_err();
-    assert!(matches!(error, HawDBError::Execution(_)));
+    assert!(matches!(
+        error,
+        HawDBError::SearchProjectionPrefixBehindSource { .. }
+    ));
     assert!(!hydrated.get());
     assert_eq!(index.document("message:1").unwrap().content, "base");
     assert_eq!(
@@ -1942,8 +1972,10 @@ fn legacy_deleted_prefix_1043_preserves_the_old_checkpoint_until_complete_retry(
             .unwrap_err();
         assert!(matches!(
             error,
-            HawDBError::Execution(message)
-                if message.contains("differs from source snapshot epoch")
+            HawDBError::SearchProjectionPrefixBehindSource {
+                complete_through_commit_epoch,
+                ..
+            } if complete_through_commit_epoch == prefix_epoch
         ));
         assert_eq!(index.document("memory:a"), Some(&before));
         assert_eq!(
