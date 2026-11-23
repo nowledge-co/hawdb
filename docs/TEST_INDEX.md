@@ -212,10 +212,13 @@ with `cargo test --locked -p hawdb --lib exact_candidate_tests` or
 Embedded out-of-core candidate working memory (`nowledge-co/hawdb#1722`) lives
 in `embedded_store::out_of_core_working_memory_tests` (same
 `//:hawdb_unit_general_tests` owner), reusing the #1692 fixture. At the
-smallest admission serving text, exact vector-only and windowed exact hybrid
-snapshot reads (measured at 256 MiB), those reads and default vector-only
-succeed within the charge while an unwindowed exact hybrid read is refused with
-a typed `MemoryBytes` budget error; at 256 MiB every mode succeeds with a
+smallest admission serving text and windowed exact hybrid snapshot reads
+(measured at 256 MiB), those reads succeed within the charge while an
+unwindowed exact hybrid read is refused with a typed `MemoryBytes` budget
+error; exact and default vector-only reads, whose blocking vector state
+(~2.8 MiB here) exceeds both, succeed within the exact read's measured
+admission. (Before #1917 `stream1` hydration charged a ~2.5 MiB decoder window
+to every text and hybrid page, so one admission covered all three.) At 256 MiB every mode succeeds with a
 nonzero `query_memory_peak_bytes` within admission, through both snapshot and
 handle. `out_of_core::tests::admitted_working`
 (`//crates/search:hawdb_search_tests` and the FTS+vector profiles) asserts with

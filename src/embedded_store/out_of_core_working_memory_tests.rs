@@ -67,19 +67,26 @@ fn snapshot_candidate_reads_charge_admitted_working_memory() {
         let output = handle.search_candidates_with_report(&request).unwrap();
         assert!(charged_bytes(&output) > 0, "{name}");
     }
-    // The unwindowed hybrid working set exceeds every page-bounded read's.
+    // The unwindowed hybrid working set ranks the complete eligible set in
+    // both legs, so it exceeds the page-bounded text and windowed hybrid
+    // reads' working sets.
     assert!(
         hybrid_exact > page_bounded_admission(&handle) as u64,
         "{hybrid_exact}"
     );
 }
 
-/// The smallest admission serving text, exact vector-only and windowed exact
-/// hybrid reads. Default vector stages size themselves to the remaining bytes.
+/// The smallest admission serving the text and windowed exact hybrid reads.
+///
+/// Vector-only reads are not part of it: their blocking vector state needs
+/// about 2.8 MiB here regardless of the eligible set, which only stayed below
+/// the unwindowed hybrid read while `stream1` hydration charged a ~2.5 MiB
+/// zstd window to every text and hybrid page (#1917). They are served at the
+/// exact vector-only read's measured admission instead.
 fn page_bounded_admission(handle: &EmbeddedStoreHandle) -> usize {
     requests()
         .into_iter()
-        .filter(|(name, _)| matches!(*name, "text" | "vector exact" | "hybrid exact"))
+        .filter(|(name, _)| matches!(*name, "text" | "hybrid exact"))
         .map(|(name, request)| {
             let request = if name == "hybrid exact" {
                 request.with_rank_window(Some(LIMIT))
@@ -94,12 +101,32 @@ fn page_bounded_admission(handle: &EmbeddedStoreHandle) -> usize {
 
 #[test]
 fn snapshot_hybrid_without_rank_window_is_refused_above_admitted_working_memory() {
-    let small = {
+    let (small, vector_exact) = {
         let (_root, handle) = store("ooc-working-measure", LARGE_BUDGET);
-        page_bounded_admission(&handle)
+        let vector_exact = requests()
+            .into_iter()
+            .find(|(name, _)| *name == "vector exact")
+            .map(|(_, request)| charged_bytes(&snapshot_search(&handle, &request).unwrap()))
+            .unwrap();
+        (page_bounded_admission(&handle), vector_exact as usize)
     };
+    // Vector-only reads are served within the exact read's measured admission.
+    {
+        let (_root, handle) = store("ooc-working-vector", vector_exact);
+        for (name, request) in requests() {
+            if name.starts_with("vector") {
+                let output = snapshot_search(&handle, &request)
+                    .unwrap_or_else(|error| panic!("{name}: {error}"));
+                assert_eq!(output.accept_bounded().hits.len(), LIMIT, "{name}");
+                assert!(charged_bytes(&output) <= vector_exact as u64, "{name}");
+            }
+        }
+    }
     let (_root, handle) = store("ooc-working-small", small);
     for (name, request) in requests() {
+        if name.starts_with("vector") {
+            continue;
+        }
         let result = snapshot_search(&handle, &request);
         if name == "hybrid exact" {
             match result {
@@ -114,8 +141,8 @@ fn snapshot_hybrid_without_rank_window_is_refused_above_admitted_working_memory(
                 snapshot_search(&handle, &request.with_rank_window(Some(LIMIT))).unwrap();
             assert_eq!(windowed.accept_bounded().hits.len(), LIMIT);
             assert!(charged_bytes(&windowed) <= small as u64);
-        } else if name != "hybrid" {
-            // Text and vector-only reads are unaffected at this admission.
+        } else if name == "text" {
+            // Text reads are unaffected at this admission.
             let output = result.unwrap_or_else(|error| panic!("{name}: {error}"));
             assert_eq!(output.accept_bounded().hits.len(), LIMIT, "{name}");
             assert!(charged_bytes(&output) <= small as u64, "{name}");
