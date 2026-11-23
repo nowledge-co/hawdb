@@ -841,15 +841,23 @@ The publication argument is an induction over the operation's checked stages:
 
 1. Before staging, the reference validator establishes the identity and size
    invariant for the caller's bytes.
-2. A private staging file is created with `create_new`, written completely, and
-   synchronized. A bounded read-back recomputes its length, full bytes, and
-   domain-separated digest, so the installed candidate satisfies the same
-   invariant before it can become visible.
+2. Public caller-owned file inputs are copied into an exclusively created
+   staging inode. Streaming publication hashes the exact copied bytes and
+   synchronizes that inode; buffered publication verifies its bytes before
+   installation. GraphStore's internal checkpoint closure may instead link a
+   sealed producer inode into staging. That entry must be a regular file, and
+   a held counted native descriptor must identify the same inode before and
+   after a complete bounded hash against the planned reference. The producer
+   descriptor has write access for Windows synchronization and is synchronized
+   before installation. A stable native stamp permits installation without a
+   second full read; other cases verify the staged bytes completely.
 3. Installation uses an exclusive hard link into the kind directory. If the
    destination already exists, the publisher reads and compares the complete
    bytes and reference; it never replaces that path. Consequently, every
    successful destination names exactly one validated immutable payload, even
-   when two publishers race.
+   when two publishers race. An operation owns its staging name through an RAII
+   guard. Successful reuse after a race explicitly removes and synchronizes
+   the losing staging name; errors also release staging custody.
 4. Required ancestor names through the project root are synchronized before the
    first dependent publication; writable project admission establishes the root's
    own ancestry. Existence after an interrupted attempt is not a completed
@@ -861,6 +869,19 @@ The publication argument is an induction over the operation's checked stages:
    poisons that in-memory publisher; reopening creates a fresh publisher which
    revalidates the existing object. Thus an uncertain result cannot be retried
    through a possibly stale handle or acknowledged as a durable selector.
+
+The internal link path requires closed producer writers and a write-once
+generation: interrupted preparation consumes the plan, retries sealing, or
+unlinks the abandoned generation. It never rewrites a shared inode in place.
+Before returning, every producer alias is registered for managed immutable
+reads and copy-on-write; a later writable open detaches an independent inode.
+Public publication keeps copying because callers can retain native writers.
+Unavailable native identity, read-only producer access, or cross-device/
+unsupported source linking falls back to verified copying. When alias linking
+is unavailable, a verified binding retains the independent producer inode.
+Corruption, descriptor rejection, cancellation and unrelated I/O failures
+remain errors. Source hashing and cold alias verification retain bounded
+checkpoint work admission per stream block.
 
 This is a source-linked deductive proof of the publication kernel's identity,
 exclusive-installation, and fail-closed boundaries. It does not prove the
@@ -907,7 +928,9 @@ one input for every manifest-bound artifact; the publisher never scans the
 directory and never derives a dependency from a filename. For each input it
 first proves path uniqueness, reads the complete file, recomputes the
 domain-separated object identity, and then invokes the exclusive immutable
-publisher once per distinct object reference. Therefore induction over the
+publisher once per distinct object reference for public plans. The private
+sealed-producer path also visits every repeated-reference alias to establish
+its copy-on-write binding, while storing each immutable object once. Therefore induction over the
 input list gives:
 
 1. every returned reference denotes exactly the bytes named by one or more

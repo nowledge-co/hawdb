@@ -294,7 +294,7 @@ impl GraphStore {
         let plan = durable.checkpoint_closure_plan_with_work(manifest, work)?;
         let checkpoint_bindings = checkpoint_artifact_bindings(&durable.root_path, plan.inputs())?;
         let closure = plan
-            .publish_with_work(&mut objects, work)
+            .publish_sealed_with_work(&mut objects, work)
             .map_err(HawDBError::from_storage_error)?;
         let root = SealedRoot {
             checkpoint_epoch: manifest.checkpoint_commit_epoch,
@@ -2545,7 +2545,7 @@ fn publish_sealed_root(
         let plan = durable.checkpoint_closure_plan(manifest)?;
         let bindings = checkpoint_artifact_bindings(&durable.root_path, plan.inputs())?;
         let closure = plan
-            .publish(objects)
+            .publish_sealed_with_work(objects, crate::immutable_object::BlockWork::default())
             .map_err(HawDBError::from_storage_error)?;
         // A new manifest includes its checkpoint replay boundary. Previously
         // sealed intervals are covered and must not be replayed a second time.

@@ -5,6 +5,28 @@ for #834, and descriptor evidence for #819. It is a bounded qualification
 matrix under stated synchronization assumptions, not a physical-device
 certification or a Rust-to-TLA refinement proof.
 
+## Shared checkpoint producer qualification
+
+The internal sealed-producer publication path is covered by
+`power_loss::tests::sealed_publication_syncs_unsynced_source_without_staging_payload_writes`
+and
+`api::tests::power_loss::object_reclamation::shared_checkpoint_publication_cuts_preserve_atomicity_and_child`.
+The first starts with unsynchronized producer bytes, rejects any staging payload
+write, and requires the acknowledged object to survive loss of every uncovered
+operation. The facade case observes before/after staging and object hardlinks
+and the final branch-head rename, then checks default, complete, reversed and
+isolated pending persistence plans. Baseline data must survive, a mixed
+graph/schema/relational transaction must remain atomic, the child must retain
+its original data, and reopening must preserve the recovered result. Completed
+checkpoint acknowledgment must retain the whole transaction.
+
+Local macOS arm64 execution on 2026-11-23 passed the facade case (600.49s)
+and the storage regression selection (39 cases). Unix native inode assertions
+also cover fresh checkpoint sharing and managed COW. These are implementation
+results for the candidate change, not Linux/Windows runtime qualification.
+The existing Windows directory-flush assumption remains unqualified; no
+storage bytes, reference domain, selector or persistent-format version changed.
+
 ## Reproduce and test discovery
 
 Use the pinned Rust toolchain and locked dependencies:

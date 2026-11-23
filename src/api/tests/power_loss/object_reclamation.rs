@@ -65,6 +65,101 @@ fn assert_ids(database: &mut Database, ids: &[&str], context: &str) {
     }
 }
 
+#[test]
+fn shared_checkpoint_publication_cuts_preserve_atomicity_and_child() {
+    for event in ["stage", "object", "head", "acknowledged"] {
+        for boundary in [ObservationBoundary::Before, ObservationBoundary::After] {
+            if event == "acknowledged" && boundary == ObservationBoundary::Before {
+                continue;
+            }
+            let durability = DurabilityPolicy::SyncOnCheckpoint;
+            let mut fixture = Fixture::new();
+            let mut database = open(&fixture.root, durability);
+            let main = database
+                .describe_branch(BranchSelector::Name("main".into()))
+                .unwrap()
+                .id;
+            database.query("CREATE (:Memory {id: 'baseline'})").unwrap();
+            database.checkpoint().unwrap();
+            let child = fork(&mut database, main, "child");
+            commit_mixed(&mut database);
+            if event != "acknowledged" {
+                let (io_event, path, descendants) = match event {
+                    "stage" => (
+                        IoEvent::HardLink,
+                        PathBuf::from("branches/objects/objects/.staging"),
+                        true,
+                    ),
+                    "object" => (
+                        IoEvent::HardLink,
+                        PathBuf::from("branches/objects/objects/checkpoint-artifact"),
+                        true,
+                    ),
+                    _ => (
+                        IoEvent::Rename,
+                        PathBuf::from("branches")
+                            .join(main.to_string())
+                            .join("branch.head"),
+                        false,
+                    ),
+                };
+                fixture
+                    .model
+                    .observe(ObservationPoint {
+                        event: io_event,
+                        relative_path: path,
+                        boundary,
+                        skip_matches: 0,
+                        include_descendants: descendants,
+                        keep_last: false,
+                    })
+                    .unwrap();
+            }
+            database.checkpoint().unwrap();
+            let completed = fixture.model.capture().unwrap();
+            let snapshot = if event == "acknowledged" {
+                completed
+            } else {
+                fixture
+                    .model
+                    .take_observation()
+                    .unwrap()
+                    .expect("checkpoint publication cut must be reached")
+            };
+            drop(database);
+            for plan in publication_fault_plans(&snapshot) {
+                let root = fixture.image(&snapshot, &plan);
+                let context = format!("{event} {boundary:?} {plan:?}");
+                let mut recovered = open(&root, durability);
+                assert_ids(&mut recovered, &["baseline"], &context);
+                let survived = assert_atomic(&mut recovered, main);
+                if event == "acknowledged" {
+                    assert!(survived, "{context}");
+                }
+                recovered
+                    .query_sql_with_params("USE BRANCH ID $1", &[Value::Uuid(child)])
+                    .unwrap();
+                assert_ids(&mut recovered, &["baseline"], &context);
+                assert!(
+                    recovered
+                        .query("MATCH (m:Memory {id: 'atomic-tail'}) RETURN m.id")
+                        .unwrap()
+                        .rows
+                        .is_empty(),
+                    "{context}: child changed"
+                );
+                drop(recovered);
+                let mut reopened = open(&root, durability);
+                assert_eq!(
+                    assert_atomic(&mut reopened, main),
+                    survived,
+                    "{context}: reopen"
+                );
+            }
+        }
+    }
+}
+
 /// Cut immediately before and after the first object unlink of a checkpoint
 /// sweep, with a child created from an older parent root.
 #[test]
