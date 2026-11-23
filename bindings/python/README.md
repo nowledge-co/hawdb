@@ -813,6 +813,13 @@ is a separate package with a LangChain `GraphStore` over a `hawdb.Database`,
 for `LLMGraphTransformer` output and `GraphCypherQAChain`. Install it from
 that directory.
 
+## RAGFlow graph store
+
+[`integrations/ragflow-hawdb`](../../integrations/ragflow-hawdb/README.md) is
+a separate package that keeps the knowledge graph of each RAGFlow dataset's
+GraphRAG in its own HawDB database, with a patch for RAGFlow v0.27.3 that
+calls it. Install it from that directory.
+
 ## Dify plugin
 
 [`integrations/dify-plugin-hawdb`](../../integrations/dify-plugin-hawdb/README.md)

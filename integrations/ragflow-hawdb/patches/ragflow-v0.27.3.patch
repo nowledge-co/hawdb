@@ -1,0 +1,422 @@
+Keep each RAGFlow dataset's GraphRAG graph in an embedded HawDB database.
+
+RAGFlow v0.27.3, commit 8090ffd8ba6098813d7f7ec2c4b8774f36c8423a. The files this
+patch changes are the same on the v0.27.x branch at commit
+27847b3b9424d79140486e2142284319f4f71247.
+
+Apply it from the root of a RAGFlow checkout:
+
+    git apply /path/to/ragflow-v0.27.3.patch
+
+Then install ragflow-hawdb and set hawdb_graph.path in conf/service_conf.yaml.
+Without that setting, the patched RAGFlow keeps the graph in its document engine.
+
+diff --git a/api/apps/services/dataset_api_service.py b/api/apps/services/dataset_api_service.py
+index adb3ea3..3915fc1 100644
+--- a/api/apps/services/dataset_api_service.py
++++ b/api/apps/services/dataset_api_service.py
+@@ -184,6 +184,17 @@ def _delete_datasets_sync(tenant_id: str, ids: list = None, delete_all: bool = F
+             {"status": TaskStatus.CANCEL},
+         )
+ 
++        # Drop the dataset's HawDB graph store first, so that removing each
++        # document does not edit the graph.
++        try:
++            from rag.graphrag.hawdb_store import graph_store_for
++
++            store = graph_store_for(kb.tenant_id, kb_id)
++            if store is not None:
++                store.drop()
++        except Exception as e:
++            logging.warning(f"Failed to drop the HawDB graph store of dataset {kb_id}: {e}")
++
+         for doc in DocumentService.query(kb_id=kb_id):
+             if not DocumentService.remove_document(doc, tenant_id):
+                 errors.append(f"Remove document '{doc.id}' error for dataset '{kb_id}'")
+@@ -570,10 +581,12 @@ def delete_knowledge_graph(dataset_id: str, tenant_id: str):
+     if not KnowledgebaseService.accessible(dataset_id, tenant_id):
+         return False, "no authorization"
+     _, kb = KnowledgebaseService.get_by_id(dataset_id)
++    from rag.graphrag.hawdb_store import wipe_graph
+     from rag.graphrag.phase_markers import clear_phase_markers
+     from rag.nlp import search
+ 
+-    settings.docStoreConn.delete({"knowledge_graph_kwd": ["graph", "subgraph", "entity", "relation", "community_report"]}, search.index_name(kb.tenant_id), dataset_id)
++    # With a HawDB graph store, the graph is deleted from the store as well.
++    wipe_graph(kb.tenant_id, dataset_id, lambda: settings.docStoreConn.delete({"knowledge_graph_kwd": ["graph", "subgraph", "entity", "relation", "community_report"]}, search.index_name(kb.tenant_id), dataset_id))
+     # Wiping the graph invalidates any phase-completion markers used to
+     # short-circuit resolution / community detection on resume.
+     clear_phase_markers(dataset_id)
+@@ -959,10 +972,11 @@ def delete_index(dataset_id: str, tenant_id: str, index_type: str, wipe: bool =
+         TaskService.delete_by_id(task_id)
+ 
+     if wipe and index_type == "graph":
++        from rag.graphrag.hawdb_store import wipe_graph
+         from rag.graphrag.phase_markers import clear_phase_markers
+         from rag.nlp import search
+ 
+-        settings.docStoreConn.delete({"knowledge_graph_kwd": ["graph", "subgraph", "entity", "relation", "community_report"]}, search.index_name(kb.tenant_id), dataset_id)
++        wipe_graph(kb.tenant_id, dataset_id, lambda: settings.docStoreConn.delete({"knowledge_graph_kwd": ["graph", "subgraph", "entity", "relation", "community_report"]}, search.index_name(kb.tenant_id), dataset_id))
+         # Wiping the graph invalidates any phase-completion markers used to
+         # short-circuit resolution / community detection on resume.
+         clear_phase_markers(dataset_id)
+diff --git a/api/db/services/document_service.py b/api/db/services/document_service.py
+index cdc1953..6d77f76 100644
+--- a/api/db/services/document_service.py
++++ b/api/db/services/document_service.py
+@@ -550,6 +550,13 @@ class DocumentService(CommonService):
+ 
+         # Cleanup knowledge graph references (non-critical, log and continue)
+         try:
++            from rag.graphrag.hawdb_store import graph_store_for
++
++            # The dataset's HawDB graph store drops the document first, so
++            # that if it fails, the chunks keep naming it as the store does.
++            store = graph_store_for(tenant_id, doc.kb_id)
++            if store is not None:
++                store.remove_document(doc.id)
+             if chunk_index_exists:
+                 graph_source = settings.docStoreConn.get_fields(
+                     settings.docStoreConn.search(["source_id"], [], {"kb_id": doc.kb_id, "knowledge_graph_kwd": ["graph"]}, [], OrderByExpr(), 0, 1, chunk_index_name, [doc.kb_id]),
+diff --git a/rag/graphrag/general/index.py b/rag/graphrag/general/index.py
+index 199a0bb..a70cecd 100644
+--- a/rag/graphrag/general/index.py
++++ b/rag/graphrag/general/index.py
+@@ -48,7 +48,9 @@ from rag.graphrag.utils import (
+     chunk_id,
+     does_graph_contains,
+     get_graph,
++    get_graph_chunk_sources,
+     graph_merge,
++    hawdb_graph_store,
+     insert_chunks_bounded,
+     set_graph,
+     tidy_graph,
+@@ -486,8 +488,17 @@ async def run_graphrag_for_kb(
+             try:
+ 
+                 async def merge_subgraph_attempt():
+-                    current_graph = await get_graph(tenant_id, kb_id)
+-                    if current_graph and doc_id in current_graph.graph.get("source_id", []):
++                    if await hawdb_graph_store(tenant_id, kb_id, [doc_id]) is not None:
++                        # The HawDB store may hold a document whose chunks an
++                        # attempt failed to write; a graph chunk names it once
++                        # they are written.
++                        sources = await get_graph_chunk_sources(tenant_id, kb_id)
++                        merged = any(doc_id in docs for docs in sources.values())
++                        current_graph = await get_graph(tenant_id, kb_id) if merged else None
++                    else:
++                        current_graph = await get_graph(tenant_id, kb_id)
++                        merged = current_graph and doc_id in current_graph.graph.get("source_id", [])
++                    if merged:
+                         callback(msg=f"[GraphRAG] merge_subgraph doc:{doc_id} already merged, skipping retry.")
+                         return current_graph
+                     return await merge_subgraph(
+@@ -828,8 +839,11 @@ async def merge_subgraph(
+ ):
+     start = asyncio.get_running_loop().time()
+     change = GraphChange()
+-    old_graph = await get_graph(tenant_id, kb_id, subgraph.graph["source_id"])
+-    if old_graph is not None:
++    store = await hawdb_graph_store(tenant_id, kb_id, subgraph.graph["source_id"])
++    old_graph = None if store is not None else await get_graph(tenant_id, kb_id, subgraph.graph["source_id"])
++    if store is not None:
++        new_graph, change = await merge_subgraph_into_store(store, tenant_id, kb_id, subgraph, callback)
++    elif old_graph is not None:
+         logging.info("Merge with an exiting graph...................")
+         tidy_graph(old_graph, callback)
+         new_graph = graph_merge(old_graph, subgraph, change)
+@@ -847,6 +861,30 @@ async def merge_subgraph(
+     return new_graph
+ 
+ 
++async def merge_subgraph_into_store(store, tenant_id: str, kb_id: str, subgraph: nx.Graph, callback):
++    """Merge *subgraph* in the dataset's HawDB store, in one transaction.
++
++    Returns the whole graph and the change set_graph indexes: what the merge
++    added or updated, and what the documents the store holds and no graph
++    chunk names hold, which an earlier attempt merged without writing their
++    chunks.
++    """
++    merged = await thread_pool_exec(store.merge_subgraph, subgraph)
++    graph = await thread_pool_exec(store.get_graph)
++    tidy_graph(graph, callback)
++    change = GraphChange(added_updated_nodes=set(merged.added_updated_nodes), added_updated_edges=set(merged.added_updated_edges))
++    indexed = {doc for docs in (await get_graph_chunk_sources(tenant_id, kb_id)).values() for doc in docs}
++    if merged.added_updated_nodes:
++        indexed.update(subgraph.graph["source_id"])
++    pending = [doc for doc in graph.graph["source_id"] if doc not in indexed]
++    if pending:
++        callback(msg=f"[GraphRAG] indexing {len(pending)} documents an earlier attempt merged without writing their chunks.")
++        earlier = await thread_pool_exec(store.document_change, pending)
++        change.added_updated_nodes |= earlier.added_updated_nodes
++        change.added_updated_edges |= earlier.added_updated_edges
++    return graph, change
++
++
+ @timeout(60 * 30, 1)
+ async def resolve_entities(
+     graph,
+@@ -887,6 +925,9 @@ async def resolve_entities(
+     _has_cancel_and_exit(task_id, f"Task {task_id} cancelled after entity resolution.", callback)
+ 
+     _has_cancel_and_exit(task_id, f"Task {task_id} cancelled before saving resolved graph.", callback)
++    store = await hawdb_graph_store(tenant_id, kb_id)
++    if store is not None:
++        await thread_pool_exec(store.apply_change, graph, change)
+     await set_graph(tenant_id, kb_id, embed_bdl, graph, change, callback)
+     await cleanup_checkpoints(tenant_id, kb_id, RESOLUTION_CHECKPOINT)
+     now = asyncio.get_running_loop().time()
+diff --git a/rag/graphrag/hawdb_store.py b/rag/graphrag/hawdb_store.py
+new file mode 100644
+index 0000000..6d81ff5
+--- /dev/null
++++ b/rag/graphrag/hawdb_store.py
+@@ -0,0 +1,81 @@
++#
++#  Copyright 2026 Nowledge
++#
++#  Licensed under the Apache License, Version 2.0 (the "License");
++#  you may not use this file except in compliance with the License.
++#  You may obtain a copy of the License at
++#
++#      http://www.apache.org/licenses/LICENSE-2.0
++#
++#  Unless required by applicable law or agreed to in writing, software
++#  distributed under the License is distributed on an "AS IS" BASIS,
++#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++#  See the License for the specific language governing permissions and
++#  limitations under the License.
++#
++"""Keep each dataset's GraphRAG graph in an embedded HawDB database.
++
++Set ``hawdb_graph.path`` in conf/service_conf.yaml, and every dataset keeps its
++graph in a HawDB database at ``<path>/<tenant id>/<dataset id>``:
++
++    hawdb_graph:
++      path: /ragflow/hawdb_graph
++      max_paths_per_entity: 1000
++      busy_timeout: 60
++
++Every RAGFlow process that builds, retrieves or deletes graphs must see the
++same directory, and needs the ``ragflow-hawdb`` package. Without
++``hawdb_graph.path``, RAGFlow keeps the graph in its document engine.
++"""
++
++from common.config_utils import get_base_config
++
++# The graph attribute that marks a graph chunk the HawDB path wrote, which holds
++# only what the knowledge-graph view shows (ragflow_hawdb.ragflow.VIEW_MARKER).
++_VIEW_MARKER = ("graph_store", "hawdb")
++
++
++def graph_store_for(tenant_id, kb_id):
++    """Return the HawDB store of the dataset's graph, or None if none is configured."""
++    config = get_base_config("hawdb_graph", {}) or {}
++    if not config.get("path"):
++        return None
++    from ragflow_hawdb.ragflow import store_for
++
++    return store_for(
++        config["path"],
++        tenant_id,
++        kb_id,
++        max_paths=int(config.get("max_paths_per_entity", 1000)),
++        busy_timeout=float(config.get("busy_timeout", 60)),
++    )
++
++
++def wipe_graph(tenant_id, kb_id, delete_chunks):
++    """Delete the graph of *kb_id*: from its HawDB store, if it has one, and with *delete_chunks* from the document engine.
++
++    The store is cleared first, so that if that fails, the chunks stay as well,
++    and again once *delete_chunks* returns: a process that opens the dataset's
++    store for the first time imports the graph from the chunks, and may have
++    read them before they were deleted. Every clear changes the store's
++    generation, so the store refuses such an import after the second clear,
++    and the second clear deletes one written before it.
++    """
++    store = graph_store_for(tenant_id, kb_id)
++    if store is not None:
++        store.clear()
++    delete_chunks()
++    if store is not None:
++        store.clear()
++
++
++def graph_view(graph):
++    """Return the part of *graph* the knowledge-graph view shows, marked as a view."""
++    from ragflow_hawdb.ragflow import view_graph
++
++    return view_graph(graph)
++
++
++def is_graph_view(graph):
++    """Return True if *graph* came from a graph chunk the HawDB path wrote."""
++    return graph.graph.get(_VIEW_MARKER[0]) == _VIEW_MARKER[1]
+diff --git a/rag/graphrag/utils.py b/rag/graphrag/utils.py
+index 42b2251..e3a8d6a 100644
+--- a/rag/graphrag/utils.py
++++ b/rag/graphrag/utils.py
+@@ -34,6 +34,7 @@ from rag.nlp import rag_tokenizer, search
+ from rag.utils.redis_conn import REDIS_CONN
+ from common import settings
+ from common.doc_store.doc_store_base import OrderByExpr
++from rag.graphrag.hawdb_store import graph_store_for, graph_view, is_graph_view
+ 
+ GRAPH_FIELD_SEP = "<SEP>"
+ 
+@@ -527,8 +528,72 @@ async def get_graph_doc_ids(tenant_id, kb_id) -> list[str]:
+     return doc_ids
+ 
+ 
++async def get_graph_chunk_sources(tenant_id, kb_id) -> dict:
++    """Map each graph chunk of *kb_id* to the document IDs it names, marked removed or not.
++
++    With a HawDB graph store, set_graph writes a graph chunk only after the
++    entity and relation chunks of its change, so the documents a graph chunk
++    names have their chunks written.
++    """
++    conds = {"fields": ["source_id"], "size": 16, "knowledge_graph_kwd": ["graph"]}
++    res = await settings.retriever.search(conds, search.index_name(tenant_id), [kb_id])
++    return {id: list(res.field[id].get("source_id") or []) for id in res.ids}
++
++
++# The HawDB stores this process has opened, so that it moves a dataset's graph
++# from the document store into its HawDB store at most once.
++_HAWDB_STORES_READY = set()
++
++
++async def hawdb_graph_store(tenant_id, kb_id, exclude_rebuild=None):
++    """Return the HawDB store of the graph of *kb_id*, or None if the document store keeps the graph.
++
++    The first time a process opens a store that holds no graph, it imports the
++    graph the document store keeps for the dataset, if there is one. A store
++    whose import stopped partway holds no graph either: importing again starts
++    the import over, and importing an empty graph discards it. The store
++    refuses the import if another process cleared, dropped or created it after
++    this process read its generation: the graph read from the document store
++    may be the one a wipe deleted, and a store another process created holds
++    that process's graph.
++    """
++    store = graph_store_for(tenant_id, kb_id)
++    if store is None or store.path in _HAWDB_STORES_READY:
++        return store
++    generation = await thread_pool_exec(store.generation)
++    if not await thread_pool_exec(store.holds_graph):
++        from ragflow_hawdb import StaleImportError
++
++        graph = await _get_graph_from_doc_store(tenant_id, kb_id, exclude_rebuild)
++        try:
++            await thread_pool_exec(store.import_graph, nx.Graph() if graph is None else graph, generation=generation)
++        except StaleImportError:
++            # Another process cleared, dropped or created the store meanwhile.
++            # One that holds no graph, as a wipe leaves it, stays so, and the
++            # next call imports what the document store holds then.
++            if not await thread_pool_exec(store.holds_graph):
++                logging.info(f"The HawDB store at {store.path} was cleared, dropped or created by another process while this process read the knowledge graph of dataset {kb_id}; did not import it")
++                return store
++        except ValueError:
++            # Another process imported the graph or merged a document first.
++            if not await thread_pool_exec(store.holds_graph):
++                raise
++        else:
++            if graph is not None:
++                logging.info(f"Imported the knowledge graph of dataset {kb_id} into the HawDB store at {store.path}")
++    _HAWDB_STORES_READY.add(store.path)
++    return store
++
++
+ async def get_graph(tenant_id, kb_id, exclude_rebuild=None):
+     """Load the knowledge-graph for *kb_id* from the document store, rebuilding if marked removed."""
++    store = await hawdb_graph_store(tenant_id, kb_id, exclude_rebuild)
++    if store is not None:
++        return await thread_pool_exec(store.get_graph)
++    return await _get_graph_from_doc_store(tenant_id, kb_id, exclude_rebuild)
++
++
++async def _get_graph_from_doc_store(tenant_id, kb_id, exclude_rebuild=None):
+     conds = {"fields": ["content_with_weight", "removed_kwd", "source_id"], "size": 1, "knowledge_graph_kwd": ["graph"]}
+     res = await settings.retriever.search(conds, search.index_name(tenant_id), [kb_id])
+     if not res.total == 0:
+@@ -538,7 +603,8 @@ async def get_graph(tenant_id, kb_id, exclude_rebuild=None):
+                     g = json_graph.node_link_graph(json.loads(res.field[id]["content_with_weight"]), edges="edges")
+                     if "source_id" not in g.graph:
+                         g.graph["source_id"] = res.field[id]["source_id"]
+-                else:
++                # A graph chunk the HawDB path wrote holds only a view of the graph.
++                if res.field[id]["removed_kwd"] != "N" or is_graph_view(g):
+                     g = await rebuild_graph(tenant_id, kb_id, exclude_rebuild)
+                 return g
+             except Exception:
+@@ -556,6 +622,10 @@ async def set_graph(tenant_id: str, kb_id: str, embd_mdl, graph: nx.Graph, chang
+     """
+     global chat_limiter
+     start = asyncio.get_running_loop().time()
++    # A HawDB store keeps the whole graph and computes the n-hop paths; the
++    # graph chunk keeps what the knowledge-graph view shows, and the subgraph
++    # chunks stay as generate_subgraph wrote them.
++    store = await hawdb_graph_store(tenant_id, kb_id)
+ 
+     # Build all new chunks first (graph, subgraphs, node/edge embeddings) before
+     # deleting anything.  This ensures that if embedding generation or any other
+@@ -564,7 +634,7 @@ async def set_graph(tenant_id: str, kb_id: str, embd_mdl, graph: nx.Graph, chang
+     chunks = [
+         {
+             "id": get_uuid(),
+-            "content_with_weight": json.dumps(nx.node_link_data(graph, edges="edges"), ensure_ascii=False),
++            "content_with_weight": json.dumps(nx.node_link_data(graph if store is None else graph_view(graph), edges="edges"), ensure_ascii=False),
+             "knowledge_graph_kwd": "graph",
+             "kb_id": kb_id,
+             "source_id": graph.graph.get("source_id", []),
+@@ -574,7 +644,7 @@ async def set_graph(tenant_id: str, kb_id: str, embd_mdl, graph: nx.Graph, chang
+     ]
+ 
+     # generate updated subgraphs
+-    for source in graph.graph["source_id"]:
++    for source in graph.graph["source_id"] if store is None else []:
+         subgraph = graph.subgraph([n for n in graph.nodes if source in graph.nodes[n]["source_id"]]).copy()
+         subgraph.graph["source_id"] = [source]
+         for n in subgraph.nodes:
+@@ -624,10 +694,11 @@ async def set_graph(tenant_id: str, kb_id: str, embd_mdl, graph: nx.Graph, chang
+             callback(msg=f"Batch-embedded {len(_uncached_node_names)} entity names ({(len(_uncached_node_names) + _INSERT_BULK_SIZE - 1) // _INSERT_BULK_SIZE} batches of {_INSERT_BULK_SIZE}).")
+     # ── end batch pre-warm ──────────────────────────────────────────────────────
+ 
++    nhop = None if store is None else await thread_pool_exec(store.n_hop_paths, list(change.added_updated_nodes))
+     tasks = []
+     for ii, node in enumerate(change.added_updated_nodes):
+         node_attrs = graph.nodes[node]
+-        nhop_neighbors = n_neighbor(graph, node)
++        nhop_neighbors = n_neighbor(graph, node) if nhop is None else nhop[node]
+         tasks.append(asyncio.create_task(graph_node_to_chunk(kb_id, embd_mdl, node, node_attrs, chunks, nhop_neighbors)))
+         if ii % 100 == 9 and callback:
+             callback(msg=f"Get embedding of nodes: {ii}/{len(change.added_updated_nodes)}")
+@@ -703,7 +774,10 @@ async def set_graph(tenant_id: str, kb_id: str, embd_mdl, graph: nx.Graph, chang
+     # All new chunks are ready.  Now delete old data and insert the new data.
+     # Deleting only after chunks are built ensures that a crash during embedding
+     # generation above does not destroy the old graph/subgraph checkpoints.
+-    await thread_pool_exec(settings.docStoreConn.delete, {"knowledge_graph_kwd": ["graph", "subgraph"]}, search.index_name(tenant_id), kb_id)
++    if store is None:
++        await thread_pool_exec(settings.docStoreConn.delete, {"knowledge_graph_kwd": ["graph", "subgraph"]}, search.index_name(tenant_id), kb_id)
++    else:
++        old_graph_chunks = list(await get_graph_chunk_sources(tenant_id, kb_id))
+ 
+     if change.removed_nodes:
+         BATCH_SIZE = 100
+@@ -749,7 +823,15 @@ async def set_graph(tenant_id: str, kb_id: str, embd_mdl, graph: nx.Graph, chang
+         callback(msg=f"set_graph removed {len(change.removed_nodes)} nodes and {len(change.removed_edges)} edges from index in {del_now - start:.2f}s.")
+     start = del_now
+ 
+-    await insert_chunks_bounded(chunks, tenant_id, kb_id, callback=callback, label="Insert chunks")
++    if store is None:
++        await insert_chunks_bounded(chunks, tenant_id, kb_id, callback=callback, label="Insert chunks")
++    else:
++        # The graph chunk names the documents whose chunks are written, so it
++        # replaces the old graph chunks once the other chunks are in.
++        await insert_chunks_bounded(chunks[1:], tenant_id, kb_id, callback=callback, label="Insert chunks")
++        await insert_chunks_bounded(chunks[:1], tenant_id, kb_id, callback=callback, label="Insert graph chunk")
++        if old_graph_chunks:
++            await thread_pool_exec(settings.docStoreConn.delete, {"id": old_graph_chunks}, search.index_name(tenant_id), kb_id)
+     now = asyncio.get_running_loop().time()
+     if callback:
+         callback(msg=f"set_graph added/updated {len(change.added_updated_nodes)} nodes and {len(change.added_updated_edges)} edges from index in {now - start:.2f}s.")
