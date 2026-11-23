@@ -1941,7 +1941,15 @@ lane (`background-maintenance` required) and uses default storage limits and a o
 schedule work ([#1438](https://github.com/nowledge-co/hawdb/issues/1438)).
 Four hundred whole-table update rounds on one handle (512 rows of 1 KiB) exceed
 the 64 MiB live envelope several times; base `bb30c40` rejects round 97 before
-WAL append. Cases assert every commit, peak occupancy within the envelope, at
+WAL append. The 400-round writer retries only the pre-WAL
+`BranchBusy { resource: "automatic checkpoint capacity" }`, at most 32 times
+in the complete campaign, without advancing the round or admitted-entry count.
+A parked real checkpoint owner deterministically forces a relational update to
+hit that capacity deadline; its source identity and overlay remain unchanged,
+then the same round succeeds after checkpoint and survives reopen. These controls
+remain in `//:hawdb_unit_checkpoint_headroom_controls_tests`, with the existing
+exclusive/serial policy and timeout. Cases assert every commit, peak occupancy
+within the envelope, at
 least two pressure-triggered generations, values before and after reopen, exact
 debt/residency accounting folded by checkpoint, the shared 70%/80% boundaries
 for all four row/index pairs, a reader pinned across two drains, and a
