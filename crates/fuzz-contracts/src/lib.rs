@@ -181,7 +181,9 @@ pub const fn nowledge_query_fuzz_error_class(error: &HawDBError) -> &'static str
         | HawDBError::SearchProjectionRebuildRefused { .. }
         | HawDBError::SearchProjectionOwnershipMarkerCorrupt { .. }
         | HawDBError::SearchProjectionOwnershipMismatch { .. }
-        | HawDBError::SearchProjectionEpochAdvanceRefused { .. } => "execution",
+        | HawDBError::SearchProjectionEpochAdvanceRefused { .. }
+        | HawDBError::SearchProjectionPrefixBehindSource { .. }
+        | HawDBError::SearchProjectionBatchBudgetExceeded { .. } => "execution",
         HawDBError::Storage(_)
         | HawDBError::Constraint {
             surface: RelationalErrorSurface::Storage,

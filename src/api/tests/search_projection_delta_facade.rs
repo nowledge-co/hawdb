@@ -116,7 +116,15 @@ fn database_facade_scheduled_search_projection_delta_releases_background_budget(
         )
         .unwrap_err();
 
-    assert!(error.to_string().contains("exceeded configured limit"));
+    assert!(matches!(
+        error,
+        HawDBError::SearchProjectionBatchBudgetExceeded {
+            budget: crate::SearchProjectionBatchBudget::ProjectionDelta,
+            required_operations: 2,
+            limit: 1,
+            ..
+        }
+    ));
     assert_eq!(scheduler.state().running_background_operations, 0);
     assert!(search_index.document("memory:old").is_some());
     assert!(search_index.document("memory:new").is_none());

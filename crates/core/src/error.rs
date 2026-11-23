@@ -181,6 +181,30 @@ impl SearchProjectionEpochAdvanceRefusal {
     }
 }
 
+/// Which per-batch operation budget refused a search projection batch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchProjectionBatchBudget {
+    /// One source commit needs more changefeed operations than a change
+    /// batch may select; commits are never split across batches.
+    ChangeBatch,
+    /// A graph delta request has more operations than its `max_operations`.
+    GraphDelta,
+    /// The combined projection delta, including host-derived rows, has more
+    /// operations than its `max_operations` (for example
+    /// `max_projection_operations_per_batch`).
+    ProjectionDelta,
+}
+
+impl SearchProjectionBatchBudget {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ChangeBatch => "change_batch",
+            Self::GraphDelta => "graph_delta",
+            Self::ProjectionDelta => "projection_delta",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HawDBError {
     Parse(String),
@@ -251,6 +275,38 @@ pub enum HawDBError {
         source_graph_commit_epoch: Option<u64>,
         target_graph_commit_epoch: u64,
         message: String,
+    },
+    /// Bounded search projection catch-up selected a changefeed prefix that
+    /// ends at `complete_through_commit_epoch`, before the pinned source
+    /// snapshot at `source_commit_epoch` (#1043, #1924). Hydration reads the
+    /// source head, so publishing the prefix would put newer data under an
+    /// older watermark; nothing was published and the watermark is
+    /// unchanged. Not a storage failure and never poisoning, but not
+    /// transient either: retrying with the same budgets, or with a larger
+    /// `max_batches`, refuses again while the pending interval exceeds one
+    /// batch. Probe the interval with
+    /// `build_search_projection_change_batch_from_freshness(index, Some(cap))`
+    /// and catch up with a batch covering all of it, or re-prepare through
+    /// the staged registered-consumer path. When a write landed between the
+    /// probe and the catch-up, a fresh probe is enough. Displays as the
+    /// `execution error` it was reported as before.
+    SearchProjectionPrefixBehindSource {
+        complete_through_commit_epoch: u64,
+        source_commit_epoch: u64,
+    },
+    /// A bounded search projection batch needs `required_operations`, more
+    /// than the configured per-batch `limit` of `budget` (#1924).
+    /// `commit_epoch` is the single source commit that alone exceeds a
+    /// change batch limit, and `None` when no one commit is known. Nothing
+    /// was published and the watermark is unchanged. Not a storage failure
+    /// and never poisoning; retry with a limit of at least
+    /// `required_operations`. Displays as the `storage error` it was
+    /// reported as before.
+    SearchProjectionBatchBudgetExceeded {
+        budget: SearchProjectionBatchBudget,
+        commit_epoch: Option<u64>,
+        required_operations: usize,
+        limit: usize,
     },
     /// The externally owned search projection kinds requested at open differ
     /// from the set recorded with the projection (#1814). The open is refused
@@ -394,6 +450,36 @@ impl Display for HawDBError {
                 "search projection epoch advance refused ({}): {message}",
                 reason.as_str()
             ),
+            HawDBError::SearchProjectionPrefixBehindSource {
+                complete_through_commit_epoch,
+                source_commit_epoch,
+            } => write!(
+                f,
+                "execution error: search projection complete-through epoch {complete_through_commit_epoch} differs from source snapshot epoch {source_commit_epoch}; prepare the complete source interval before publishing its watermark"
+            ),
+            HawDBError::SearchProjectionBatchBudgetExceeded {
+                budget,
+                commit_epoch,
+                required_operations,
+                limit,
+            } => match (budget, commit_epoch) {
+                (SearchProjectionBatchBudget::ChangeBatch, Some(commit_epoch)) => write!(
+                    f,
+                    "storage error: search projection change at commit epoch {commit_epoch} requires {required_operations} operations, exceeding configured per-batch limit {limit}"
+                ),
+                (SearchProjectionBatchBudget::ChangeBatch, None) => write!(
+                    f,
+                    "storage error: search projection change requires {required_operations} operations, exceeding configured per-batch limit {limit}"
+                ),
+                (SearchProjectionBatchBudget::GraphDelta, _) => write!(
+                    f,
+                    "storage error: search projection graph delta operation count {required_operations} exceeded configured limit {limit}"
+                ),
+                (SearchProjectionBatchBudget::ProjectionDelta, _) => write!(
+                    f,
+                    "storage error: incremental projection update operation count {required_operations} exceeded configured limit {limit}"
+                ),
+            },
             HawDBError::SearchProjectionOwnershipMismatch {
                 projection,
                 recorded,

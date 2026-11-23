@@ -2320,9 +2320,13 @@ impl SearchIndex {
         if let Some(limit) = delta.max_operations
             && operation_count > limit
         {
-            return Err(HawDBError::Storage(format!(
-                    "incremental projection update operation count {operation_count} exceeded configured limit {limit}"
-                )));
+            // A per-batch budget refusal, not storage damage (#1924).
+            return Err(HawDBError::SearchProjectionBatchBudgetExceeded {
+                budget: hawdb_core::SearchProjectionBatchBudget::ProjectionDelta,
+                commit_epoch: None,
+                required_operations: operation_count,
+                limit,
+            });
         }
 
         let mut next_embedding_dimension = self.embedding_dimension;
@@ -15579,7 +15583,19 @@ mod tests {
             )
             .unwrap_err();
 
-        assert!(error.to_string().contains("exceeded configured limit"));
+        assert_eq!(
+            error,
+            HawDBError::SearchProjectionBatchBudgetExceeded {
+                budget: hawdb_core::SearchProjectionBatchBudget::ProjectionDelta,
+                commit_epoch: None,
+                required_operations: 2,
+                limit: 1,
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            "storage error: incremental projection update operation count 2 exceeded configured limit 1"
+        );
         assert_eq!(scheduler.state().running_background_operations, 0);
         assert!(index.document("memory:old").is_some());
         assert!(index.document("memory:new").is_none());

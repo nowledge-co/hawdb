@@ -1872,6 +1872,19 @@ The `_1043_` deleted-prefix fixture updates a surviving node in the same
 prefix transaction so its one-operation budget still truncates before the
 deletion after live-upsert filtering. Both residency modes retain prefix
 refusal, unchanged durable checkpoint and complete-retry/rebuild parity.
+The `api::tests::search_projection_catch_up_refusals` and
+`embedded_store::tests::search_catch_up_probe_tests` root unit families (#1924)
+require the typed `SearchProjectionPrefixBehindSource` and
+`SearchProjectionBatchBudgetExceeded` refusals, unchanged display text,
+unchanged watermarks and an unpoisoned handle from every bounded entry point,
+including `max_batches` retries without concurrent writes, host-derived rows
+over `max_projection_operations_per_batch` (resident and incremental), a write between a
+covering probe and catch-up, the incremental durable cursor and the read-only
+`search_projection_change_batch_probe`. A covering retry then completes. The
+probe and changefeed readiness report a missing, detached (failed incremental
+reattach), unmaintained or ambiguous projection as non-poisoning `Semantic`.
+Replay with `cargo test --locked -p hawdb --lib catch_up_refusals` and
+`cargo test --locked -p hawdb --lib search_catch_up_probe`; existing root lane.
 
 Brace notation describes several concrete labels; expand it before invoking
 Bazel. A family description does not imply every leaf belongs to every lane.

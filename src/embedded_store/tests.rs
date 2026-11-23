@@ -3785,11 +3785,13 @@ fn embedded_store_handle_1043_refuses_a_prefix_and_retries_complete_projection()
     let handle = EmbeddedStoreHandle::new(EmbeddedStore::new(graph, Some(projection))).unwrap();
 
     let error = handle.catch_up_search_projection(1, 4).unwrap_err();
-    assert!(matches!(
+    assert_eq!(
         error,
-        HawDBError::Execution(message)
-            if message.contains("differs from source snapshot epoch")
-    ));
+        HawDBError::SearchProjectionPrefixBehindSource {
+            complete_through_commit_epoch: 1,
+            source_commit_epoch: 2,
+        }
+    );
     {
         let store = handle.read_store().unwrap();
         let index = store.search_projection().unwrap().index();
@@ -4567,9 +4569,15 @@ fn embedded_store_does_not_split_graph_commit_across_projection_batches() {
     let mut store = EmbeddedStore::new(graph, Some(projection));
 
     let error = store.catch_up_search_projection(1, 1).unwrap_err();
-    assert!(error.to_string().contains(
-            "search projection change at commit epoch 1 requires 2 operations, exceeding configured per-batch limit 1"
-        ));
+    assert_eq!(
+        error,
+        HawDBError::SearchProjectionBatchBudgetExceeded {
+            budget: crate::SearchProjectionBatchBudget::ChangeBatch,
+            commit_epoch: Some(1),
+            required_operations: 2,
+            limit: 1,
+        }
+    );
     let projection = store.search_projection().unwrap();
     assert_eq!(
         projection
@@ -4768,11 +4776,12 @@ fn embedded_store_scheduled_catch_up_rejects_partial_source_interval_and_retries
     let error = store
         .catch_up_search_projection_scheduled(1, 1)
         .unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("complete-through epoch 1 differs from source snapshot epoch 2"),
-        "{error}"
+    assert_eq!(
+        error,
+        HawDBError::SearchProjectionPrefixBehindSource {
+            complete_through_commit_epoch: 1,
+            source_commit_epoch: 2,
+        }
     );
     let projection = store.search_projection().unwrap();
     assert!(projection.index().document("memory:first").is_none());
@@ -8051,6 +8060,7 @@ mod object_reclamation_tests;
 mod resident_snapshot_admission_tests;
 mod schema_change_log_gap_tests;
 mod schema_maintenance_tests;
+mod search_catch_up_probe_tests;
 mod search_cleanup_ceiling_tests;
 mod search_epoch_advance_tests;
 mod search_marker_tests;

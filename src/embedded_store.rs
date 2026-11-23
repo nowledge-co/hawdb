@@ -65,7 +65,9 @@ mod concurrent_owner;
 mod incremental_search;
 mod read_execution;
 mod resident_read;
+mod search_catch_up_probe;
 mod search_epoch_advance;
+pub use search_catch_up_probe::SearchProjectionChangeBatchProbe;
 mod search_markers;
 pub use search_markers::MAX_SEARCH_PROJECTION_MARKER_REASON_BYTES;
 mod search_projection_rebuild;
@@ -2920,11 +2922,10 @@ impl EmbeddedStore {
         require_restart_recoverable: bool,
         max_operations: Option<usize>,
     ) -> Result<SearchProjectionChangefeedReadiness> {
-        if self.incremental_search_enabled() {
-            let freshness = self.search_projection_freshness().ok_or_else(|| {
-                HawDBError::Storage("incremental search reader is detached".into())
-            })?;
-            return Ok(self
+        // Shares the probe's non-storage refusal for a missing, detached or
+        // ambiguous projection (#1924).
+        match self.maintained_search_projection()? {
+            search_catch_up_probe::MaintainedSearchProjection::Incremental(freshness) => Ok(self
                 .graph
                 .database()
                 .search_projection_changefeed_status()?
@@ -2933,16 +2934,16 @@ impl EmbeddedStore {
                     freshness.durable_source_graph_commit_epoch,
                     require_restart_recoverable,
                     max_operations,
-                ));
+                )),
+            search_catch_up_probe::MaintainedSearchProjection::Resident(index) => self
+                .graph
+                .database()
+                .search_projection_changefeed_readiness(
+                    index,
+                    require_restart_recoverable,
+                    max_operations,
+                ),
         }
-        let search_projection = self.require_search_projection()?;
-        self.graph
-            .database()
-            .search_projection_changefeed_readiness(
-                search_projection.index(),
-                require_restart_recoverable,
-                max_operations,
-            )
     }
 
     pub fn search_projection_graph_delta_background_work_plan(
