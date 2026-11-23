@@ -53,9 +53,10 @@ const ENTRY_FIXED_BYTES: usize = 28;
 /// microseconds while zstd level 3 still sees several records of context.
 /// A record larger than the target forms its own block.
 pub(super) const BLOCK_TARGET_BYTES: u64 = 16 * 1024;
-/// Blocks above this hold a single large record. They are written without a
-/// declared content size (bounded zstd window) and are always streamed,
-/// never buffered whole or cached.
+/// Blocks above this hold a single large record. Like every block, their
+/// frame declares its content size; zstd still bounds their window by the
+/// compression level. They are always streamed, never buffered whole or
+/// cached.
 pub(super) const MAX_BUFFERED_BLOCK_BYTES: u64 = 1024 * 1024;
 /// Index bytes read together with the header in one positioned read.
 const INDEX_PREFETCH_BYTES: u64 = 4 * 1024;
