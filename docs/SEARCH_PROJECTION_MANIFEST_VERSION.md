@@ -33,7 +33,7 @@ Both are omitted when `min_reader_version` is 1, and an absent field reads as
 | --- | --- |
 | 1 | Every field written before #1763. |
 | 2 | `content_source_graph_commit_epoch` (#1756), and the version fields themselves. |
-| 3 | `content_encoding: "blocks1"` on a content segment entry (#1917): its payload frames each descriptor segment as checksummed blocks ([SEARCH_CONTENT_BLOCKS.md](SEARCH_CONTENT_BLOCKS.md)). |
+| 3 | `content_encoding: "blocks1"` on a content segment entry (#1917): its payload frames each descriptor segment as checksummed blocks of binary document records, block layout 2 ([SEARCH_CONTENT_BLOCKS.md](SEARCH_CONTENT_BLOCKS.md)). |
 
 This reader supports version 3. Every new content artifact is written as
 `blocks1`, so any content publication by this release writes a version-3

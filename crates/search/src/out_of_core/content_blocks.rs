@@ -5,19 +5,20 @@
 //!
 //! A `stream1` descriptor segment is one `HAWDB_COMPRESSED_V1` envelope: one
 //! zstd stream behind one range checksum, so a reader must inflate and verify
-//! the whole segment to release one document. A `blocks1` segment frames the
-//! same `doc` records into independently compressed and checksummed blocks:
+//! the whole segment to release one document. A `blocks1` segment frames its
+//! documents as binary records ([`records`]) in independently compressed and
+//! checksummed blocks:
 //!
 //! ```text
 //! segment := header (64) | index (index_len) | block[0] .. block[n-1]
-//! header  := magic "HDCBLK01" | layout_version u16 = 1 | codec u8 = 1 (zstd)
+//! header  := magic "HDCBLK01" | layout_version u16 = 2 | codec u8 = 1 (zstd)
 //!            | flags u8 = 0 | dictionary_id u32 = 0 | block_count u32
 //!            | document_count u32 | index_len u32 | uncompressed_len u64
 //!            | reserved [u8; 28] = 0
 //! entry   := compressed_len u32 | uncompressed_len u32 | compressed_crc32c u32
 //!            | uncompressed_crc32c u32 | document_count u32
 //!            | first_id_len u32 | last_id_len u32 | first_id | last_id
-//! block   := one zstd frame of whole `doc` records, in id order
+//! block   := one zstd frame of whole binary records, in id order
 //! ```
 //!
 //! All integers are little-endian. Blocks follow the index contiguously, so
@@ -37,8 +38,12 @@ use hawdb_storage::cache::{
 use std::cell::RefCell;
 use std::io::{self, BufRead, BufReader};
 
+pub(super) mod records;
+
 pub(super) const MAGIC: &[u8; 8] = b"HDCBLK01";
-pub(super) const LAYOUT_VERSION: u16 = 1;
+/// Layout 2 stores binary records ([`records`]). Layout 1 held text `doc`
+/// lines and was never released; it is refused.
+pub(super) const LAYOUT_VERSION: u16 = 2;
 const CODEC_ZSTD: u8 = 1;
 pub(super) const HEADER_BYTES: usize = 64;
 const ENTRY_FIXED_BYTES: usize = 28;
@@ -133,8 +138,10 @@ impl Header {
             return Err(invalid("header is missing"));
         }
         let version = u16::from_le_bytes([bytes[8], bytes[9]]);
-        if version == 0 {
-            return Err(invalid("layout version is zero"));
+        if version < LAYOUT_VERSION {
+            return Err(invalid(format_args!(
+                "layout version {version} was never released; rebuild the projection"
+            )));
         }
         if version > LAYOUT_VERSION {
             return Err(HawDBError::UnsupportedStorageFormat(
@@ -723,83 +730,8 @@ struct InflatedTap<'e, R, B> {
     block: usize,
     remaining: u64,
     digest: Crc32cHasher,
-    lines: LineCheck,
+    lines: records::RecordWalk,
     failure: &'e Failure,
-}
-
-/// Counts records and captures the first and last ids of one block.
-#[derive(Default)]
-struct LineCheck {
-    records: u64,
-    field: u8,
-    id: Vec<u8>,
-    first_ok: bool,
-    last: Vec<u8>,
-    overflow: bool,
-    limit: usize,
-}
-
-impl LineCheck {
-    fn start(&mut self, limit: usize) {
-        self.records = 0;
-        self.field = 0;
-        self.id.clear();
-        self.last.clear();
-        self.first_ok = false;
-        self.overflow = false;
-        self.limit = limit;
-    }
-
-    fn feed(&mut self, bytes: &[u8], first: &str) {
-        for &byte in bytes {
-            match byte {
-                b'\n' => {
-                    if self.records == 0 {
-                        self.first_ok = !self.overflow && hex_matches(&self.id, first);
-                    }
-                    self.records += 1;
-                    std::mem::swap(&mut self.last, &mut self.id);
-                    self.id.clear();
-                    self.field = 0;
-                    self.overflow = false;
-                }
-                b'\t' => self.field = self.field.saturating_add(1),
-                _ if self.field == 1 => {
-                    if self.id.len() < self.limit {
-                        self.id.push(byte);
-                    } else {
-                        self.overflow = true;
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    fn finish(&self, entry: &Entry, last: &str, ended: bool) -> bool {
-        ended
-            && self.records == u64::from(entry.document_count)
-            && self.first_ok
-            && hex_matches(&self.last, last)
-    }
-}
-
-fn hex_matches(hex: &[u8], raw: &str) -> bool {
-    let nibble = |byte: u8| match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    };
-    hex.len() == 2 * raw.len()
-        && hex
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .zip(raw.bytes())
-            .all(|(pair, byte)| {
-                matches!((nibble(pair[0]), nibble(pair[1])), (Some(high), Some(low)) if (high << 4) | low == byte)
-            })
 }
 
 impl<'e, R: Read, B: std::ops::Deref<Target = [u8]>> InflatedTap<'e, R, B> {
@@ -811,7 +743,7 @@ impl<'e, R: Read, B: std::ops::Deref<Target = [u8]>> InflatedTap<'e, R, B> {
             .filter(|_| self.block < self.blocks.end)
         {
             self.remaining = u64::from(entry.uncompressed_len);
-            let limit = 2 * self
+            let limit = self
                 .index
                 .first(entry)
                 .len()
@@ -855,11 +787,7 @@ impl<R: Read, B: std::ops::Deref<Target = [u8]>> Read for InflatedTap<'_, R, B> 
             if digest.finish_u32() != entry.uncompressed_crc {
                 return Err(fail(self.failure, invalid("block checksum mismatch")));
             }
-            if !self.lines.finish(
-                &entry,
-                self.index.last(&entry),
-                bytes.last() == Some(&b'\n'),
-            ) {
+            if !self.lines.finish(&entry, self.index.last(&entry)) {
                 return Err(fail(
                     self.failure,
                     invalid("block records disagree with its index"),
@@ -884,6 +812,10 @@ pub(super) fn stream_blocks<T, B: std::ops::Deref<Target = [u8]>>(
     admission: Option<super::hydration::DecodeAdmission<'_>>,
     select: impl FnOnce(&mut dyn BufRead) -> Result<T>,
 ) -> Result<T> {
+    // The text re-encoder's buffer, besides the readers the caller admitted.
+    let _text = admission
+        .map(|admission| admission.memory.reserve(records::TEXT_RECORDS_BYTES + 8192))
+        .transpose()?;
     let failure = Failure::default();
     let entries = &index.entries()[blocks.clone()];
     let expected_compressed: u64 = entries
@@ -914,14 +846,16 @@ pub(super) fn stream_blocks<T, B: std::ops::Deref<Target = [u8]>>(
             block: blocks.start,
             remaining: 0,
             digest: Crc32cHasher::new(),
-            lines: LineCheck::default(),
+            lines: records::RecordWalk::default(),
             failure: &failure,
         };
         inflated.begin();
-        let mut text = BufReader::with_capacity(8192, &mut inflated);
-        let selected = select(&mut text);
-        let drained = io::copy(&mut text, &mut io::sink());
-        drop(text);
+        let mut raw = BufReader::with_capacity(8192, &mut inflated);
+        // Consumers read canonical text lines; the rest of the run is drained
+        // (and verified by the taps) without re-encoding.
+        let selected = select(&mut records::TextRecords::new(&mut raw));
+        let drained = io::copy(&mut raw, &mut io::sink());
+        drop(raw);
         if inflated.block != blocks.end && failure.borrow().is_none() {
             failure
                 .borrow_mut()

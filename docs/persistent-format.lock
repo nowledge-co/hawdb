@@ -82,7 +82,7 @@ crates/search/src/cjk_tokenizer.rs pub(super) const ANALYZER_FORMAT_VERSION: &[u
 crates/search/src/consumer/generation_metadata.rs const MAGIC: &[u8; 8] = b"HAWCGM02";
 crates/search/src/lexical_readiness.rs pub const SEARCH_LEXICAL_QUALIFICATION_PROTOCOL_VERSION: u64 = 2;
 crates/search/src/out_of_core/content_blocks.rs pub(super) const MAGIC: &[u8; 8] = b"HDCBLK01";
-crates/search/src/out_of_core/content_blocks.rs pub(super) const LAYOUT_VERSION: u16 = 1;
+crates/search/src/out_of_core/content_blocks.rs pub(super) const LAYOUT_VERSION: u16 = 2;
 crates/search/src/out_of_core/manifest_version.rs pub(super) const BASE_VERSION: u16 = 1;
 crates/search/src/out_of_core/manifest_version.rs pub(super) const CONTENT_EPOCH_VERSION: u16 = 2;
 crates/search/src/out_of_core/manifest_version.rs pub(super) const CONTENT_BLOCKS_VERSION: u16 = 3;

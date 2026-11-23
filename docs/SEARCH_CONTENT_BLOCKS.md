@@ -17,26 +17,39 @@ segment, so a top-100 query on BEIR SciFact inflated most of the corpus
 
 ```text
 segment := header (64) | index (index_len) | block[0] .. block[n-1]
-header  := magic "HDCBLK01" | layout_version u16 = 1 | codec u8 = 1 (zstd)
+header  := magic "HDCBLK01" | layout_version u16 = 2 | codec u8 = 1 (zstd)
            | flags u8 = 0 | dictionary_id u32 = 0 | block_count u32
            | document_count u32 | index_len u32 | uncompressed_len u64
            | reserved [u8; 28] = 0
 entry   := compressed_len u32 | uncompressed_len u32 | compressed_crc32c u32
            | uncompressed_crc32c u32 | document_count u32
            | first_id_len u32 | last_id_len u32 | first_id | last_id
-block   := one zstd frame (level 3, no frame checksum) of whole `doc` records
+block   := one zstd frame (level 3, no frame checksum) of whole records
+record  := id_len u32 | title_len u32 | content_len u32 | dimension u32
+           | metadata_count u32 | id | title | content
+           | embedding (dimension x f32) | metadata_count x entry
+entry   := key_len u32 | value_len u32 | key | value
 ```
 
 - Integers are little-endian. Blocks follow the index contiguously; their
   offsets are implied and must tile the descriptor's segment range exactly.
-- A block body holds the same `doc\t…` records as a `stream1` segment, without
-  the `HAWDB_SEARCH_SEGMENT_V1` line. Records are in strictly increasing id
-  order across the segment and are never split across blocks.
+- A block body holds binary records (layout 2): strings are raw UTF-8 bytes
+  instead of hex, and the stored vector is its little-endian `f32` bits
+  instead of comma-separated decimal text. A record decodes to exactly the
+  document its `stream1` `doc\t…` line decodes to (a zero dimension is no
+  embedding; metadata entries follow the stored map's key order). Records are
+  in strictly increasing id order across the segment and are never split
+  across blocks. Selective readers parse records in place, skip unselected
+  ones by their lengths, and decode only the requested ones; text-only hits
+  never decode the vector.
+- Layout 1 (the same blocks holding hex/decimal `doc` lines) was written only
+  by development builds of #1917 and never released; readers refuse it as a
+  `Storage` error asking for a rebuild, rather than misreading it.
 - The descriptor's per-segment `payload_range.checksum` is
   `CRC32C(header || index)`. The index holds every block's compressed and
   uncompressed CRC32C, so this is a digest over all block digests. The payload
   file as a whole stays bound by the selector's SHA-256 object reference.
-- A block closes when the next record would take it past 16 KiB uncompressed
+- A block closes when the next binary record would take it past 16 KiB uncompressed
   (`BLOCK_TARGET_BYTES`). A record larger than that forms its own block. At
   16 KiB a hit inflates and verifies tens of microseconds of data besides its
   own record, while level 3 still sees several records of context; the
@@ -53,7 +66,8 @@ block   := one zstd frame (level 3, no frame checksum) of whole `doc` records
 
 The index sits after the header, not in a trailer. The writer knows every
 block boundary before compressing (they follow from the records' admitted
-encoded lengths), so it skips the header and index slots, compresses blocks
+lengths: a binary record's length follows from its header fields and the
+content length its admitted text length implies), so it skips the header and index slots, compresses blocks
 straight into the tail and fills the slots last, without the tail shift the
 envelope writer needed. A sequential whole-segment reader then meets the index
 before the blocks it describes, so every existing streaming consumer keeps one
@@ -74,8 +88,15 @@ forward pass over the range.
   writes `blocks1`, so `stream1` artifacts disappear as compaction proceeds. A
   selector whose artifacts are all `stream1` keeps its lower version.
 - `PERSISTENT_FORMAT_VERSION` does not change: no existing database becomes
-  unreadable. The metadata sidecar, the resident snapshot writer and the
-  descriptor (`HAWDB_SEARCH_SEGMENTS_V3`) are unchanged.
+  unreadable. The record layout change (layout 2) lands in the same format
+  round as `blocks1` itself, behind the same selector version 3, so there is
+  one selector version bump. The metadata sidecar, the resident snapshot
+  writer and the descriptor (`HAWDB_SEARCH_SEGMENTS_V3`) are unchanged.
+- A segment's admission (`max_uncompressed_segment_bytes`) bounds both its
+  text encoding, as before, and its binary records. Binary records are
+  smaller except for vectors of mostly one-digit components (4 bytes against
+  2 per component), so a segment at the limit with such vectors can now be
+  refused at write time; readers refuse nothing a writer produced.
 
 ## Reading
 
@@ -113,8 +134,14 @@ verification) are unchanged callers of `hydration::read_validated*`. That
 reader dispatches on the segment magic, verifies the index digest and
 structure, then streams every block once through the admitted decoder while
 checking each block's compressed CRC, uncompressed length and CRC, and its
-record count and first and last ids against its index entry. Their guarantee
-is unchanged: nothing is released from a segment with any damaged block.
+record count and first and last ids against its index entry (a streaming
+record walk over the binary lengths). Consumers receive the records
+re-encoded as the canonical `stream1` text lines, byte for byte, through a
+bounded re-encoder (16 KiB output plus one hex step, charged to the decode
+admission), so their parsers, digests and record admission are unchanged.
+Blocks above 1 MiB (one large record) take the same streaming path in hit
+hydration. Their guarantee is unchanged: nothing is released from a segment
+with any damaged block.
 
 ## Content cache
 
@@ -148,11 +175,14 @@ read, not the whole range.
 
 ## Remaining work
 
-- Records still carry the decimal-text embedding that the vector sidecar also
-  stores (spec Q9). Hit hydration of text-only queries leaves it unparsed
-  (`DocumentTargetRequest::TextHits`, `decode_record`); vector and hybrid hits
-  still parse it to rescore. Removing it from the records needs a vector
-  sidecar join for whole-document reads and would shrink blocks several-fold.
+- Records still carry the embedding that the vector sidecar also stores
+  (spec Q9), now as 4 bytes per component instead of ~10 bytes of decimal
+  text. Hit hydration decodes it only for vector and hybrid hits (a copy of
+  the bits, no parsing). Removing it from the records needs a vector-sidecar
+  join for every whole-document reader (by-id hydration, mutation targets,
+  compaction, projection scans, verified bodies) and a new way to keep the
+  logical document digest, so it is left for a separate change; for 1024-d
+  vectors it would shrink records by about a further 4 KiB each.
 - After this change, Documents hydration on BEIR is dominated by matched
   term/span analysis of each hit body and the per-hit lexical id probe, not by
   content reads. Matched terms and spans now take one analyzer pass per field,

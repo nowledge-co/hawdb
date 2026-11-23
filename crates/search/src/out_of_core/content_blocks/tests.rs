@@ -23,8 +23,9 @@ fn take_block_inflated() -> u64 {
 }
 
 const DOCUMENTS: usize = 40;
-/// Content bytes of a large document: one record per block.
-const LARGE: usize = 5000;
+/// Content bytes of a large document: one record per block (two binary
+/// records exceed `BLOCK_TARGET_BYTES`).
+const LARGE: usize = 9000;
 /// Content bytes of a small document: several records per block.
 const SMALL: usize = 600;
 
@@ -386,22 +387,26 @@ fn index_structure_and_reserved_fields_are_refused_typed_or_as_storage() {
     };
     let typed = |error: HawDBError| matches!(error, HawDBError::UnsupportedStorageFormat(_));
     // Newer layout, other codec, dictionary, flags and reserved bytes.
-    for (at, value) in [(8, 2u8), (10, 2), (12, 1), (11, 1), (40, 1)] {
+    for (at, value) in [(8, 3u8), (10, 2), (12, 1), (11, 1), (40, 1)] {
         let (bytes, checksum) = reframe(&index, |bytes| bytes[at] = value);
         let error = parse(bytes, checksum).unwrap_err();
         assert!(typed(error.clone()), "offset {at}: {error:?}");
     }
-    let (bytes, checksum) = reframe(&index, |bytes| bytes[8] = 2);
+    let (bytes, checksum) = reframe(&index, |bytes| bytes[8] = 3);
     assert_eq!(
         parse(bytes, checksum).unwrap_err(),
         HawDBError::UnsupportedStorageFormat(StorageFormatError::UnsupportedVersion {
             format: SEARCH_PROJECTION_MANIFEST_FORMAT,
-            found: 2,
+            found: 3,
             supported: LAYOUT_VERSION,
         })
     );
+    // The unreleased text-record layout 1 is refused, not misread.
+    let (bytes, checksum) = reframe(&index, |bytes| bytes[8] = 1);
+    let error = parse(bytes, checksum).unwrap_err();
+    assert!(is_storage(&error) && error.to_string().contains("never released"));
     // An intact-looking header over a bad digest is never decoded.
-    let (bytes, checksum) = reframe(&index, |bytes| bytes[8] = 2);
+    let (bytes, checksum) = reframe(&index, |bytes| bytes[8] = 3);
     assert!(is_storage(&parse(bytes, checksum ^ 1).unwrap_err()));
     // Truncated, garbled and over-long indexes are storage errors.
     type Edit = Box<dyn FnOnce(&mut Vec<u8>)>;
@@ -498,5 +503,48 @@ fn the_content_cache_is_bounded_and_admits_only_verified_bytes() {
         assert!(fresh.hydrate_documents(&ids[..1]).is_err());
     }
     assert_eq!(fresh.content_cache_snapshot().unwrap().entry_count, 1);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn records_above_the_buffered_block_limit_stream_through_text_reencoding() {
+    let root = crate::test_temp_dir().join(format!(
+        "hawdb-content-blocks-large-{}-{}",
+        std::process::id(),
+        CANDIDATE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&root).unwrap();
+    let mut documents = (0..4)
+        .map(|number| document_sized(number, SMALL))
+        .collect::<Vec<_>>();
+    // Long words keep the large record within the lexical token limit.
+    let mut content = String::new();
+    while content.len() <= MAX_BUFFERED_BLOCK_BYTES as usize {
+        content.push_str(&format!("{}{} ", "w".repeat(60), content.len() % 977));
+    }
+    documents[2].content = content;
+    let mut writer = SearchOutOfCoreGenerationWriter::create(&root, Default::default()).unwrap();
+    for document in &documents {
+        writer.push(document.clone()).unwrap();
+    }
+    writer.finish().unwrap();
+    let reader = open(&root, 1 << 20);
+    let (_, _, index) = locate(&reader, "document:0002");
+    let block = index.entries()[index.find("document:0002").unwrap()];
+    assert!(u64::from(block.uncompressed_len) > MAX_BUFFERED_BLOCK_BYTES);
+    assert_eq!(block.document_count, 1);
+    let ids = documents
+        .iter()
+        .map(|document| document.id.clone())
+        .collect::<Vec<_>>();
+    // By-id hydration streams the large block and buffers the others.
+    let output = reader.hydrate_documents(&ids).unwrap();
+    assert_eq!(output.documents, documents);
+    // Whole-segment consumers read the re-encoded text records.
+    let report = reader
+        .verify_content_segments(&hawdb_core::RuntimeTaskContext::default())
+        .unwrap();
+    assert_eq!(report.documents, documents.len() as u64);
+    drop(reader);
     fs::remove_dir_all(root).unwrap();
 }

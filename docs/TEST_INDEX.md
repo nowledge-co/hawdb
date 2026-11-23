@@ -742,7 +742,17 @@ A damaged block fails only requests that read it, deep verification
 (`verify_content_segments`) and whole-segment projection scans; a damaged index
 fails every request in its segment. Reserved header fields, codecs,
 dictionaries and newer layouts are typed refusals only behind a matching
-digest; truncated, garbled and non-tiling indexes are `Storage`. Envelope
+digest; the unreleased text-record layout 1 and truncated, garbled and
+non-tiling indexes are `Storage`. Binary records
+(`content_blocks::records::tests`) decode to exactly the documents their text
+lines decode to (tabs, newlines, `;`/`=` and non-ASCII in every string field,
+empty fields, no/empty vectors, signed zero, subnormal and extreme
+components), account `search_document_bytes` without decoding, and re-encode
+as the canonical text lines byte for byte across 1-, 3-, 7-byte and 8-KiB
+reads; the streaming record walk and in-place scan refuse wrong counts,
+bounds, order, oversized ids and every truncation. A record above the
+1-MiB buffered-block limit hydrates and deep-verifies through the streaming
+re-encoder. Envelope
 artifacts written as before #1917 still read and verify. The content cache
 serves repeated reads without I/O, releases its pins, refuses admission above
 its capacity without changing results, and never admits a damaged block.

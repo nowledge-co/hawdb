@@ -25,6 +25,8 @@ requested IDs, each verified (compressed CRC, length, uncompressed CRC, record
 count and bounds) before any result is released. Blocks a request does not
 read are not verified by that request; whole-segment consumers and
 `SearchOutOfCoreReader::verify_content_segments` still verify every block.
+Blocks hold binary records; whole-segment consumers read them re-encoded as
+the `doc` text lines described below, byte for byte.
 For `blocks1`, `segment_range_reads` and `hydration_segment_bytes_read` count
 the positioned reads actually made (index plus needed blocks), not the range.
 

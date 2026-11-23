@@ -41,7 +41,7 @@ pub(in super::super) fn append_block_segment<T: RecordSource>(
     task: &RuntimeTaskContext,
 ) -> Result<(u64, u64)> {
     use crate::out_of_core::content_blocks::{
-        encode_entry, entry_len, Header, WrittenBlock, BLOCK_TARGET_BYTES, HEADER_BYTES,
+        encode_entry, entry_len, records, Header, WrittenBlock, BLOCK_TARGET_BYTES, HEADER_BYTES,
         MAX_BUFFERED_BLOCK_BYTES,
     };
     let invalid = |reason: &str| HawDBError::Storage(format!("search content blocks {reason}"));
@@ -63,9 +63,17 @@ pub(in super::super) fn append_block_segment<T: RecordSource>(
     let mut index_len = 0usize;
     let mut start_record = 0;
     let mut block_bytes = 0u64;
+    let mut total_bytes = 0u64;
     for (position, document) in documents.iter().enumerate() {
         checkpoint(task)?;
-        let bytes = document.encoded_len(Some(task))? as u64;
+        let content = records::content_len(document, Some(task))?;
+        let bytes = records::record_len(document.header(), content)?;
+        total_bytes = total_bytes
+            .checked_add(bytes)
+            .filter(|total| *total <= max_uncompressed_bytes)
+            .ok_or_else(|| {
+                HawDBError::Storage("search document segment exceeds encoded admission".into())
+            })?;
         if position != start_record && block_bytes + bytes > BLOCK_TARGET_BYTES {
             if plan.len() == plan.capacity() {
                 let capacity = (plan.len() + 1).max(2 * plan.len());
@@ -145,7 +153,8 @@ pub(in super::super) fn append_block_segment<T: RecordSource>(
             };
             let mut writer = CheckedWriter::new(&mut digested, Some(task));
             for document in &documents[*first..*end] {
-                document.write_encoded(&mut writer)?;
+                let content = records::content_len(document, Some(task))?;
+                records::write_record(&mut writer, document, content)?;
             }
         }
         if counted.bytes != *bytes {

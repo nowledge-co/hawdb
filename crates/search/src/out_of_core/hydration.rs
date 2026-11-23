@@ -326,7 +326,7 @@ impl SearchOutOfCoreSegmentReader {
                         None,
                         &mut reads,
                     )?;
-                    select_documents(&mut &body[..], bounds, wanted, budget)?
+                    select_block_records(&body, bounds, wanted, budget)?
                 };
                 peak = peak.max(bytes.saturating_add(selected.peak_document_bytes));
                 bytes = bytes.saturating_add(selected.bytes);
@@ -650,6 +650,70 @@ fn summarize_document_line(line: &str) -> Result<(String, u64)> {
     Ok((crate::decode_string(id)?, bytes))
 }
 
+/// [`select_documents`] over one buffered block of binary records (#1917):
+/// records are parsed in place, and only the selected ones are decoded.
+fn select_block_records(
+    body: &[u8],
+    bounds: Bounds<'_>,
+    wanted: Wanted<'_>,
+    budget: HydrationBudget,
+) -> Result<Selection> {
+    let remaining_bytes = budget.limit - budget.used;
+    let mut selected = Selection {
+        documents: Vec::new(),
+        bytes: 0,
+        peak_document_bytes: 0,
+    };
+    super::content_blocks::records::scan(body, bounds, |record| {
+        let bytes = record.document_bytes();
+        selected.peak_document_bytes = selected
+            .peak_document_bytes
+            .max(selected.bytes.saturating_add(bytes));
+        if !wanted.ids.contains(record.id) {
+            return Ok(());
+        }
+        let document = record.decode(wanted.embeddings)?;
+        debug_assert!(!wanted.embeddings || search_document_bytes(&document) == bytes);
+        admit_selected(&mut selected, bytes, budget, remaining_bytes)?;
+        selected.documents.push(document);
+        Ok(())
+    })?;
+    Ok(selected)
+}
+
+/// Charges one selected document to the hydration byte budget.
+fn admit_selected(
+    selected: &mut Selection,
+    bytes: u64,
+    budget: HydrationBudget,
+    remaining_bytes: u64,
+) -> Result<()> {
+    let previous_bytes = selected.bytes;
+    selected.bytes = selected
+        .bytes
+        .checked_add(bytes)
+        .ok_or_else(|| invalid("byte count overflow"))?;
+    if selected.bytes > remaining_bytes {
+        return Err(ResourceBudgetError {
+            resource: ResourceBudgetKind::MemoryBytes,
+            scope: ResourceBudgetScope::Operator,
+            owner: "search hydration".to_string(),
+            memory_class: None,
+            requested: bytes,
+            // Preserve the full operation boundary across physical segments.
+            used: budget.used + previous_bytes,
+            budget: budget.limit,
+            budget_option: "SearchOutOfCoreConfig.max_hydrated_bytes",
+            message: format!(
+                "search hydration requires {} bytes, exceeding {remaining_bytes}",
+                selected.bytes
+            ),
+        }
+        .into());
+    }
+    Ok(())
+}
+
 pub(super) fn select_documents(
     text: &mut dyn BufRead,
     segment: Bounds<'_>,
@@ -703,29 +767,7 @@ pub(super) fn select_documents(
         if selected_line {
             let document = crate::decode_search_document_line_with(line, wanted.embeddings)?;
             debug_assert!(!wanted.embeddings || search_document_bytes(&document) == bytes);
-            let previous_bytes = selected.bytes;
-            selected.bytes = selected
-                .bytes
-                .checked_add(bytes)
-                .ok_or_else(|| invalid("byte count overflow"))?;
-            if selected.bytes > remaining_bytes {
-                return Err(ResourceBudgetError {
-                    resource: ResourceBudgetKind::MemoryBytes,
-                    scope: ResourceBudgetScope::Operator,
-                    owner: "search hydration".to_string(),
-                    memory_class: None,
-                    requested: bytes,
-                    // Preserve the full operation boundary across physical segments.
-                    used: budget.used + previous_bytes,
-                    budget: budget.limit,
-                    budget_option: "SearchOutOfCoreConfig.max_hydrated_bytes",
-                    message: format!(
-                        "search hydration requires {} bytes, exceeding {remaining_bytes}",
-                        selected.bytes
-                    ),
-                }
-                .into());
-            }
+            admit_selected(&mut selected, bytes, budget, remaining_bytes)?;
             selected.documents.push(document);
         }
     }

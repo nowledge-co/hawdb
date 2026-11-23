@@ -374,15 +374,7 @@ fn read_selected_blocks(
                     Some(query.memory),
                     &mut reads,
                 )?;
-                select_records(
-                    &mut &body[..],
-                    bounds,
-                    ids,
-                    budget,
-                    max_record_bytes,
-                    query,
-                    embeddings,
-                )?
+                select_block_records(&body, bounds, ids, budget, query, embeddings)?
             };
             selection.peak_document_bytes = selection
                 .peak_document_bytes
@@ -404,6 +396,84 @@ fn read_selected_blocks(
         .peak_segment_document_bytes
         .max(selection.peak_document_bytes);
     Ok(selection)
+}
+
+/// [`select_records`] over one buffered block of binary records (#1917):
+/// records are parsed in place, and only the selected ones are decoded,
+/// charged like [`decode_record`].
+fn select_block_records(
+    body: &[u8],
+    bounds: Bounds<'_>,
+    ids: &BTreeSet<String>,
+    budget: HydrationBudget,
+    query: QueryContext<'_>,
+    embeddings: bool,
+) -> Result<Selection> {
+    let remaining = budget
+        .limit
+        .checked_sub(budget.used)
+        .ok_or_else(|| invalid("hydration byte budget exhausted"))?;
+    let mut selected = Selection {
+        documents: Vec::new(),
+        bytes: 0,
+        peak_document_bytes: 0,
+        _memory: query.memory.reserve(0)?,
+    };
+    crate::out_of_core::content_blocks::records::scan(body, bounds, |record| {
+        query.checkpoint()?;
+        let bytes = record.document_bytes();
+        selected.peak_document_bytes = selected
+            .peak_document_bytes
+            .max(selected.bytes.saturating_add(bytes));
+        if !ids.contains(record.id) {
+            return Ok(());
+        }
+        let decoded = add(
+            size_of::<Document>(),
+            add(
+                usize::try_from(bytes).map_err(|_| invalid("record size overflow"))?,
+                mul(record.metadata_count(), MAP_ENTRY_BYTES)?,
+            )?,
+        )?;
+        let decoded = if embeddings {
+            decoded
+        } else {
+            decoded - record.dimension() * size_of::<f32>()
+        };
+        let memory = query.memory.reserve(decoded)?;
+        let document = Document {
+            document: record.decode(embeddings)?,
+            _memory: Some(memory),
+        };
+        let previous_bytes = selected.bytes;
+        selected.bytes = selected
+            .bytes
+            .checked_add(bytes)
+            .ok_or_else(|| invalid("byte count overflow"))?;
+        if selected.bytes > remaining {
+            return Err(ResourceBudgetError {
+                resource: ResourceBudgetKind::MemoryBytes,
+                scope: ResourceBudgetScope::Operator,
+                owner: "search hydration".into(),
+                memory_class: None,
+                requested: bytes,
+                used: budget.used.saturating_add(previous_bytes),
+                budget: budget.limit,
+                budget_option: "SearchOutOfCoreConfig.max_hydrated_bytes",
+                message: "selected documents exceed hydration byte budget".into(),
+            }
+            .into());
+        }
+        if selected.documents.len() == selected.documents.capacity() {
+            let required = add(selected.documents.len(), 1)?;
+            let capacity = required.max(selected.documents.capacity().saturating_mul(2));
+            reserve_capacity(&mut selected.documents, capacity, &mut selected._memory)?;
+        }
+        selected.documents.push(document);
+        Ok(())
+    })?;
+    query.checkpoint()?;
+    Ok(selected)
 }
 
 fn select_records(
