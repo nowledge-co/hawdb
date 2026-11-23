@@ -78,6 +78,13 @@ The on-disk format carries no compatibility promise until HawDB declares one.
   `search_projection_batch_budget_exceeded`; neither published anything or is
   a storage failure, and both keep their previous message text (see
   [REGISTERED_CONSUMER_CATCH_UP.md](../../docs/REGISTERED_CONSUMER_CATCH_UP.md#bounded-catch-up-refusals));
+  a qualified out-of-core search open whose production qualification was
+  taken at another graph commit epoch is
+  `search_production_qualification_graph_epoch_mismatch`, and one whose
+  qualification report does not qualify the projection for the release is
+  `search_production_qualification_refused`; both are stale or insufficient
+  qualifications, not storage failures, and keep their previous message text:
+  qualify again and reopen;
   `invalid_argument` marks caller-side contract violations,
   `transaction_open` / `no_transaction` transaction-state misuse, and `panic`
   a contained Rust panic.

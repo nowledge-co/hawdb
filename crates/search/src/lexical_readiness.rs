@@ -344,6 +344,10 @@ impl SearchLexicalProductionQualificationReport {
         }
     }
 
+    /// Recomputes the blockers for `projection_identity` under
+    /// `expected_identity`. A non-empty set is a typed, non-poisoning
+    /// [`HawDBError::SearchProductionQualificationRefused`]: the report does
+    /// not qualify this projection for this release, so qualify it again.
     pub fn validate_for_projection_and_release(
         &self,
         projection_identity: &SearchProjectionQualificationIdentity,
@@ -354,10 +358,11 @@ impl SearchLexicalProductionQualificationReport {
         if blockers.is_empty() {
             Ok(())
         } else {
-            Err(HawDBError::Storage(format!(
-                "segmented lexical projection is not qualified for the current production release: {}",
-                blockers.join(",")
-            )))
+            // Every blocker compares the supplied report with identities the
+            // projection already proved at open; none is damage (#1932).
+            Err(HawDBError::SearchProductionQualificationRefused {
+                blocker_codes: blockers,
+            })
         }
     }
 
@@ -752,6 +757,48 @@ mod tests {
             .to_string()
             .contains("current_release_identity_mismatch"));
         assert!(error.to_string().contains("evidence_identity_mismatch"));
+    }
+
+    /// A projection and graph that moved on after qualification are a typed
+    /// state refusal that keeps its message, never a storage failure (#1932).
+    #[test]
+    fn stale_release_qualification_is_a_typed_refusal_not_storage() {
+        let identity = production_identity();
+        let report = SearchLexicalProductionQualificationReport::evaluate_for_production(
+            projection_identity(7, Some(42), 100_000),
+            crate::ProductionEvidenceBinding {
+                identity: identity.clone(),
+                generated_at_unix_seconds: 1,
+            },
+            identity,
+            complete_parity(),
+            complete_coverage(),
+            passing_metrics(),
+        );
+        assert!(report.ready);
+        let mut advanced_release = production_identity();
+        advanced_release.canonical_graph_commit_epoch = 43;
+
+        let error = report
+            .validate_for_projection_and_release(
+                &projection_identity(8, Some(43), 100_000),
+                &advanced_release,
+            )
+            .unwrap_err();
+        assert_eq!(
+            error,
+            HawDBError::SearchProductionQualificationRefused {
+                blocker_codes: vec![
+                    "current_release_identity_mismatch".to_string(),
+                    "evidence_identity_mismatch".to_string(),
+                    "projection_identity_mismatch".to_string(),
+                ],
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            "storage error: segmented lexical projection is not qualified for the current production release: current_release_identity_mismatch,evidence_identity_mismatch,projection_identity_mismatch"
+        );
     }
 
     #[test]

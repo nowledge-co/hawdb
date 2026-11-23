@@ -1885,6 +1885,21 @@ probe and changefeed readiness report a missing, detached (failed incremental
 reattach), unmaintained or ambiguous projection as non-poisoning `Semantic`.
 Replay with `cargo test --locked -p hawdb --lib catch_up_refusals` and
 `cargo test --locked -p hawdb --lib search_catch_up_probe`; existing root lane.
+The `embedded_store::tests::qualified_search_epoch_tests` root unit family
+(#1932) qualifies a 100,000-document projection (the production minimum; rows
+carry no vectors, so each checkpoint takes seconds), writes to the graph and
+requires the qualified out-of-core open, through `EmbeddedStore` and
+`EmbeddedStoreHandle`, to refuse with the typed
+`SearchProductionQualificationGraphEpochMismatch` and unchanged display text.
+The graph then reopens writable and unpoisoned, and a caught-up, re-qualified
+open succeeds. A projection generation published after qualification is the
+typed `SearchProductionQualificationRefused` with its sorted blocker codes.
+`lexical_readiness::tests::stale_release_qualification_is_a_typed_refusal_not_storage`
+in the existing `hawdb-search` unit owner checks the same refusal for a stale
+projection and release identity. Replay with
+`cargo test --locked -p hawdb --lib qualified_search_epoch` and
+`cargo test --locked -p hawdb-search --lib stale_release_qualification`;
+existing lanes, no new profile or timeout.
 
 Brace notation describes several concrete labels; expand it before invoking
 Bazel. A family description does not imply every leaf belongs to every lane.

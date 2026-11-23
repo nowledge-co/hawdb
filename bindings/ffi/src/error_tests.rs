@@ -190,6 +190,37 @@ fn search_projection_catch_up_refusals_report_their_kinds_and_keep_their_message
 }
 
 #[test]
+fn search_production_qualification_refusals_report_their_kinds_and_keep_their_messages() {
+    for (error, kind, message) in [
+        (
+            HawDBError::SearchProductionQualificationGraphEpochMismatch {
+                expected_canonical_graph_commit_epoch: 3,
+                opened_graph_commit_epoch: 4,
+            },
+            "search_production_qualification_graph_epoch_mismatch",
+            "storage error: qualified out-of-core search expected canonical graph commit epoch 3, opened graph is at 4",
+        ),
+        (
+            HawDBError::SearchProductionQualificationRefused {
+                blocker_codes: vec![
+                    "dataset_too_small".to_owned(),
+                    "projection_identity_mismatch".to_owned(),
+                ],
+            },
+            "search_production_qualification_refused",
+            "storage error: segmented lexical projection is not qualified for the current production release: dataset_too_small,projection_identity_mismatch",
+        ),
+    ] {
+        let expected = json!({"kind": kind, "message": message});
+        assert_eq!(delivered(FfiError::open(&error)), expected);
+        assert_eq!(
+            delivered(FfiError::query(&EmbeddedQueryError::Database(error))),
+            expected
+        );
+    }
+}
+
+#[test]
 fn newer_search_projection_manifest_reports_unsupported_storage_format() {
     let error =
         HawDBError::UnsupportedStorageFormat(hawdb::StorageFormatError::UnsupportedVersion {
