@@ -755,7 +755,9 @@ as the canonical text lines byte for byte across 1-, 3-, 7-byte and 8-KiB
 reads; the streaming record walk and in-place scan refuse wrong counts,
 bounds, order, oversized ids and every truncation. A record above the
 1-MiB buffered-block limit hydrates and deep-verifies through the streaming
-re-encoder. Envelope
+re-encoder. An index whose boundary between two frames is moved (spans still
+tiling the range, CRCs and inflated lengths recomputed) is refused by both a
+streamed run and every single-block read. Envelope
 artifacts written as before #1917 still read and verify. The content cache
 serves repeated reads without I/O, releases its pins, refuses admission above
 its capacity without changing results, and never admits a damaged block.

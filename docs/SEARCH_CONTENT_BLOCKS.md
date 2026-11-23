@@ -54,10 +54,18 @@ entry   := key_len u32 | value_len u32 | key | value
   16 KiB a hit inflates and verifies tens of microseconds of data besides its
   own record, while level 3 still sees several records of context; the
   measured payload growth is reported in the change that introduced it.
-- Blocks up to 1 MiB declare their content size (a single-segment frame whose
-  decode buffer is the block). Larger single-record blocks omit it, keeping
-  zstd's bounded streaming window, and are always streamed, never buffered
-  whole or cached.
+- Every block's compressed span is exactly one zstd frame (no dictionary)
+  that declares the block's uncompressed length as its content size; zstd
+  refuses a frame whose output differs from that declaration. Readers check
+  this frame structure from the block headers, without decoding, both when a
+  single block is read and when a run of blocks streams through one decoder,
+  so deep verification and sparse reads accept exactly the same indexes. A
+  boundary inside a frame, a second frame, or trailing bytes in a span is a
+  `Storage` error.
+- Blocks up to 1 MiB are buffered (a single-segment frame whose decode buffer
+  is the block). Larger single-record blocks keep zstd's bounded window for
+  their compression level and are always streamed, never buffered whole or
+  cached.
 - The index is read only after its digest matches. A nonzero dictionary id,
   flag or reserved byte, or another codec, is a typed
   `UnsupportedFeature { format: SEARCH_PROJECTION_MANIFEST_FORMAT, .. }`; a
@@ -133,7 +141,8 @@ selected bodies, projection scans, metadata-free streaming capture and deep
 verification) are unchanged callers of `hydration::read_validated*`. That
 reader dispatches on the segment magic, verifies the index digest and
 structure, then streams every block once through the admitted decoder while
-checking each block's compressed CRC, uncompressed length and CRC, and its
+checking each block's compressed CRC and frame boundaries, uncompressed
+length and CRC, and its
 record count and first and last ids against its index entry (a streaming
 record walk over the binary lengths). Consumers receive the records
 re-encoded as the canonical `stream1` text lines, byte for byte, through a

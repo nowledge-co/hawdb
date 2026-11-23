@@ -548,3 +548,107 @@ fn records_above_the_buffered_block_limit_stream_through_text_reencoding() {
     drop(reader);
     fs::remove_dir_all(root).unwrap();
 }
+
+/// Positioned reads over an in-memory segment.
+struct Bytes<'a>(&'a [u8]);
+
+impl SegmentSource for Bytes<'_> {
+    fn read_exact_at(&self, offset: u64, output: &mut [u8]) -> Result<()> {
+        let start = offset as usize;
+        output.copy_from_slice(&self.0[start..start + output.len()]);
+        Ok(())
+    }
+}
+
+#[test]
+fn streamed_runs_and_single_block_reads_agree_on_frame_boundaries() {
+    let root = build(false);
+    let reader = open(&root, 0);
+    let (artifact, range, index) = locate(&reader, "document:0007");
+    let mut segment = vec![0; range.length as usize];
+    read_search_range(
+        &reader.segments[artifact].payload,
+        range.offset,
+        &mut segment,
+    )
+    .unwrap();
+    let entries = index.entries().to_vec();
+    assert_eq!(entries.len(), 2);
+    // Verdicts of a streamed run (deep verification and whole-segment
+    // consumers) and of each sparse block read, for one index.
+    let verdicts = |index: &Index<Vec<u8>>| {
+        let start = index.entries()[0].offset as usize;
+        let streamed = stream_blocks(
+            &segment[start..],
+            index,
+            0..index.entries().len(),
+            None,
+            |_| Ok(()),
+        )
+        .is_ok();
+        let mut decoder = crate::build_memory::decoder::BlockDecoder::new(None, None).unwrap();
+        let sparse = index
+            .entries()
+            .iter()
+            .map(|entry| {
+                load_block(
+                    &Bytes(&segment),
+                    None,
+                    0,
+                    entry,
+                    &mut decoder,
+                    None,
+                    &mut Reads::default(),
+                )
+                .is_ok()
+            })
+            .collect::<Vec<_>>();
+        (streamed, sparse)
+    };
+    assert_eq!(verdicts(&index), (true, vec![true, true]));
+    // Move the boundary between the two frames by `shift` bytes, keeping the
+    // spans tiling the range, their compressed CRCs and every inflated length
+    // and CRC valid: only the frame boundaries are wrong.
+    for shift in [-7i64, -1, 1, 5] {
+        let first = (entries[0].compressed_len as i64 + shift) as u32;
+        let second = (entries[1].compressed_len as i64 - shift) as u32;
+        let crc = |offset: u64, length: u32| {
+            let mut digest = Crc32cHasher::new();
+            digest.update(&segment[offset as usize..(offset + u64::from(length)) as usize]);
+            digest.finish_u32()
+        };
+        let first_crc = crc(entries[0].offset, first);
+        let second_crc = crc(entries[0].offset + u64::from(first), second);
+        let second_at = HEADER_BYTES
+            + ENTRY_FIXED_BYTES
+            + index.first(&entries[0]).len()
+            + index.last(&entries[0]).len();
+        let (bytes, checksum) = reframe(&index, |bytes| {
+            for (at, length, crc) in [
+                (HEADER_BYTES, first, first_crc),
+                (second_at, second, second_crc),
+            ] {
+                bytes[at..at + 4].copy_from_slice(&length.to_le_bytes());
+                bytes[at + 8..at + 12].copy_from_slice(&crc.to_le_bytes());
+            }
+        });
+        let shifted = Index::parse(
+            bytes,
+            Expect {
+                length: range.length,
+                checksum,
+                max_uncompressed_bytes: u64::MAX,
+                descriptor: None,
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            verdicts(&shifted),
+            (false, vec![false, false]),
+            "shift {shift}"
+        );
+    }
+    drop(reader);
+    fs::remove_dir_all(root).unwrap();
+}

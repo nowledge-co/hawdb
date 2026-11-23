@@ -38,6 +38,7 @@ use hawdb_storage::cache::{
 use std::cell::RefCell;
 use std::io::{self, BufRead, BufReader};
 
+mod frames;
 pub(super) mod records;
 
 pub(super) const MAGIC: &[u8; 8] = b"HDCBLK01";
@@ -648,6 +649,8 @@ pub(super) fn load_block(
     if digest.finish_u32() != entry.compressed_crc {
         return Err(invalid("block compressed checksum mismatch"));
     }
+    // The same frame rule as a streamed run, so both accept the same index.
+    frames::check_span(&compressed, entry.uncompressed_len.into())?;
     let mut body = vec![0; uncompressed_len];
     decoder.decode(&compressed, &mut body)?;
     drop(compressed);
@@ -686,6 +689,7 @@ struct CompressedTap<'e, R> {
     block: usize,
     remaining: u64,
     digest: Crc32cHasher,
+    frame: frames::FrameWalk,
     failure: &'e Failure,
     count: u64,
 }
@@ -711,11 +715,25 @@ impl<R: Read> Read for CompressedTap<'_, R> {
                     invalid("block compressed checksum mismatch"),
                 ));
             }
+        }
+        // Each span must hold exactly one frame of its block's length, as a
+        // sparse read of that block requires.
+        let framed = self
+            .frame
+            .feed(&output[..count])
+            .and_then(|()| match self.remaining {
+                0 => self.frame.finish(),
+                _ => Ok(()),
+            });
+        if let Err(error) = framed {
+            return Err(fail(self.failure, error));
+        }
+        if self.remaining == 0 {
             self.block += 1;
-            self.remaining = self
-                .entries
-                .get(self.block)
-                .map_or(0, |entry| u64::from(entry.compressed_len));
+            if let Some(entry) = self.entries.get(self.block) {
+                self.remaining = u64::from(entry.compressed_len);
+                self.frame = frames::FrameWalk::new(u64::from(entry.uncompressed_len));
+            }
         }
         Ok(count)
     }
@@ -834,6 +852,11 @@ pub(super) fn stream_blocks<T, B: std::ops::Deref<Target = [u8]>>(
             .first()
             .map_or(0, |entry| u64::from(entry.compressed_len)),
         digest: Crc32cHasher::new(),
+        frame: frames::FrameWalk::new(
+            entries
+                .first()
+                .map_or(0, |entry| u64::from(entry.uncompressed_len)),
+        ),
         failure: &failure,
         count: 0,
     };

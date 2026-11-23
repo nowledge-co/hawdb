@@ -42,7 +42,6 @@ pub(in super::super) fn append_block_segment<T: RecordSource>(
 ) -> Result<(u64, u64)> {
     use crate::out_of_core::content_blocks::{
         encode_entry, entry_len, records, Header, WrittenBlock, BLOCK_TARGET_BYTES, HEADER_BYTES,
-        MAX_BUFFERED_BLOCK_BYTES,
     };
     let invalid = |reason: &str| HawDBError::Storage(format!("search content blocks {reason}"));
     checkpoint(task)?;
@@ -139,8 +138,9 @@ pub(in super::super) fn append_block_segment<T: RecordSource>(
             digest: Crc32cHasher::new(),
             task,
         };
-        // Large single-record blocks keep zstd's bounded streaming window.
-        let declared = (*bytes <= MAX_BUFFERED_BLOCK_BYTES).then_some(*bytes);
+        // Every frame declares its block's length; zstd still bounds the
+        // window of large single-record blocks by the compression level.
+        let declared = Some(*bytes);
         let mut digest = Crc32cHasher::new();
         let mut counted = CountingWriter {
             writer: encoder.frame(declared, &mut sink)?,
