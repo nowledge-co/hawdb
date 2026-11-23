@@ -2139,7 +2139,18 @@ production read owner. `EmbeddedStoreOpenOptions::with_qualified_out_of_core_sea
 is the production read-owner boundary: it accepts explicit reader budgets and
 opens through the production qualification constructor only after the release
 identity, projection generation, source graph epoch, and opened graph commit
-epoch match. The admitted embedded handle then uses that pinned generation for
+epoch match. A mismatch is a stale or insufficient qualification, not
+storage damage, and refuses the open before anything is changed: an opened
+graph at another commit epoch than the qualification's canonical one (for
+example after a write between qualification and open) returns
+`HawDBError::SearchProductionQualificationGraphEpochMismatch`, and a report
+that does not qualify the opened projection for the release (another
+generation, source epoch or release identity, or unready evidence) returns
+`HawDBError::SearchProductionQualificationRefused` with its blocker codes.
+Neither poisons anything, and both keep their previous `storage error:` text;
+catch the projection up, qualify it again and reopen (#1932). Damaged
+projection files still fail the reader's own open checks as `StorageIntegrity`
+or `Storage`. The admitted embedded handle then uses that pinned generation for
 candidate search, bounded hydration, Knowledge Retrieval graph-context
 expansion, and Cypher vector seed reads without opening the full-residency
 index. Production traffic activation remains gated on representative

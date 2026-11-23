@@ -9627,6 +9627,11 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().contains("projection_identity_mismatch"));
         assert!(error.to_string().contains("workload_coverage_incomplete"));
+        // Not storage damage: the reader opened and verified its files (#1932).
+        assert!(matches!(
+            error,
+            HawDBError::SearchProductionQualificationRefused { .. }
+        ));
         fs::remove_dir_all(path).unwrap();
     }
 

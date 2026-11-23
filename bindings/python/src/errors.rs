@@ -314,6 +314,42 @@ pub fn format_hawdb_error(error: &HawDBError) -> PyErr {
             })();
             attributes.err().unwrap_or(exception)
         }),
+        HawDBError::SearchProductionQualificationGraphEpochMismatch {
+            expected_canonical_graph_commit_epoch,
+            opened_graph_commit_epoch,
+        } => Python::attach(|py| {
+            // A stale qualification, not storage damage: the graph moved
+            // after qualification. Qualify again and reopen (#1932).
+            let exception = ExecutionError::new_err(message);
+            let value = exception.value(py);
+            let attributes = (|| -> PyResult<()> {
+                value.setattr(
+                    "kind",
+                    "search_production_qualification_graph_epoch_mismatch",
+                )?;
+                value.setattr(
+                    "expected_canonical_graph_commit_epoch",
+                    *expected_canonical_graph_commit_epoch,
+                )?;
+                value.setattr("opened_graph_commit_epoch", *opened_graph_commit_epoch)?;
+                value.setattr("retryable", false)
+            })();
+            attributes.err().unwrap_or(exception)
+        }),
+        HawDBError::SearchProductionQualificationRefused { blocker_codes } => {
+            Python::attach(|py| {
+                // The report does not qualify this projection for this
+                // release; nothing is damaged. Qualify again (#1932).
+                let exception = ExecutionError::new_err(message);
+                let value = exception.value(py);
+                let attributes = (|| -> PyResult<()> {
+                    value.setattr("kind", "search_production_qualification_refused")?;
+                    value.setattr("blocker_codes", blocker_codes.clone())?;
+                    value.setattr("retryable", false)
+                })();
+                attributes.err().unwrap_or(exception)
+            })
+        }
         HawDBError::ReadOnly { operation } => Python::attach(|py| {
             // A caller error: the handle is read-only and nothing was written.
             let exception = ExecutionError::new_err(message);
@@ -899,6 +935,66 @@ mod tests {
                 assert_eq!(field("limit").extract::<usize>().unwrap(), 4);
                 assert!(!field("retryable").extract::<bool>().unwrap());
             }
+        });
+    }
+
+    #[test]
+    fn stale_search_production_qualification_is_an_execution_error_not_storage() {
+        Python::initialize();
+        Python::attach(|py| {
+            let error = HawDBError::SearchProductionQualificationGraphEpochMismatch {
+                expected_canonical_graph_commit_epoch: 3,
+                opened_graph_commit_epoch: 4,
+            };
+            let exception = format_hawdb_error(&error);
+            assert!(exception.is_instance_of::<ExecutionError>(py));
+            assert!(!exception.is_instance_of::<StorageError>(py));
+            let value = exception.value(py);
+            assert_eq!(
+                value.str().unwrap().to_str().unwrap(),
+                "storage error: qualified out-of-core search expected canonical graph commit epoch 3, opened graph is at 4"
+            );
+            let field = |name: &str| value.getattr(name).unwrap();
+            assert_eq!(
+                field("kind").extract::<String>().unwrap(),
+                "search_production_qualification_graph_epoch_mismatch"
+            );
+            assert_eq!(
+                field("expected_canonical_graph_commit_epoch")
+                    .extract::<u64>()
+                    .unwrap(),
+                3
+            );
+            assert_eq!(
+                field("opened_graph_commit_epoch").extract::<u64>().unwrap(),
+                4
+            );
+            assert!(!field("retryable").extract::<bool>().unwrap());
+
+            let error = HawDBError::SearchProductionQualificationRefused {
+                blocker_codes: vec![
+                    "dataset_too_small".to_owned(),
+                    "projection_identity_mismatch".to_owned(),
+                ],
+            };
+            let exception = format_hawdb_error(&error);
+            assert!(exception.is_instance_of::<ExecutionError>(py));
+            assert!(!exception.is_instance_of::<StorageError>(py));
+            let value = exception.value(py);
+            assert_eq!(
+                value.str().unwrap().to_str().unwrap(),
+                "storage error: segmented lexical projection is not qualified for the current production release: dataset_too_small,projection_identity_mismatch"
+            );
+            let field = |name: &str| value.getattr(name).unwrap();
+            assert_eq!(
+                field("kind").extract::<String>().unwrap(),
+                "search_production_qualification_refused"
+            );
+            assert_eq!(
+                field("blocker_codes").extract::<Vec<String>>().unwrap(),
+                ["dataset_too_small", "projection_identity_mismatch"]
+            );
+            assert!(!field("retryable").extract::<bool>().unwrap());
         });
     }
 

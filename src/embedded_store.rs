@@ -2511,10 +2511,16 @@ impl EmbeddedStore {
             SearchProjectionOpenMode::QualifiedOutOfCore(qualified) => {
                 let graph_commit_epoch = graph.database().commit_epoch()?;
                 if graph_commit_epoch != qualified.expected_identity.canonical_graph_commit_epoch {
-                    return Err(HawDBError::Storage(format!(
-                        "qualified out-of-core search expected canonical graph commit epoch {}, opened graph is at {graph_commit_epoch}",
-                        qualified.expected_identity.canonical_graph_commit_epoch
-                    )));
+                    // The graph moved after qualification: a stale
+                    // qualification, not damage, so never Storage (#1932).
+                    return Err(
+                        HawDBError::SearchProductionQualificationGraphEpochMismatch {
+                            expected_canonical_graph_commit_epoch: qualified
+                                .expected_identity
+                                .canonical_graph_commit_epoch,
+                            opened_graph_commit_epoch: graph_commit_epoch,
+                        },
+                    );
                 }
                 let projection = OutOfCoreSearchProjection::open_production_with_config(
                     path,
