@@ -4157,6 +4157,7 @@ mod tests {
 
     #[cfg(feature = "full-text-search")]
     mod block_ranges;
+    #[cfg(feature = "full-text-search")]
     mod checkpoint;
     mod cursor_selection;
     mod pruning;
