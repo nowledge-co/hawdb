@@ -282,13 +282,10 @@ pub fn qualify_bounded_order_case(
         }),
     );
     let report = qualify_optimizer_read(&mutations, &query, &variants)?;
-    let diversity = report.different_plan_agreements != 0;
-    let mut output = report.json();
+    let mut output = bounded_order_json(&report);
     output["seed"] = json!(seed);
     output["case_index"] = json!(index);
     output["family"] = json!("bounded_order");
-    output["different_plan_observed"] = json!(diversity);
-    output["success"] = json!(report.success() && diversity);
     output["replay"] = json!({
         "mutations": mutations.iter().map(mutation_json).collect::<Vec<_>>(),
         "query": query_invocation_json(&query),
@@ -296,6 +293,48 @@ pub fn qualify_bounded_order_case(
         "variants": variants.iter().map(variant_json).collect::<Vec<_>>(),
     });
     Ok(output)
+}
+
+fn bounded_order_json(report: &OptimizerQualificationReport) -> JsonValue {
+    let pair = verify_bounded_order_pair(&report.comparisons);
+    let verified = pair.is_ok();
+    let mut output = report.json();
+    output["different_plan_observed"] = json!(verified);
+    output["bounded_order_failure"] = json!(pair.err());
+    output["success"] = json!(report.success() && verified);
+    output
+}
+
+fn verify_bounded_order_pair(
+    comparisons: &[OptimizerQualificationComparison],
+) -> Result<(), &'static str> {
+    // The generated family appends these two required runs after any extra variants.
+    let [.., top_n, sort_then_limit] = comparisons else {
+        return Err("missing forced bounded-order executions");
+    };
+    if [top_n, sort_then_limit]
+        .iter()
+        .any(|comparison| comparison.comparison == PlanAgreement::Failure)
+    {
+        return Err("forced bounded-order execution failed qualification");
+    }
+    let (Some(top_n), Some(sort_then_limit)) = (
+        top_n.execution.plan_fingerprint.as_deref(),
+        sort_then_limit.execution.plan_fingerprint.as_deref(),
+    ) else {
+        return Err("missing forced bounded-order plan fingerprint");
+    };
+    if top_n == sort_then_limit {
+        return Err("forced bounded-order executions used the same plan");
+    }
+    // The generated query has a single pagination site at its physical root.
+    if !top_n.starts_with("TopNExec(") {
+        return Err("forced TopN execution did not select TopNExec");
+    }
+    if !sort_then_limit.starts_with("LimitExec(SortExec(") {
+        return Err("forced Sort-plus-Limit execution did not select LimitExec over SortExec");
+    }
+    Ok(())
 }
 
 fn variant_json(variant: &OptimizerQualificationVariant) -> JsonValue {
@@ -509,9 +548,57 @@ mod tests {
         for index in 0..8 {
             let report = qualify_bounded_order_case(7, index, &[]).unwrap();
             assert_eq!(report["success"], true, "{report:#}");
+            assert_eq!(report["different_plan_observed"], true);
+            assert!(report["bounded_order_failure"].is_null());
             assert_eq!(report["different_plan_agreements"], 1);
             assert_eq!(report["same_plan_agreements"], 1);
             assert_eq!(report, qualify_bounded_order_case(7, index, &[]).unwrap());
+        }
+    }
+
+    #[test]
+    fn generated_bounded_order_rejects_duplicate_and_swapped_forced_plans() {
+        use OptimizerBoundedOrderAlternative::{SortThenLimit, TopN};
+        let fixture = fixture();
+        let query = query("MATCH (n:Item) RETURN n.external AS id ORDER BY id LIMIT 30");
+        for (choices, expected_failure) in [
+            (
+                [TopN, SortThenLimit, SortThenLimit],
+                "forced bounded-order executions used the same plan",
+            ),
+            (
+                [SortThenLimit, TopN, TopN],
+                "forced bounded-order executions used the same plan",
+            ),
+            (
+                [TopN, SortThenLimit, TopN],
+                "forced TopN execution did not select TopNExec",
+            ),
+        ] {
+            let variants = choices.map(|choice| {
+                variant(
+                    OptimizerQualificationOptions::default().with_bounded_order_alternative(choice),
+                )
+            });
+            let report = qualify_optimizer_read(&fixture, &query, &variants).unwrap();
+            assert!(report.success());
+            assert!(report.different_plan_agreements > 0);
+            let [_, first, second] = report.comparisons.as_slice() else {
+                panic!("expected one additional variant and two forced executions");
+            };
+            assert_eq!(first.execution.outcome, second.execution.outcome);
+            assert_eq!(
+                first.execution.plan_fingerprint == second.execution.plan_fingerprint,
+                choices[1] == choices[2],
+            );
+            let output = bounded_order_json(&report);
+            assert_eq!(output["success"], false, "{output:#}");
+            assert_eq!(output["different_plan_observed"], false);
+            assert_eq!(output["bounded_order_failure"], expected_failure);
+            assert_eq!(
+                output["different_plan_agreements"],
+                report.different_plan_agreements,
+            );
         }
     }
 

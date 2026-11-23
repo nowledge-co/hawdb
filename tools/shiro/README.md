@@ -125,9 +125,11 @@ Use `shiro qualify bounded-order --seed 7 --case-index 1` to generate a
 Cypher pagination case and execute ordinary, TopN, and Sort-plus-Limit plans.
 Cases vary ties, NULL keys, offsets, and empty inputs. Each variant receives
 the same parameters, snapshot and statement clock. The report retains the
-fixture, statement and variant settings. A successful run must include a
-different executable plan with identical ordered results. It reports
-same-plan agreements separately.
+fixture, statement and variant settings. A successful run requires the
+forced TopN and Sort-plus-Limit executions to use their respective physical
+operators and agree on ordered results. The report includes a diagnostic
+when the forced pair fails and separately counts agreements with the ordinary
+baseline.
 Plan-fingerprint novelty is reported as coverage telemetry and never changes a correctness verdict.
 The differential reducer first minimizes graph mutations and then typed query AST nodes. It accepts
 a candidate only when the same failure signature still triggers, so a setup, parse, or execution
