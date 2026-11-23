@@ -466,6 +466,79 @@ fn exhaust_descriptors(root: &std::path::Path) -> Vec<crate::file_io::File> {
     }
 }
 
+/// Damages, one at a time, the first, middle, and last byte of every row
+/// page the published root references, selecting each page by its
+/// descriptor (physical generation and offset) rather than by directory
+/// listing, and asserts that rebuilding from the root reports corruption.
+/// The page is restored after each probe and the intact root rebuilds.
+fn assert_referenced_row_page_damage_is_detected(
+    root: &std::path::Path,
+    store: &GraphStore,
+    expected_generations: usize,
+) {
+    let durable = store.durable.as_ref().unwrap();
+    let overflow = durable.open_bound_relational_overflow().unwrap();
+    let rows = durable.open_bound_relational_row_pages(&overflow).unwrap();
+    let rebuild = || {
+        hawdb_storage::relational::decode_relational_checkpoint_from_row_root(
+            root,
+            &rows,
+            &overflow,
+            hawdb_storage::relational::RelationalDecodeLimits::checkpoint(),
+            hawdb_storage::relational::RelationalCheckpointIndexLoad::MaterializedPostings,
+        )
+    };
+    let mut descriptors = Vec::new();
+    rows.visit_table_pages(TABLE, |descriptor| {
+        descriptors.push(descriptor.clone());
+        Ok(())
+    })
+    .unwrap();
+    let inventory = rows
+        .manifest()
+        .physical_generations
+        .iter()
+        .map(|entry| entry.generation)
+        .collect::<std::collections::BTreeSet<_>>();
+    let referenced = descriptors
+        .iter()
+        .map(|descriptor| descriptor.physical_generation)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(referenced, inventory, "every live generation is referenced");
+    assert_eq!(referenced.len(), expected_generations);
+    assert_eq!(rebuild().unwrap().state.row_count(TABLE), 200);
+
+    for descriptor in &descriptors {
+        let page = root.join(
+            hawdb_storage::relational::relational_row_page_artifact_file(
+                descriptor.physical_generation,
+            ),
+        );
+        let start = usize::try_from(descriptor.physical_offset).unwrap();
+        let len = descriptor.page_integrity.encoded_len as usize;
+        let original = std::fs::read(&page).unwrap();
+        assert!(start + len <= original.len(), "{page:?} holds the page");
+        for at in [start, start + len / 2, start + len - 1] {
+            let mut damaged = original.clone();
+            damaged[at] ^= 0xff;
+            std::fs::write(&page, &damaged).unwrap();
+            let error = rebuild().unwrap_err();
+            assert!(
+                matches!(error, RelationalError::Corruption(_)),
+                "page {} of generation {} damaged at byte {at}: {error:?}",
+                descriptor.logical_page_id.get(),
+                descriptor.physical_generation
+            );
+            assert!(matches!(
+                HawDBError::from_storage_error(error),
+                HawDBError::Storage(_)
+            ));
+        }
+        std::fs::write(&page, &original).unwrap();
+    }
+    assert_eq!(rebuild().unwrap().state.row_count(TABLE), 200);
+}
+
 #[test]
 fn row_root_rebuild_and_overflow_rebind_keep_descriptor_exhaustion_typed() {
     use crate::file_descriptors::ProjectFileDescriptors;
@@ -551,27 +624,14 @@ fn row_root_rebuild_and_overflow_rebind_keep_descriptor_exhaustion_typed() {
         HawDBError::from_storage_error(missing),
         HawDBError::Storage(_)
     ));
-    // So is a row page whose bytes no longer match the root.
-    let page = std::fs::read_dir(&root)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .find(|path| {
-            path.file_name()
-                .unwrap()
-                .to_string_lossy()
-                .ends_with(".pages.hawdb")
-        })
-        .expect("row-page artifact");
-    let mut bytes = std::fs::read(&page).unwrap();
-    for byte in bytes.iter_mut().step_by(97) {
-        *byte ^= 0xff;
-    }
-    std::fs::write(&page, bytes).unwrap();
-    let damaged = rebuild().unwrap_err();
-    assert!(
-        matches!(damaged, RelationalError::Corruption(_)),
-        "{damaged:?}"
-    );
-    drop((rows, overflow, store));
+    drop((rows, overflow));
+    assert_referenced_row_page_damage_is_detected(&root, &store, 1);
+
+    // After a second checkpoint the root spans two physical generations:
+    // the page holding row 0 is rewritten and the other page stays in the
+    // first generation. Damage to either is still detected.
+    store.checkpoint(&catalog).unwrap();
+    assert_referenced_row_page_damage_is_detected(&root, &store, 2);
+    drop(store);
     std::fs::remove_dir_all(path).unwrap();
 }
