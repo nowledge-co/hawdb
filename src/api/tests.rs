@@ -2891,6 +2891,33 @@ fn active_generation_path(
     ))
 }
 
+/// Corrupts exactly one byte in a disposable fixture without changing its
+/// inode, length or (by default) modification time. This preserves the
+/// mounted identity stamp so the requested segment's digest checks the bytes.
+fn flip_test_file_byte(
+    path: &std::path::Path,
+    offset: u64,
+    modified: Option<std::time::SystemTime>,
+) {
+    use std::io::{Read, Seek, SeekFrom, Write};
+
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .unwrap();
+    let modified = modified.unwrap_or_else(|| file.metadata().unwrap().modified().unwrap());
+    let mut byte = [0_u8];
+    file.seek(SeekFrom::Start(offset)).unwrap();
+    file.read_exact(&mut byte).unwrap();
+    byte[0] ^= 0xff;
+    file.seek(SeekFrom::Start(offset)).unwrap();
+    file.write_all(&byte).unwrap();
+    file.sync_all().unwrap();
+    file.set_times(std::fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+}
+
 fn read_test_durable_text(path: &std::path::Path) -> std::io::Result<String> {
     let bytes = std::fs::read(path)?;
     if !bytes.starts_with(b"HAWDB_COMPRESSED_V1") {
