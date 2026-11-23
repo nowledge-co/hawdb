@@ -61,17 +61,25 @@ repair, producing a complete new graph bundle at the repair generation.
 
 ## Executable model and regression owners
 
-`HawDBGraphBundleCarry` models checkpoint-to-graph bindings, graph/relational
-writes, captured candidates, synchronized selection, cancellation, one held
-reader and separate graph/row reclamation over four physical generations and
-two commits. It tracks graph content version separately from literal serialized E: rewrites
-set E to the captured commit, while reuse preserves the older E. It checks
-graph content matches captured source, G<=C and content-version<=E<=source,
-and every current/previous/candidate/reader root remains allocated. Negative
-controls permit dirty reuse, forget current G or forget reader G. This finite
-model abstracts bytes, hash validation and filesystem barriers. Existing
-`HawDBAutomaticCheckpoint` and `HawDBImmutableRootBindings` qualify complementary
-publication/closure invariants; their unchanged passes alone do not prove G!=C.
+`HawDBGraphBundleCarry` separates physical base C/G/E/source coverage from
+candidate replay tip, live graph state and each reader's captured visible tip.
+The four-generation/three-commit instance exercises a nonempty graph, relational
+carry, a later graph WAL suffix, catch-up/synchronization/selection, the next
+forced graph rebuild, reader delta ownership and independent graph/row cleanup.
+The first checkpoint must allocate G>0; reopening can conservatively raise the
+graph fence to physical base coverage without changing old E. A reachability
+control requires selecting a carried nonempty base with a newer graph suffix;
+negative controls reject omitted suffix application, a lost graph fence,
+a lost reader delta, dirty reuse and missing current/reader G retention.
+
+See the [invariant argument and Rust mapping](GRAPH_BUNDLE_CARRY_PROOF.md).
+These are complementary bounded safety checks. There is no mechanically
+proved composition or Rust refinement: `HawDBAutomaticCheckpoint` covers
+transaction/WAL-prefix completeness, selection barriers and crash choices;
+`HawDBImmutableRootBindings` covers every required physical path despite
+shared references; the carry model covers G and logical-tip interaction.
+Hash validation, concrete byte decoding, filesystem behavior, allocation
+ownership, liveness and performance require separate source/runtime evidence.
 
 Storage regressions also checkpoint after reopening a carried bundle and track
 projection debt in both live and detached views: a bundle valid through the

@@ -4723,8 +4723,8 @@ it materializes the existing complete lost/torn/reordered publication plans
 around both head-rename boundaries and acknowledgement. No profile, timeout,
 feature matrix or new CI lane is introduced.
 
-The full storage TLA suite owns `HawDBGraphBundleCarry` and its three negative
-controls; see [scope and refinement argument](GRAPH_BUNDLE_CARRY.md). Replay
+The full storage TLA suite owns `HawDBGraphBundleCarry` and its six negative controls plus a
+carried-suffix reachability control; see [scope and refinement argument](GRAPH_BUNDLE_CARRY.md). Replay
 with `cargo test --locked -p hawdb-storage --lib -- graph_bundle durable_manifest`,
 `cargo test --locked -p hawdb --all-features --lib -- read_transaction_retains_carried_graph carried_graph_repair graph_bundle_carry`,
 and the model/evidence/mutant commands in `docs/tla/README.md`. These bounded

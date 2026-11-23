@@ -122,13 +122,16 @@ artifact bytes.
 
 ## Unchanged graph bundle carry
 
-`HawDBGraphBundleCarry` separates checkpoint generation C from retained graph
-bundle G/E, with candidate capture/selection, graph mutations, relational
-writes, one held reader, cancellation and independent graph/row reclamation.
-Its three controls reject dirty reuse, omission of current G and omission of
-reader G. See [invariants, Rust mapping and proof limits](../GRAPH_BUNDLE_CARRY.md).
-It complements the byte/selector barrier and immutable-path closure models;
-unchanged single-generation models alone do not qualify C!=G.
+`HawDBGraphBundleCarry` separates physical base C/G/E from candidate/live/reader
+logical tips. It includes graph and relational writes, caught-up graph suffixes,
+synchronization/selection, immutable reader deltas, conservative recovery fences,
+cancellation and independent graph/row reclamation. Four generations and three
+commits exercise a nonempty graph, relational carry and a newer graph suffix.
+Its seven controls include a carried-suffix selection witness and reject dirty
+reuse, missing current/reader G, lost suffix state, a lost graph fence and a lost
+reader delta. See the [invariant argument and assumptions](../GRAPH_BUNDLE_CARRY_PROOF.md).
+The checkpoint and immutable-path models are complementary safety checks,
+not a mechanically proved composition or Rust refinement.
 
 ## Durable WAL and Checkpoint Publication
 

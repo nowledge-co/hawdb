@@ -28,6 +28,7 @@ fn read_transaction_retains_carried_graph_base_until_release() {
         },
     )
     .unwrap();
+    let automatic_suspension = db.runtime.suspend_automatic_checkpoint().unwrap();
     let mut transaction = db.begin_transaction().unwrap();
     transaction
         .query("CREATE (:Carried {id: 1, title: 'old'})")
@@ -39,6 +40,11 @@ fn read_transaction_retains_carried_graph_base_until_release() {
         .query_sql("INSERT INTO carried_rows VALUES (0)")
         .unwrap();
     transaction.commit().unwrap();
+    // The schema transaction already checkpoints. Dirty both families before
+    // the explicit baseline so C=G and its row descriptor is still needed.
+    db.query("MATCH (n:Carried) SET n.marker = 1").unwrap();
+    db.query_sql("INSERT INTO carried_rows VALUES (-1)")
+        .unwrap();
     db.checkpoint().unwrap();
     let initial_graph = db
         .runtime
@@ -49,6 +55,15 @@ fn read_transaction_retains_carried_graph_base_until_release() {
         .unwrap()
         .generation
         .0;
+    assert_eq!(
+        db.published_read_view()
+            .unwrap()
+            .physical_generation()
+            .unwrap()
+            .0,
+        initial_graph,
+        "the baseline must publish graph and row families together"
+    );
     let initial_root = db
         .runtime
         .get()
@@ -118,6 +133,7 @@ fn read_transaction_retains_carried_graph_base_until_release() {
         .unwrap()
         .rows;
     assert_eq!(rows[0]["title"], Value::String("new".into()));
+    drop(automatic_suspension);
     drop(db);
     std::fs::remove_dir_all(path).unwrap();
 }
