@@ -19,11 +19,11 @@ use super::lexical_projection::{
 use super::{
     checksum_bytes, decode_search_snapshot_text_bounded, decode_string, encode_metadata,
     encode_search_snapshot_text, encode_string, lexical_analyzer_digest, lexical_documents_digest,
-    matched_query_spans_bounded, matched_query_terms, rrf_child_score, search_empty_reasons,
-    top_ranked_candidates, top_ranked_ids, weighted_rrf_score, CompressedVectorSearchMode,
-    SearchAccessControlContext, SearchAnalyzerLexicon, SearchCandidateSetReport, SearchDocument,
-    SearchEmbeddingManifest, SearchFallbackReasonCode, SearchFieldPruningAccumulator, SearchHit,
-    SearchHitHydration, SearchIndex, SearchMode, SearchPageWindow, SearchPredicatePushdownReport,
+    rrf_child_score, search_empty_reasons, top_ranked_candidates, top_ranked_ids,
+    weighted_rrf_score, CompressedVectorSearchMode, SearchAccessControlContext,
+    SearchAnalyzerLexicon, SearchCandidateSetReport, SearchDocument, SearchEmbeddingManifest,
+    SearchFallbackReasonCode, SearchFieldPruningAccumulator, SearchHit, SearchHitHydration,
+    SearchIndex, SearchMode, SearchPageWindow, SearchPredicatePushdownReport,
     SearchProjectionFreshness, SearchQueryOptions, SearchResultSet, SearchRetrieverReport,
     SearchScoredCandidate, SearchSegmentDescriptor, SearchSegmentDescriptorEntry,
     SearchTruncationReasonCode, VectorRelevanceQuery, VectorSearchExecutionOptions,
@@ -71,6 +71,9 @@ use score_collector::{score_entries_refusal, BoundedScoreCollector};
 
 /// The reader option that bounds query score entries and windows.
 const MAX_SCORE_ENTRIES_OPTION: &str = "SearchOutOfCoreConfig.max_score_entries";
+
+/// Query terms of a hit hydrated without matched terms/spans.
+static NO_TERMS: BTreeSet<String> = BTreeSet::new();
 
 /// A search page, hydration-by-id or mutation-target request that would
 /// hydrate more documents than the reader admits.
@@ -3909,7 +3912,8 @@ impl SearchOutOfCoreReader {
         // Reported vector scores must equal the ranking scores' metric.
         let metric = self.vector_metric()?;
         // Matched spans are the only hit fields that need the stored body.
-        let mut hydrated = if context.mode == SearchMode::Vector && context.query_terms.is_empty() {
+        let matches = level == SearchHitHydration::Documents && !context.query_terms.is_empty();
+        let mut hydrated = if !matches {
             HydratedHits::Sidecars(hydration::sidecar::load(
                 self,
                 candidates,
@@ -3964,7 +3968,11 @@ impl SearchOutOfCoreReader {
                 0.0
             };
             let matched = context.output_memory.matches(
-                context.query_terms,
+                if matches {
+                    context.query_terms
+                } else {
+                    &NO_TERMS
+                },
                 document,
                 &self.analyzer_lexicon,
                 query_output::matches::Limits {

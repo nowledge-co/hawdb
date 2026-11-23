@@ -701,7 +701,7 @@ fn differential_cases(cases: usize) {
         let span_bytes = spans.iter().map(matched_span_bytes_for).sum::<u64>();
         let previous_hits = case as u64 * 17;
         assert_eq!(
-            crate::matched_query_spans_bounded(
+            crate::query_matches_bounded(
                 &query_terms,
                 &documents[0],
                 &analyzer,
@@ -709,12 +709,13 @@ fn differential_cases(cases: usize) {
                 previous_hits + span_bytes,
                 previous_hits,
             )
-            .unwrap(),
+            .unwrap()
+            .1,
             spans,
         );
         let requested = matched_span_bytes_for(spans.last().expect("the title must match"));
         let limit = previous_hits + span_bytes - 1;
-        let error = crate::matched_query_spans_bounded(
+        let error = crate::query_matches_bounded(
             &query_terms,
             &documents[0],
             &analyzer,

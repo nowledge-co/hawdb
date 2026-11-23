@@ -155,7 +155,9 @@ read, not the whole range.
   sidecar join for whole-document reads and would shrink blocks several-fold.
 - After this change, Documents hydration on BEIR is dominated by matched
   term/span analysis of each hit body and the per-hit lexical id probe, not by
-  content reads.
+  content reads. Matched terms and spans now take one analyzer pass per field,
+  and `SearchHitHydration::Metadata` skips them and the document payload
+  entirely (see [STORAGE.md](STORAGE.md), search hit hydration).
 - Adjacent needed blocks are read one positioned read each; coalescing reads
   is left for measurement to justify.
 - The metadata sidecar keeps the envelope framing.
