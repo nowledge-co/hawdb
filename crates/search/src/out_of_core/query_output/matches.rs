@@ -68,6 +68,8 @@ impl Memory<'_> {
             };
             let mut matched = BTreeSet::<&str>::new();
             let mut matched_memory = frame.query.memory.reserve(0)?;
+            // A word's distinct span terms, funded like a term set.
+            let mut word_memory = frame.query.memory.reserve(0)?;
             let mut spans = Vec::new();
             let mut bytes = 0u64;
             crate::query_matches::visit(
@@ -80,6 +82,10 @@ impl Memory<'_> {
                         matched_memory.grow(SET_ENTRY_BYTES)?;
                         matched.insert(term);
                     }
+                    Ok(())
+                },
+                || {
+                    word_memory.grow(SET_ENTRY_BYTES)?;
                     Ok(())
                 },
                 |span| {
@@ -128,7 +134,7 @@ impl Memory<'_> {
             for term in matched {
                 output.terms.push(self.text(term)?);
             }
-            drop(matched_memory);
+            drop((matched_memory, word_memory));
             frame.query.checkpoint()?;
             Ok(output)
         };

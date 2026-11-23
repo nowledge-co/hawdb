@@ -27,12 +27,19 @@ pub(crate) struct Span<'d, 'q> {
 /// Calls `matched` for every token that is a query term (possibly repeatedly;
 /// callers keep the distinct ones) and `span` for every matched span in output
 /// order. Nothing is visited for an empty query.
+///
+/// A word's span terms are held until the word ends, as its distinct query
+/// terms only: unpunctuated CJK text is one word as long as its field, with
+/// a match per occurrence. `retain` is called before that buffer holds one
+/// more term than it ever has, so callers can fund it; it never holds more
+/// than the query's terms.
 pub(crate) fn visit<'d, 'q>(
     terms: &'q BTreeSet<String>,
     document: &'d SearchDocument,
     analyzer: &SearchAnalyzerLexicon,
     control: Control<'_>,
     mut matched: impl FnMut(&'q str) -> Result<()>,
+    mut retain: impl FnMut() -> Result<()>,
     mut span: impl FnMut(Span<'d, 'q>) -> Result<()>,
 ) -> Result<()> {
     if terms.is_empty() {
@@ -42,7 +49,9 @@ pub(crate) fn visit<'d, 'q>(
     let find = |token: &str| filter.admits(token).then(|| terms.get(token)).flatten();
     // The word holding the pending span terms, as byte offsets in its field.
     let mut word = None::<(usize, usize)>;
+    // The pending word's distinct terms, sorted; `retained` slots are funded.
     let mut word_terms = Vec::<&'q str>::new();
+    let mut retained = 0usize;
     for (field, text) in [
         ("title", document.title.as_str()),
         ("content", document.content.as_str()),
@@ -62,7 +71,13 @@ pub(crate) fn visit<'d, 'q>(
                 flush(field, text, &mut word, &mut word_terms, &mut span)?;
             }
             word = Some((start, start + raw.len()));
-            word_terms.push(term.as_str());
+            if let Err(at) = word_terms.binary_search(&term.as_str()) {
+                if word_terms.len() == retained {
+                    retain()?;
+                    retained += 1;
+                }
+                word_terms.insert(at, term.as_str());
+            }
             Ok(())
         })?;
         flush(field, text, &mut word, &mut word_terms, &mut span)?;
@@ -114,8 +129,7 @@ fn flush<'d, 'q>(
     let Some((start, end)) = word.take() else {
         return Ok(());
     };
-    terms.sort_unstable();
-    terms.dedup();
+    // Distinct and sorted on insert.
     for term in terms.drain(..) {
         span(Span {
             field,

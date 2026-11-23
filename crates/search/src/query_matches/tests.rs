@@ -150,3 +150,42 @@ fn one_pass_span_limits_match_reference_collector() {
         assert_eq!(format!("{actual:?}"), format!("{expected:?}"));
     }
 }
+
+#[test]
+fn a_long_unpunctuated_cjk_word_holds_only_its_distinct_terms() {
+    let analyzer = SearchAnalyzerLexicon::default();
+    let terms = crate::tokenize_list("北京 大学", &analyzer)
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    // One word as long as the field, matching the query at every repetition:
+    // its pending span terms stay the two distinct query terms, each funded
+    // once, not one entry per occurrence.
+    let document = document("", &"北京大学".repeat(20_000));
+    let mut retained = 0;
+    let mut spans = Vec::new();
+    visit(
+        &terms,
+        &document,
+        &analyzer,
+        Control::default(),
+        |_| Ok(()),
+        || {
+            retained += 1;
+            Ok(())
+        },
+        |span| {
+            spans.push((span.field, span.start, span.end, span.term));
+            Ok(())
+        },
+    )
+    .unwrap();
+    let length = document.content.len();
+    assert_eq!(
+        spans,
+        vec![
+            ("content", 0, length, "北京"),
+            ("content", 0, length, "大学")
+        ]
+    );
+    assert_eq!(retained, spans.len());
+}

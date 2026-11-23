@@ -7819,6 +7819,7 @@ fn query_matches_bounded(
             terms.insert(term);
             Ok(())
         },
+        || Ok(()),
         |span| {
             if spans.len() >= max_spans {
                 return Err(HawDBError::Storage(format!(
