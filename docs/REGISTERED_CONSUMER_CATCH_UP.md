@@ -1,6 +1,6 @@
 # Source-coherent registered Consumer catch-up
 
-Issue Number: ref #1138, ref #1043, ref #1106
+Issue Number: ref #1138, ref #1043, ref #1106, ref #1924
 
 The embedded `Database` facade connects fixed-source C..E preparation and full-E
 coverage to stationary registered Consumer publication. It retains the same
@@ -194,3 +194,42 @@ Raw consumer access and the raw Database catch-up APIs remain available; covered
 updates authenticate their native consumer/operation without authenticating
 mapper semantics against a definition. Hosts using those APIs must preserve the
 definition's mapper, scope and version agreement themselves.
+
+## Bounded catch-up refusals
+
+The bounded APIs (`catch_up_search_projection`, `_with_relational`,
+`_with_batch_hydrator`, `_scheduled` and `catch_up_search_projection_consumer`,
+on `Database`, `EmbeddedStore` and `EmbeddedStoreHandle`) publish only a batch
+that reaches the pinned source head, because hydration reads the head. They
+refuse with typed errors (#1924), publish nothing, keep the watermark and do
+not poison the handle:
+
+- `HawDBError::SearchProjectionPrefixBehindSource { complete_through_commit_epoch,
+  source_commit_epoch }`: the batch is a prefix. It is not transient: with the
+  same per-batch change budget it refuses again while the pending interval
+  exceeds one batch, even with no concurrent writes, and a larger
+  `max_batches` does not help. Probe with
+  `build_search_projection_change_batch_from_freshness(index, Some(cap))`, or
+  `EmbeddedStoreHandle::search_projection_change_batch_probe(cap)`, and catch
+  up with a budget whose batch `covers_source` (its complete-through epoch is
+  the head). When the interval is larger than the host can afford, re-prepare
+  through the staged flow above, whose positions inside the interval stay
+  private. A write that lands between a covering probe and the catch-up also
+  causes this refusal; probe again.
+- `HawDBError::SearchProjectionBatchBudgetExceeded { budget, commit_epoch,
+  required_operations, limit }`: a batch needs more operations than the
+  per-batch limit named by `budget`. `ChangeBatch` is one source commit
+  (`commit_epoch: Some`) over the change budget; `GraphDelta` is a graph delta
+  request over its `max_operations`; `ProjectionDelta` is the combined graph
+  and host-derived delta over `max_projection_operations_per_batch` (also
+  from `apply_search_projection_delta` and incremental maintenance). Retry
+  with a limit of at least `required_operations`. The generation admission
+  limits of incremental maintenance (`max_delta_operations`,
+  `max_delta_working_bytes`) are separate and remain `Storage`.
+
+Both keep their previous display text (`execution error: ...` and
+`storage error: ...`), so text consumers are unaffected, but hosts should
+classify on the variant. The `expected > actual` case, a projection watermark
+ahead of the graph, remains `HawDBError::Storage`. Bindings report the kinds
+`search_projection_prefix_behind_source` and
+`search_projection_batch_budget_exceeded`.
