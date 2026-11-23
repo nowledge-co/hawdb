@@ -221,7 +221,11 @@ the rename leaves nothing at the path, and the next drop deletes the recorded
 directory if it is still a directory with those numbers. It deletes no other
 directory: it raises `StoreFormatError` and deletes nothing if the new name
 is taken, if the recorded name holds another directory or a link, or if
-`<path>.lock` holds anything but such a record.
+`<path>.lock` holds anything but such a record. After the rename and after
+the deletion, `drop` syncs the parent directory. A file system that cannot
+sync a directory is ignored. Any other failure, such as `EIO`, is raised and
+the lock file keeps the record. The next `drop` finishes that sync, including
+when the renamed directory is already gone, and only then clears the record.
 
 A store can also wrap an open `hawdb.Database`, as in the tests. It then runs
 only on the thread that opened the database and raises `WrongThreadError`

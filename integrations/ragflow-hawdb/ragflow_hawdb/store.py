@@ -89,6 +89,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import errno
 import json
 import logging
 import math
@@ -989,6 +990,12 @@ class HawDBGraphStore:
         The call raises ``StoreFormatError`` and deletes nothing if the lock
         file holds anything but such a record, if the new name is taken, or if
         the directory at a recorded name is another one.
+
+        After the rename and after the deletion, the store syncs the parent
+        directory. A file system that cannot sync a directory is ignored. Any
+        other failure leaves the record in the lock file. The next drop
+        finishes that sync, even when the renamed directory is already gone,
+        and only then clears the record.
         """
         if self._path is None:
             raise TypeError("only a store opened on a path can drop its database")
@@ -1556,9 +1563,13 @@ def _delete_renamed(path: str, record: dict[str, Any]) -> None:
     # Deletes the directory a drop of path renamed, now or before it stopped,
     # if it is still there and is still the directory the drop renamed.
     renamed = os.path.join(os.path.dirname(path), record["renamed_to"])
+    parent = os.path.dirname(path)
     try:
         found = os.lstat(renamed)
     except FileNotFoundError:
+        # Already gone. The parent barrier may not have finished, and the
+        # caller clears the drop record only after this returns.
+        _sync_directory(parent)
         return
     if not stat.S_ISDIR(found.st_mode) or (found.st_dev, found.st_ino) != (
         record["device"],
@@ -1569,22 +1580,38 @@ def _delete_renamed(path: str, record: dict[str, Any]) -> None:
             "so the store does not delete it"
         )
     shutil.rmtree(renamed)
-    _sync_directory(os.path.dirname(path))
+    _sync_directory(parent)
+
+
+# A directory sync a file system does not support. PostgreSQL ignores EINVAL
+# and EBADF for a directory opened read-only; ENOTSUP and EOPNOTSUPP are the
+# same refusal. EIO and every other error mean the rename or the deletion is
+# not durable yet.
+_UNSUPPORTED_DIRSYNC = {errno.EINVAL, errno.ENOTSUP, errno.EBADF}
+if hasattr(errno, "EOPNOTSUPP"):
+    _UNSUPPORTED_DIRSYNC.add(errno.EOPNOTSUPP)
 
 
 def _sync_directory(directory: str) -> None:
-    # Makes a rename or a deletion in the directory durable. As SQLite does,
-    # this ignores a system or file system that cannot sync a directory.
+    """Make a rename or a deletion in ``directory`` durable.
+
+    Windows has no directory sync. A file system that reports it cannot sync
+    a directory is ignored. Any other error, including ``EIO`` from opening or
+    syncing the directory, is raised so the drop record stays for a retry.
+    """
     if os.name == "nt":
         return
     try:
         fd = os.open(directory, os.O_RDONLY)
-    except OSError:
-        return
+    except OSError as error:
+        if error.errno in _UNSUPPORTED_DIRSYNC:
+            return
+        raise
     try:
         os.fsync(fd)
-    except OSError:
-        pass
+    except OSError as error:
+        if error.errno not in _UNSUPPORTED_DIRSYNC:
+            raise
     finally:
         os.close(fd)
 

@@ -21,6 +21,7 @@ compares the store with RAGFlow's own functions instead.
 
 import contextlib
 import copy
+import errno
 import gc
 import glob
 import json
@@ -29,6 +30,7 @@ import os
 import random
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -1604,6 +1606,80 @@ def test_a_drop_the_system_refuses_to_rename_deletes_nothing(store, monkeypatch)
     assert sorted(os.listdir(parent)) == ["kb", "kb.lock"]
     assert lock_file_text(store) == ""
     assert store.document_ids() == ["doc1"]
+
+
+@path_only
+@pytest.mark.skipif(os.name == "nt", reason="Windows does not sync directories")
+def test_a_drop_whose_directory_sync_fails_keeps_its_record(store, monkeypatch):
+    parent = os.path.dirname(store.path)
+    store.merge_subgraph(subgraph("doc1", ["A"]))
+    real_fsync = os.fsync
+    directory_syncs = 0
+
+    def fsync(fd):
+        nonlocal directory_syncs
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            directory_syncs += 1
+            # The barrier after the deletion. The one after the rename stands.
+            if directory_syncs >= 2:
+                raise OSError(errno.EIO, "injected directory sync failure")
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", fsync)
+    with pytest.raises(OSError, match="injected directory sync failure") as raised:
+        store.drop()
+    assert raised.value.errno == errno.EIO
+
+    # The renamed directory is already gone, and the record is still there.
+    assert not os.path.exists(store.path)
+    assert renamed_by_drops(store) == []
+    record = json.loads(lock_file_text(store))
+    assert record["renamed_to"].startswith(os.path.basename(store.path) + ".dropping-")
+
+    synced_before_clear = False
+    real_sync = store_module._sync_directory
+    real_record = store_module._LifecycleLock.record_drop
+
+    def sync_directory(directory):
+        nonlocal synced_before_clear
+        assert directory == parent
+        real_sync(directory)
+        synced_before_clear = True
+
+    def record_drop(self, value):
+        if value is None:
+            assert synced_before_clear
+        real_record(self, value)
+
+    monkeypatch.setattr(os, "fsync", real_fsync)
+    monkeypatch.setattr(store_module, "_sync_directory", sync_directory)
+    monkeypatch.setattr(store_module._LifecycleLock, "record_drop", record_drop)
+
+    store.drop()
+
+    assert synced_before_clear
+    assert os.listdir(parent) == []
+
+
+@path_only
+@pytest.mark.skipif(os.name == "nt", reason="Windows does not sync directories")
+def test_a_directory_sync_a_file_system_does_not_support_still_drops(
+    store, monkeypatch
+):
+    parent = os.path.dirname(store.path)
+    store.merge_subgraph(subgraph("doc1", ["A"]))
+    real_fsync = os.fsync
+
+    def fsync(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(errno.EINVAL, "directory sync is not supported")
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", fsync)
+
+    store.drop()
+
+    assert os.listdir(parent) == []
 
 
 def test_only_a_store_on_a_path_drops_its_database():
