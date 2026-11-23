@@ -16,6 +16,8 @@
 
 use super::*;
 use crate::lexical_projection::posting_ranges::MANIFEST_KEY_COMPARISONS;
+use hawdb_core::RuntimeCancellationToken;
+use hawdb_executor::{QueryMemoryClass, QueryMemoryLedger};
 
 /// Many small posting blocks: unique per-document terms, plus terms whose
 /// postings span several blocks.
@@ -195,6 +197,70 @@ fn overlapping_or_decreasing_posting_block_keys_are_refused_at_open() {
             error.to_string().contains("not ordered"),
             "case {case}: {error}"
         );
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// Cancellation is observed before any further posting block is read or
+/// decoded: after a cancel, a stream yields at most the postings already
+/// decoded from its current block.
+#[test]
+fn posting_stream_cancellation_stops_at_the_next_block_boundary() {
+    let root = projection_root("block-ranges-cancel");
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let reader = many_block_reader(&root);
+    let range = reader.posting_block_range("storage");
+    let blocks = reader.posting_blocks_in(range);
+    assert!(blocks.len() > 2);
+    let largest_block = blocks
+        .iter()
+        .map(|block| block.entry_count as usize)
+        .max()
+        .unwrap();
+    let budget = NonZeroUsize::new(64 * 1024 * 1024).unwrap();
+    let ledger = QueryMemoryLedger::new(budget);
+    let account = ledger.account(QueryMemoryClass::ExternalRead, "stream cancel", budget);
+    for cancel_after in [0usize, 1, 37, 200] {
+        let cancellation = RuntimeCancellationToken::new();
+        let task = RuntimeTaskContext::without_deadline(cancellation.clone());
+        let context = QueryContext {
+            io_scope: None,
+            execution: None,
+            memory: &account,
+            task: &task,
+        };
+        let encoded = RefCell::new(PostingReadBuffer::default());
+        let mut stream =
+            TermPostingStream::with_context(&reader, "storage", blocks, Some(context), &encoded);
+        let mut taken = 0usize;
+        while taken < cancel_after {
+            assert!(stream.peek().unwrap().is_some());
+            stream.take().unwrap();
+            taken += 1;
+        }
+        cancellation.cancel();
+        let mut after_cancel = 0usize;
+        let error = loop {
+            match stream.peek() {
+                Ok(Some(_)) => {
+                    stream.take().unwrap();
+                    after_cancel += 1;
+                }
+                Ok(None) => panic!("cancelled stream reached its end"),
+                Err(error) => break error,
+            }
+        };
+        assert!(
+            matches!(error, HawDBError::RuntimeTaskStopped(_)),
+            "{error}"
+        );
+        assert!(
+            after_cancel <= largest_block,
+            "{after_cancel} postings after cancel exceed one block ({largest_block})"
+        );
+        // The bound is the current block's remaining postings, not the doclist.
+        assert!(taken + after_cancel < 512);
     }
     fs::remove_dir_all(root).unwrap();
 }

@@ -2347,8 +2347,12 @@ impl<'a> TermPostingStream<'a> {
         }
     }
 
+    /// Cooperative cancellation runs where a stream does new work: before
+    /// each posting block it reads, skips or decodes. Returning an already
+    /// decoded posting needs no checkpoint, so between two checkpoints one
+    /// stream consumes at most one block's postings (`entry_count`, bounded by
+    /// `max_block_bytes`); the scoring loop still checks once per document.
     fn peek(&mut self) -> Result<Option<&QueryPosting>> {
-        query_context::check(self.context)?;
         if self.peeked.is_none() {
             self.peeked = self.advance()?;
         }
@@ -2412,7 +2416,6 @@ impl<'a> TermPostingStream<'a> {
 
     fn advance(&mut self) -> Result<Option<QueryPosting>> {
         loop {
-            query_context::check(self.context)?;
             if let Some(posting) = self.next_posting() {
                 return Ok(Some(posting));
             }
@@ -2463,7 +2466,6 @@ impl<'a> TermPostingStream<'a> {
                 frames.document_frequency,
                 &mut self.current,
                 |entry| {
-                    query_context::check(self.context)?;
                     if entry.ordinal >= self.projection.manifest.document_count {
                         return Err(HawDBError::Storage(
                             "lexical posting ordinal exceeds its generation".to_string(),
@@ -3942,6 +3944,18 @@ impl<'a> SliceCursor<'a> {
 
     fn remaining(&self) -> &'a [u8] {
         &self.bytes[self.offset..]
+    }
+
+    /// Advances past one length-prefixed string without decoding it.
+    fn skip_string(&mut self, max: u64) -> Result<()> {
+        let length = self.u32()? as usize;
+        if length as u64 > max {
+            return Err(HawDBError::Storage(format!(
+                "lexical string uses {length} bytes, exceeding {max}"
+            )));
+        }
+        self.bytes(length)?;
+        Ok(())
     }
 
     fn borrowed_string(&mut self, max: u64) -> Result<&'a str> {
