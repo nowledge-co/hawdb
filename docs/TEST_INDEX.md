@@ -760,7 +760,13 @@ tiling the range, CRCs and inflated lengths recomputed) is refused by both a
 streamed run and every single-block read. Deep verification of a ~4 MiB
 document succeeds under a 3.5 MiB task reservation with a live-allocation peak
 below it (15 MiB before the block-wise verifier) and is a typed `MemoryBytes`
-refusal at 64 KiB. Envelope
+refusal at 64 KiB. Text-only hits are charged the bytes they hold (no stored
+vector) through one count from selection to the cross-segment check and
+`hydrated_bytes`: two hits sharing a segment and two hits split over two
+segments are both refused between one and two hits' bytes and both served at
+two, through `search_with_options` and `search_with_options_admitted`
+(`hydration::tests::budgets::text_hit_budget_is_the_same_within_and_across_segments`).
+Envelope
 artifacts written as before #1917 still read and verify. The content cache
 serves repeated reads without I/O, releases its pins, refuses admission above
 its capacity without changing results, and never admits a damaged block.

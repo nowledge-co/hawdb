@@ -190,7 +190,7 @@ impl SearchOutOfCoreSegmentReader {
         hydrated_bytes: u64,
         metrics: &mut SearchOutOfCoreMetrics,
         cache: &super::content_blocks::ContentCache,
-    ) -> Result<Vec<SearchDocument>> {
+    ) -> Result<(Vec<SearchDocument>, u64)> {
         let range = segment
             .payload_range
             .ok_or_else(|| invalid("segment has no payload range"))?;
@@ -234,7 +234,7 @@ impl SearchOutOfCoreSegmentReader {
         metrics.peak_segment_document_bytes = metrics
             .peak_segment_document_bytes
             .max(selected.peak_document_bytes);
-        Ok(selected.documents)
+        Ok((selected.documents, selected.bytes))
     }
 }
 
@@ -248,7 +248,7 @@ impl SearchOutOfCoreSegmentReader {
         hydrated_bytes: u64,
         metrics: &mut SearchOutOfCoreMetrics,
         cache: Option<super::content_blocks::CacheScope<'_>>,
-    ) -> Result<Vec<SearchDocument>> {
+    ) -> Result<(Vec<SearchDocument>, u64)> {
         let ids = wanted.ids;
         use super::content_blocks::{self as blocks, Expect, Reads};
         let range = segment
@@ -332,7 +332,7 @@ impl SearchOutOfCoreSegmentReader {
                 bytes = bytes.saturating_add(selected.bytes);
                 documents.extend(selected.documents);
             }
-            Ok(documents)
+            Ok((documents, bytes))
         })();
         reads.record(metrics);
         metrics.peak_segment_document_bytes = metrics.peak_segment_document_bytes.max(peak);
@@ -598,10 +598,11 @@ fn read_inflated<T>(
     (selected, drained, inflated.count, inflated.digest.finish())
 }
 
-/// A document line's id and the [`search_document_bytes`] its decoded
-/// document would have, read without decoding its title, content, vector or
-/// metadata. Metadata keys of one document are distinct, as written.
-fn summarize_document_line(line: &str) -> Result<(String, u64)> {
+/// A document line's id, the [`search_document_bytes`] its decoded document
+/// would have, and how many of those bytes are its vector, read without
+/// decoding its title, content, vector or metadata. Metadata keys of one
+/// document are distinct, as written.
+fn summarize_document_line(line: &str) -> Result<(String, u64, u64)> {
     let mut fields = line.split('\t');
     let (Some("doc"), Some(id), Some(title), Some(content), Some(embedding), Some(metadata), None) = (
         fields.next(),
@@ -633,10 +634,11 @@ fn summarize_document_line(line: &str) -> Result<(String, u64)> {
     } else {
         embedding.bytes().filter(|byte| *byte == b',').count() as u64 + 1
     };
+    let vector = dimension.saturating_mul(std::mem::size_of::<f32>() as u64);
     let mut bytes = hex(id)?
         .saturating_add(hex(title)?)
         .saturating_add(hex(content)?)
-        .saturating_add(dimension.saturating_mul(std::mem::size_of::<f32>() as u64));
+        .saturating_add(vector);
     if !metadata.is_empty() {
         for pair in metadata.split(';') {
             let Some((key, value)) = pair.split_once('=') else {
@@ -647,7 +649,7 @@ fn summarize_document_line(line: &str) -> Result<(String, u64)> {
             bytes = bytes.saturating_add(hex(key)?).saturating_add(hex(value)?);
         }
     }
-    Ok((crate::decode_string(id)?, bytes))
+    Ok((crate::decode_string(id)?, bytes, vector))
 }
 
 /// [`select_documents`] over one buffered block of binary records (#1917):
@@ -665,7 +667,13 @@ fn select_block_records(
         peak_document_bytes: 0,
     };
     super::content_blocks::records::scan(body, bounds, |record| {
-        let bytes = record.document_bytes();
+        // Text-only hits hold no vector, so they are not charged for it.
+        let bytes = record.document_bytes()
+            - if wanted.embeddings {
+                0
+            } else {
+                (record.dimension() * size_of::<f32>()) as u64
+            };
         selected.peak_document_bytes = selected
             .peak_document_bytes
             .max(selected.bytes.saturating_add(bytes));
@@ -673,7 +681,7 @@ fn select_block_records(
             return Ok(());
         }
         let document = record.decode(wanted.embeddings)?;
-        debug_assert!(!wanted.embeddings || search_document_bytes(&document) == bytes);
+        debug_assert_eq!(search_document_bytes(&document), bytes);
         admit_selected(&mut selected, bytes, budget, remaining_bytes)?;
         selected.documents.push(document);
         Ok(())
@@ -743,7 +751,7 @@ pub(super) fn verify_text_records(
         if record.is_empty() || record == "HAWDB_SEARCH_SEGMENT_V1" {
             continue;
         }
-        let (id, _) = summarize_document_line(record)?;
+        let (id, _, _) = summarize_document_line(record)?;
         if count == 0 && id != segment.first {
             return Err(invalid("document bounds do not match its descriptor"));
         }
@@ -798,7 +806,13 @@ pub(super) fn select_documents(
         // Only the selected lines are decoded (#1611). Every line still
         // proves the segment's order, bounds and count from its id; the
         // checksummed range already fences the bytes of the others.
-        let (id, bytes) = summarize_document_line(line)?;
+        // Text-only hits hold no vector, so they are not charged for it.
+        let (id, bytes, vector) = summarize_document_line(line)?;
+        let bytes = if wanted.embeddings {
+            bytes
+        } else {
+            bytes - vector
+        };
         if count == 0 && id != segment.first {
             return Err(invalid("document bounds do not match its descriptor"));
         }
@@ -818,7 +832,7 @@ pub(super) fn select_documents(
         previous = Some(id);
         if selected_line {
             let document = crate::decode_search_document_line_with(line, wanted.embeddings)?;
-            debug_assert!(!wanted.embeddings || search_document_bytes(&document) == bytes);
+            debug_assert_eq!(search_document_bytes(&document), bytes);
             admit_selected(&mut selected, bytes, budget, remaining_bytes)?;
             selected.documents.push(document);
         }

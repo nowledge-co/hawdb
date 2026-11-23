@@ -421,7 +421,13 @@ fn select_block_records(
     };
     crate::out_of_core::content_blocks::records::scan(body, bounds, |record| {
         query.checkpoint()?;
-        let bytes = record.document_bytes();
+        // Text-only hits hold no vector, so they are not charged for it.
+        let bytes = record.document_bytes()
+            - if embeddings {
+                0
+            } else {
+                (record.dimension() * size_of::<f32>()) as u64
+            };
         selected.peak_document_bytes = selected
             .peak_document_bytes
             .max(selected.bytes.saturating_add(bytes));
@@ -435,11 +441,6 @@ fn select_block_records(
                 mul(record.metadata_count(), MAP_ENTRY_BYTES)?,
             )?,
         )?;
-        let decoded = if embeddings {
-            decoded
-        } else {
-            decoded - record.dimension() * size_of::<f32>()
-        };
         let memory = query.memory.reserve(decoded)?;
         let document = Document {
             document: record.decode(embeddings)?,
@@ -532,13 +533,18 @@ fn select_records(
         previous.clear();
         reserve_capacity(&mut previous, summary.id.len(), &mut previous_memory)?;
         previous.extend_from_slice(summary.id.as_bytes());
-        let bytes = summary.bytes;
+        // Text-only hits hold no vector, so they are not charged for it.
+        let bytes = if embeddings {
+            summary.bytes
+        } else {
+            summary.bytes - summary.vector
+        };
         selected.peak_document_bytes = selected
             .peak_document_bytes
             .max(selected.bytes.saturating_add(bytes));
         if ids.contains(&summary.id) {
             let document = decode_record(record, query, embeddings)?;
-            debug_assert!(!embeddings || search_document_bytes(&document) == bytes);
+            debug_assert_eq!(search_document_bytes(&document), bytes);
             let previous_bytes = selected.bytes;
             selected.bytes = selected
                 .bytes
@@ -588,6 +594,8 @@ fn hex_size(raw: &str) -> Result<usize> {
 struct RecordSummary {
     id: String,
     bytes: u64,
+    /// The share of `bytes` that is the record's vector.
+    vector: u64,
 }
 
 fn summarize_record(record: &str, query: QueryContext<'_>) -> Result<RecordSummary> {
@@ -628,6 +636,7 @@ fn summarize_record(record: &str, query: QueryContext<'_>) -> Result<RecordSumma
     Ok(RecordSummary {
         id: decode_hex(id, query)?,
         bytes: bytes as u64,
+        vector: mul(dimension, size_of::<f32>())? as u64,
     })
 }
 

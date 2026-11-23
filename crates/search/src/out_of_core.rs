@@ -4150,7 +4150,7 @@ impl SearchOutOfCoreReader {
                         "search {operation} references unknown segment {segment_id}"
                     ))
                 })?;
-            for document in artifact.read_selected_hydration_segment(
+            let (documents, bytes) = artifact.read_selected_hydration_segment(
                 &self.config,
                 segment,
                 hydration::Wanted {
@@ -4160,20 +4160,25 @@ impl SearchOutOfCoreReader {
                 hydrated_bytes,
                 metrics,
                 &self.content_cache,
-            )? {
-                hydrated_bytes = hydrated_bytes
-                    .checked_add(search_document_bytes(&document))
-                    .ok_or_else(|| {
-                        HawDBError::Storage(format!("search {operation} byte count overflow"))
-                    })?;
-                // Selected decoding already enforces this cap; retain the
-                // aggregate check as a consistency guard for that accounting.
-                if hydrated_bytes > self.config.max_hydrated_bytes.get() {
-                    return Err(HawDBError::Storage(format!(
-                        "search {operation} requires {hydrated_bytes} bytes, exceeding {}",
-                        self.config.max_hydrated_bytes
-                    )));
-                }
+            )?;
+            // One count, the selection's, carries the budget across segments
+            // and into the metric; it equals the selected documents' size.
+            debug_assert_eq!(
+                documents.iter().map(search_document_bytes).sum::<u64>(),
+                bytes
+            );
+            hydrated_bytes = hydrated_bytes.checked_add(bytes).ok_or_else(|| {
+                HawDBError::Storage(format!("search {operation} byte count overflow"))
+            })?;
+            // Selected decoding already enforces this cap; retain the
+            // aggregate check as a consistency guard for that accounting.
+            if hydrated_bytes > self.config.max_hydrated_bytes.get() {
+                return Err(HawDBError::Storage(format!(
+                    "search {operation} requires {hydrated_bytes} bytes, exceeding {}",
+                    self.config.max_hydrated_bytes
+                )));
+            }
+            for document in documents {
                 let id = document.id.clone();
                 if targets
                     .insert(

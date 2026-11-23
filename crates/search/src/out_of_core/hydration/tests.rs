@@ -985,7 +985,14 @@ fn document_line_summary_matches_the_decoded_document() {
         let document = crate::decode_search_document_line(&line).unwrap();
         assert_eq!(
             summarize_document_line(&line).unwrap(),
-            (id.to_string(), search_document_bytes(&document)),
+            (
+                id.to_string(),
+                search_document_bytes(&document),
+                document
+                    .embedding
+                    .as_ref()
+                    .map_or(0, |vector| 4 * vector.len() as u64)
+            ),
             "{id}"
         );
     }

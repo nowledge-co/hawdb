@@ -152,6 +152,12 @@ Blocks above 1 MiB (one large record) take the same streaming path in hit
 hydration. Their guarantee is unchanged: nothing is released from a segment
 with any damaged block.
 
+**Hydration budget.** `SearchOutOfCoreConfig::max_hydrated_bytes` charges a
+hit the bytes its decoded document holds; a text-only hit holds no stored
+vector and is not charged for one. The selection's count is the one carried
+across segments and reported as `hydrated_bytes`, so the same hits are
+admitted or refused whatever their segment layout.
+
 **Deep verification** (`SearchOutOfCoreReader::verify_content_segments`)
 reads each `blocks1` segment the way sparse reads would, block by block: the
 verified index, then every buffered block's frame, CRCs and records scanned in

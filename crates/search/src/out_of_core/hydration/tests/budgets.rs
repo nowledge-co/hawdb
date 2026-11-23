@@ -188,3 +188,148 @@ fn hydration_integrity_checks_precede_byte_refusals_after_draining() {
         }
     }
 }
+
+/// Text-only hits are charged the bytes they hold, one count from selection
+/// through the cross-segment check and the metric, so two hits fit or are
+/// refused alike whether they share a segment or not (#1917 review).
+#[test]
+fn text_hit_budget_is_the_same_within_and_across_segments() {
+    let root = super::super::super::tests::test_dir("hydration-text-budget");
+    let contents = ["alpha gamma", "alpha delta", "delta gamma", "omega sigma"];
+    let documents = contents
+        .iter()
+        .enumerate()
+        .map(|(number, content)| SearchDocument {
+            id: format!("document:{number:04}"),
+            title: "same title".into(),
+            content: content.to_string(),
+            embedding: Some(vec![number as f32 + 1.0; 32]),
+            metadata: BTreeMap::from([("kind".to_string(), "memory".to_string())]),
+        })
+        .collect::<Vec<_>>();
+    let mut writer = SearchOutOfCoreGenerationWriter::create(
+        &root,
+        SearchOutOfCoreGenerationBuildOptions {
+            embedding_manifest: Some(crate::SearchEmbeddingManifest {
+                model: "text-budget".into(),
+                version: Some("v1".into()),
+                dimension: 32,
+            }),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    for source in &documents {
+        writer.push(source.clone()).unwrap();
+    }
+    writer.finish().unwrap();
+    let reference = SearchOutOfCoreReader::open(&root).unwrap();
+    let segment = |number: usize| {
+        reference
+            .segment_for_document(&documents[number].id)
+            .unwrap()
+            .unwrap()
+            .segment
+            .segment_id
+    };
+    // "alpha" hits share segment 0; "delta" hits are split over 0 and 1.
+    assert_eq!(segment(0), segment(1));
+    assert_ne!(segment(1), segment(2));
+    let mut held = documents[0].clone();
+    held.embedding = None;
+    let hit = search_document_bytes(&held);
+    let vector = 32 * 4;
+    let options = SearchQueryOptions {
+        limit: 10,
+        offset: 0,
+        rank_window: None,
+        fusion_weights: Default::default(),
+        metadata_filters: BTreeMap::new(),
+        policy_epoch: None,
+    };
+    let governor = hawdb_qos::RuntimeGovernor::new(
+        hawdb_qos::RuntimeGovernorConfig::shared_host(),
+        hawdb_qos::RuntimeResourceSnapshot::from_parts(
+            hawdb_qos::RuntimeResourceBudget::from_limits(
+                NonZeroUsize::new(2).unwrap(),
+                None,
+                None,
+            ),
+            hawdb_qos::RuntimeMemorySnapshot::from_limits(
+                Some(4 << 30),
+                Some(4 << 30),
+                None,
+                None,
+                None,
+            ),
+        ),
+        hawdb_qos::IoConcurrencyBudget::new(2, 1),
+    );
+    // Each request through the plain and the admitted (query-funded) path.
+    let run = |reader: &SearchOutOfCoreReader, query: &str| {
+        let plain = reader.search_with_options(query, None, SearchMode::Text, options.clone());
+        let permit = governor
+            .try_admit(
+                hawdb_qos::RuntimeWorkRequest::foreground_query(64 << 20, 1 << 20)
+                    .with_io_slots(1)
+                    .with_blocking(true),
+            )
+            .unwrap();
+        let task = permit.bind_task_context(Default::default());
+        let admitted = reader.search_with_options_admitted(
+            query,
+            None,
+            SearchMode::Text,
+            options.clone(),
+            SearchOutOfCoreExecutionContext {
+                access_control: None,
+                compressed_vector_search_mode: CompressedVectorSearchMode::Disabled,
+                vector_execution_options: VectorSearchExecutionOptions::admitted(64 << 20, &task),
+            },
+            &permit,
+        );
+        [plain, admitted]
+    };
+    // Between one and two hits, including where the split layout used to
+    // fit (two held hits plus one vector), both layouts are refused.
+    for budget in [hit + 1, 2 * hit - 1] {
+        let reader = SearchOutOfCoreReader::open_with_config(
+            &root,
+            SearchOutOfCoreConfig {
+                max_hydrated_bytes: NonZeroU64::new(budget).unwrap(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        for query in ["alpha", "delta"] {
+            for result in run(&reader, query) {
+                assert!(
+                    matches!(&result, Err(HawDBError::ResourceBudgetExceeded(details))
+                        if details.budget_option == "SearchOutOfCoreConfig.max_hydrated_bytes"
+                            && details.budget == budget),
+                    "{query} {budget}: {result:?}"
+                );
+            }
+        }
+    }
+    // Exactly two held hits fit in both layouts, and the metric is that count.
+    for budget in [2 * hit, 2 * hit + vector] {
+        let reader = SearchOutOfCoreReader::open_with_config(
+            &root,
+            SearchOutOfCoreConfig {
+                max_hydrated_bytes: NonZeroU64::new(budget).unwrap(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        for query in ["alpha", "delta"] {
+            for result in run(&reader, query) {
+                let output = result.unwrap_or_else(|error| panic!("{query} {budget}: {error}"));
+                assert_eq!(output.result.hits.len(), 2, "{query}");
+                assert_eq!(output.metrics.hydrated_bytes, 2 * hit, "{query} {budget}");
+            }
+        }
+    }
+    drop(reference);
+    fs::remove_dir_all(root).unwrap();
+}
