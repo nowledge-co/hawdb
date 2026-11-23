@@ -731,15 +731,8 @@ impl Database {
         request: SearchProjectionGraphDeltaRequest,
     ) -> Result<SearchProjectionDeltaReport> {
         self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
-        match policy.admit(state, &request.background_work_request()) {
-            QosAdmission::Admit => self.apply_search_projection_graph_delta(search_index, request),
-            QosAdmission::Defer { reason, .. } => Err(HawDBError::Storage(format!(
-                "background search projection graph delta deferred: {reason}"
-            ))),
-            QosAdmission::Reject { reason, .. } => Err(HawDBError::Storage(format!(
-                "background search projection graph delta rejected: {reason}"
-            ))),
-        }
+        policy.admit_or_refuse(state, &request.background_work_request())?;
+        self.apply_search_projection_graph_delta(search_index, request)
     }
 
     pub fn apply_scheduled_background_search_projection_delta(
@@ -759,20 +752,7 @@ impl Database {
     ) -> Result<SearchProjectionDeltaReport> {
         self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
         let scheduler = self.local_qos_scheduler_for_work();
-        let permit = match scheduler.try_start(request.background_work_request()) {
-            Ok(permit) => permit,
-            Err(QosAdmission::Defer { reason, .. }) => {
-                return Err(HawDBError::Storage(format!(
-                    "background search projection graph delta deferred: {reason}"
-                )));
-            }
-            Err(QosAdmission::Reject { reason, .. }) => {
-                return Err(HawDBError::Storage(format!(
-                    "background search projection graph delta rejected: {reason}"
-                )));
-            }
-            Err(QosAdmission::Admit) => unreachable!("admitted work returns a permit"),
-        };
+        let permit = scheduler.try_start_or_refuse(request.background_work_request())?;
 
         let result = self.apply_search_projection_graph_delta(search_index, request);
         permit.finish_with_outcome(result.is_ok());

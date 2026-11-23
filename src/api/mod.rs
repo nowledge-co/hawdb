@@ -22,7 +22,7 @@ use crate::optimizer::{
 };
 use crate::qos::{
     BackgroundWorkHint, BackgroundWorkPlan, LocalQosPolicy, LocalQosScheduler, LocalQosState,
-    QosAdmission, WorkClass, WorkRequest,
+    WorkClass, WorkRequest,
 };
 #[cfg(test)]
 use crate::schema::GraphStatistics;

@@ -1261,7 +1261,7 @@ impl Database {
     ) -> Result<hawdb_qos::RuntimePermit> {
         self.consumer_governor()?
             .try_admit(request)
-            .map_err(HawDBError::from_execution_error)
+            .map_err(HawDBError::from)
     }
 
     fn consumer_governor(&mut self) -> Result<hawdb_qos::RuntimeGovernor> {

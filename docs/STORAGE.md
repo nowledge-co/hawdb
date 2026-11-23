@@ -1811,6 +1811,30 @@ other work holds the capacity or the host is short of memory: drop the request
 and retry it later unchanged. When it is false, the request can never fit the
 configured limits.
 
+Background maintenance that the local QoS policy or scheduler defers or
+rejects is reported the same way
+([#1926](https://github.com/nowledge-co/hawdb/issues/1926)). This covers the
+`*_background_*` and `*_scheduled_background_*` entry points (search
+projection deltas, rebuilds and metadata repair, artifact jobs, schema and
+index maintenance, adjacency consolidation, optimizer statistics, storage
+checkpoints, HawDB Lightning bootstrap export and graph analytics), the
+automatic checkpoint owner, and `LocalQosPolicy::admit_or_refuse` and
+`LocalQosScheduler::try_start_or_refuse`. Every QoS budget code
+(`per_work_limit_exceeded`, `total_background_limit_exceeded`,
+`class_background_limit_exceeded`, `tenant_budget_exceeded`) maps to the
+governor code `background_task_saturated`. For these refusals `requested` is the
+request's estimated background operations. `available` is the operations the
+refusing limit has left: the whole limit for a per-work limit, and 0 for a
+tenant budget, which the caller's hint owns rather than the policy. A deferral
+is `retryable` unless the request is larger than the refusing limit itself,
+which is always true of a per-work limit refusal. A rejection is never
+retryable. A policy with `background_enabled: false` is configuration, not
+load, so it returns `HawDBError::CapabilityUnavailable(BackgroundMaintenance)`
+instead (Python `CapabilityError`, C ABI `capability_unavailable`). These
+refusals used to be `storage error: background ... deferred: <reason>`. Use
+`QosAdmission`'s `code()` and `reason()` on the caller-owned ranking APIs when
+the policy's own wording is needed.
+
 A handle's default governor is detected from the host
 (`RuntimeGovernor::detect`). Unless its resources are pinned, admission
 re-samples host and cgroup memory at most once per second, the same default

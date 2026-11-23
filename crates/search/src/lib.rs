@@ -43,7 +43,7 @@ use hawdb_optimizer_vector::{
 use hawdb_plan_core::{VectorBackendSelectionReason, VectorCandidateSource};
 use hawdb_qos::{
     BackgroundWorkHint, BackgroundWorkPlan, LocalQosPolicy, LocalQosScheduler, LocalQosState,
-    QosAdmission, WorkClass, WorkRequest,
+    WorkClass, WorkRequest,
 };
 use hawdb_storage::file_io::{self as fs, File};
 use hawdb_storage::{
@@ -2425,15 +2425,8 @@ impl SearchIndex {
     ) -> Result<SearchProjectionDeltaReport> {
         self.runtime_capabilities
             .require(RuntimeCapability::BackgroundMaintenance)?;
-        match policy.admit(state, &delta.background_work_request()) {
-            QosAdmission::Admit => self.apply_projection_delta(delta),
-            QosAdmission::Defer { reason, .. } => Err(HawDBError::Storage(format!(
-                "background search projection delta deferred: {reason}"
-            ))),
-            QosAdmission::Reject { reason, .. } => Err(HawDBError::Storage(format!(
-                "background search projection delta rejected: {reason}"
-            ))),
-        }
+        policy.admit_or_refuse(state, &delta.background_work_request())?;
+        self.apply_projection_delta(delta)
     }
 
     pub fn apply_scheduled_background_projection_delta(
@@ -2443,20 +2436,7 @@ impl SearchIndex {
     ) -> Result<SearchProjectionDeltaReport> {
         self.runtime_capabilities
             .require(RuntimeCapability::BackgroundMaintenance)?;
-        let permit = match scheduler.try_start(delta.background_work_request()) {
-            Ok(permit) => permit,
-            Err(QosAdmission::Defer { reason, .. }) => {
-                return Err(HawDBError::Storage(format!(
-                    "background search projection delta deferred: {reason}"
-                )));
-            }
-            Err(QosAdmission::Reject { reason, .. }) => {
-                return Err(HawDBError::Storage(format!(
-                    "background search projection delta rejected: {reason}"
-                )));
-            }
-            Err(QosAdmission::Admit) => unreachable!("admitted work returns a permit"),
-        };
+        let permit = scheduler.try_start_or_refuse(delta.background_work_request())?;
 
         let result = self.apply_projection_delta(delta);
         permit.finish_with_outcome(result.is_ok());
@@ -2846,15 +2826,8 @@ impl SearchIndex {
             WorkClass::Projection,
             self.rebuild_estimated_operations(store),
         );
-        match policy.admit(state, &request) {
-            QosAdmission::Admit => self.rebuild_derived_artifacts(catalog, store, options),
-            QosAdmission::Defer { reason, .. } => Err(HawDBError::Storage(format!(
-                "background search projection rebuild deferred: {reason}"
-            ))),
-            QosAdmission::Reject { reason, .. } => Err(HawDBError::Storage(format!(
-                "background search projection rebuild rejected: {reason}"
-            ))),
-        }
+        policy.admit_or_refuse(state, &request)?;
+        self.rebuild_derived_artifacts(catalog, store, options)
     }
 
     pub fn rebuild_scheduled_background_derived_artifacts<S: SearchProjectionSource + ?Sized>(
@@ -2870,20 +2843,7 @@ impl SearchIndex {
             WorkClass::Projection,
             self.rebuild_estimated_operations(store),
         );
-        let permit = match scheduler.try_start(request) {
-            Ok(permit) => permit,
-            Err(QosAdmission::Defer { reason, .. }) => {
-                return Err(HawDBError::Storage(format!(
-                    "background search projection rebuild deferred: {reason}"
-                )));
-            }
-            Err(QosAdmission::Reject { reason, .. }) => {
-                return Err(HawDBError::Storage(format!(
-                    "background search projection rebuild rejected: {reason}"
-                )));
-            }
-            Err(QosAdmission::Admit) => unreachable!("admitted work returns a permit"),
-        };
+        let permit = scheduler.try_start_or_refuse(request)?;
 
         let result = self.rebuild_derived_artifacts(catalog, store, options);
         permit.finish_with_outcome(result.is_ok());
@@ -3012,15 +2972,8 @@ impl SearchIndex {
         self.runtime_capabilities
             .require(RuntimeCapability::BackgroundMaintenance)?;
         let request = WorkRequest::background(WorkClass::Projection, estimated_operations);
-        match policy.admit(state, &request) {
-            QosAdmission::Admit => self.repair_metadata_from_graph(catalog, store, options),
-            QosAdmission::Defer { reason, .. } => Err(HawDBError::Storage(format!(
-                "background search metadata repair deferred: {reason}"
-            ))),
-            QosAdmission::Reject { reason, .. } => Err(HawDBError::Storage(format!(
-                "background search metadata repair rejected: {reason}"
-            ))),
-        }
+        policy.admit_or_refuse(state, &request)?;
+        self.repair_metadata_from_graph(catalog, store, options)
     }
 
     pub fn repair_scheduled_background_metadata_from_graph<S: SearchProjectionSource + ?Sized>(
@@ -3034,20 +2987,7 @@ impl SearchIndex {
         self.runtime_capabilities
             .require(RuntimeCapability::BackgroundMaintenance)?;
         let request = WorkRequest::background(WorkClass::Projection, estimated_operations);
-        let permit = match scheduler.try_start(request) {
-            Ok(permit) => permit,
-            Err(QosAdmission::Defer { reason, .. }) => {
-                return Err(HawDBError::Storage(format!(
-                    "background search metadata repair deferred: {reason}"
-                )));
-            }
-            Err(QosAdmission::Reject { reason, .. }) => {
-                return Err(HawDBError::Storage(format!(
-                    "background search metadata repair rejected: {reason}"
-                )));
-            }
-            Err(QosAdmission::Admit) => unreachable!("admitted work returns a permit"),
-        };
+        let permit = scheduler.try_start_or_refuse(request)?;
 
         let result = self.repair_metadata_from_graph(catalog, store, options);
         permit.finish_with_outcome(result.is_ok());

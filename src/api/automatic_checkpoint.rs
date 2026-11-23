@@ -1980,9 +1980,10 @@ fn prepare(
     report.operation_failed = false;
     task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)?;
     if !scheduler.policy().background_enabled {
-        return Err(HawDBError::Storage(
-            "automatic checkpoint QoS deferred: background disabled".into(),
-        ));
+        // Disabled background work is configuration, not transient load.
+        return Err(HawDBError::CapabilityUnavailable {
+            capability: hawdb_core::RuntimeCapability::BackgroundMaintenance,
+        });
     }
     if source.preparing.is_some() {
         report.planning_cache_hits += 1;
@@ -2007,7 +2008,7 @@ fn prepare(
             ))
             .map_err(|reason| {
                 report.admission_denial = Some(reason);
-                HawDBError::Storage(format!("automatic checkpoint planning deferred: {reason}"))
+                HawDBError::from(reason)
             })?;
         let work = report.track_progress(
             hawdb_storage::background::CheckpointWorkContext::new(
@@ -2031,7 +2032,7 @@ fn prepare(
         .try_admit_incremental_maintenance(OWNER_MEMORY_BYTES, memory, 1, task.clone())
         .map_err(|reason| {
             report.admission_denial = Some(reason);
-            HawDBError::Storage(format!("automatic checkpoint admission deferred: {reason}"))
+            HawDBError::from(reason)
         })?;
     let Some(frame) = source.store.begin_checkpoint_preparation(&source.catalog)? else {
         return Ok(None);
@@ -2059,7 +2060,7 @@ fn continue_preparation(
         .try_resume(task.clone())
         .map_err(|reason| {
             report.admission_denial = Some(reason);
-            HawDBError::Storage(format!("automatic checkpoint resume deferred: {reason}"))
+            HawDBError::from(reason)
         })?;
     let work = report.track_progress(
         CheckpointWorkContext::new(
@@ -2738,9 +2739,20 @@ mod tests {
         };
         let mut db = Database::open_with_config(&fixture.0, config).unwrap();
         db.set_runtime_governor(governor(1));
+        let control = db.runtime.checkpoint_control_for_test();
+        let (error_sender, errors) = std::sync::mpsc::channel();
+        control.lock().unwrap().preparation_error_probe = Some(error_sender);
         db.query("CREATE (:Memory {id: 'admission-retry'})")
             .unwrap();
         wait_for(&db, |report| report.deferred_attempts > 0);
+        // The denial is the typed governor refusal, not a storage error (#1926).
+        let error = errors.recv_timeout(Duration::from_secs(15)).unwrap();
+        assert!(
+            error.starts_with("execution error: runtime admission memory_saturated"),
+            "{error}"
+        );
+        control.lock().unwrap().preparation_error_probe = None;
+        assert!(!db.storage_handle_poisoned().unwrap());
         assert_eq!(
             db.automatic_checkpoint_report()
                 .unwrap()

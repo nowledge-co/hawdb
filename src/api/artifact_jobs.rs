@@ -15,7 +15,7 @@
 use super::{optional_u64_value, optional_usize_value, Database, QueryOutput};
 use crate::error::{HawDBError, Result};
 use crate::qos::{
-    BackgroundWorkHint, BackgroundWorkPlan, LocalQosPolicy, LocalQosState, QosAdmission, WorkClass,
+    BackgroundWorkHint, BackgroundWorkPlan, LocalQosPolicy, LocalQosState, WorkClass,
 };
 use crate::value::Value;
 use std::collections::BTreeMap;
@@ -205,15 +205,8 @@ impl Database {
             return Ok(None);
         };
 
-        match policy.admit(state, &job.background_work_request(estimated_operations)) {
-            QosAdmission::Admit => self.run_next_derived_artifact_job(),
-            QosAdmission::Defer { reason, .. } => Err(HawDBError::Storage(format!(
-                "background derived artifact job deferred: {reason}"
-            ))),
-            QosAdmission::Reject { reason, .. } => Err(HawDBError::Storage(format!(
-                "background derived artifact job rejected: {reason}"
-            ))),
-        }
+        policy.admit_or_refuse(state, &job.background_work_request(estimated_operations))?;
+        self.run_next_derived_artifact_job()
     }
 
     pub fn run_next_scheduled_background_derived_artifact_job(
@@ -226,20 +219,8 @@ impl Database {
         };
 
         let scheduler = self.local_qos_scheduler_for_work();
-        let permit = match scheduler.try_start(job.background_work_request(estimated_operations)) {
-            Ok(permit) => permit,
-            Err(QosAdmission::Defer { reason, .. }) => {
-                return Err(HawDBError::Storage(format!(
-                    "background derived artifact job deferred: {reason}"
-                )));
-            }
-            Err(QosAdmission::Reject { reason, .. }) => {
-                return Err(HawDBError::Storage(format!(
-                    "background derived artifact job rejected: {reason}"
-                )));
-            }
-            Err(QosAdmission::Admit) => unreachable!("admitted work returns a permit"),
-        };
+        let permit =
+            scheduler.try_start_or_refuse(job.background_work_request(estimated_operations))?;
 
         let result = self.run_next_derived_artifact_job();
         permit.finish_with_outcome(result.is_ok());
@@ -271,21 +252,12 @@ impl Database {
             return Ok(None);
         };
 
-        match policy.admit(state, &job.background_work_request(estimated_operations)) {
-            QosAdmission::Admit => {
-                let claim = self
-                    .derived_artifact_jobs
-                    .claim_external()
-                    .expect("admitted external artifact job must remain pending");
-                self.run_external_content_artifact_job_with_claim(claim, &mut runtime)
-            }
-            QosAdmission::Defer { reason, .. } => Err(HawDBError::Storage(format!(
-                "background external content artifact job deferred: {reason}"
-            ))),
-            QosAdmission::Reject { reason, .. } => Err(HawDBError::Storage(format!(
-                "background external content artifact job rejected: {reason}"
-            ))),
-        }
+        policy.admit_or_refuse(state, &job.background_work_request(estimated_operations))?;
+        let claim = self
+            .derived_artifact_jobs
+            .claim_external()
+            .expect("admitted external artifact job must remain pending");
+        self.run_external_content_artifact_job_with_claim(claim, &mut runtime)
     }
 
     pub fn run_next_scheduled_background_external_content_artifact_job_with(
@@ -300,20 +272,8 @@ impl Database {
         };
 
         let scheduler = self.local_qos_scheduler_for_work();
-        let permit = match scheduler.try_start(job.background_work_request(estimated_operations)) {
-            Ok(permit) => permit,
-            Err(QosAdmission::Defer { reason, .. }) => {
-                return Err(HawDBError::Storage(format!(
-                    "background external content artifact job deferred: {reason}"
-                )));
-            }
-            Err(QosAdmission::Reject { reason, .. }) => {
-                return Err(HawDBError::Storage(format!(
-                    "background external content artifact job rejected: {reason}"
-                )));
-            }
-            Err(QosAdmission::Admit) => unreachable!("admitted work returns a permit"),
-        };
+        let permit =
+            scheduler.try_start_or_refuse(job.background_work_request(estimated_operations))?;
 
         let claim = self
             .derived_artifact_jobs
@@ -370,21 +330,12 @@ impl Database {
             return Ok(None);
         };
 
-        match policy.admit(state, &job.background_work_request(estimated_operations)) {
-            QosAdmission::Admit => {
-                let claim = self
-                    .derived_artifact_jobs
-                    .claim_external_for_action(action)
-                    .expect("admitted external artifact job must remain pending");
-                self.run_external_content_artifact_job_with_claim(claim, &mut runtime)
-            }
-            QosAdmission::Defer { reason, .. } => Err(HawDBError::Storage(format!(
-                "background external content artifact job deferred: {reason}"
-            ))),
-            QosAdmission::Reject { reason, .. } => Err(HawDBError::Storage(format!(
-                "background external content artifact job rejected: {reason}"
-            ))),
-        }
+        policy.admit_or_refuse(state, &job.background_work_request(estimated_operations))?;
+        let claim = self
+            .derived_artifact_jobs
+            .claim_external_for_action(action)
+            .expect("admitted external artifact job must remain pending");
+        self.run_external_content_artifact_job_with_claim(claim, &mut runtime)
     }
 
     pub fn run_next_scheduled_background_external_content_artifact_job_for_action_with(
@@ -403,20 +354,8 @@ impl Database {
         };
 
         let scheduler = self.local_qos_scheduler_for_work();
-        let permit = match scheduler.try_start(job.background_work_request(estimated_operations)) {
-            Ok(permit) => permit,
-            Err(QosAdmission::Defer { reason, .. }) => {
-                return Err(HawDBError::Storage(format!(
-                    "background external content artifact job deferred: {reason}"
-                )));
-            }
-            Err(QosAdmission::Reject { reason, .. }) => {
-                return Err(HawDBError::Storage(format!(
-                    "background external content artifact job rejected: {reason}"
-                )));
-            }
-            Err(QosAdmission::Admit) => unreachable!("admitted work returns a permit"),
-        };
+        let permit =
+            scheduler.try_start_or_refuse(job.background_work_request(estimated_operations))?;
 
         let claim = self
             .derived_artifact_jobs
@@ -443,24 +382,15 @@ impl Database {
             return Ok(None);
         };
 
-        match policy.admit(
+        policy.admit_or_refuse(
             state,
             &job.background_work_request(manifest.estimated_operations),
-        ) {
-            QosAdmission::Admit => {
-                let claim = self
-                    .derived_artifact_jobs
-                    .claim_external_for_runtime(manifest)
-                    .expect("admitted external artifact job must remain pending");
-                self.run_external_content_artifact_job_with_claim(claim, &mut runtime)
-            }
-            QosAdmission::Defer { reason, .. } => Err(HawDBError::Storage(format!(
-                "background external content artifact job deferred: {reason}"
-            ))),
-            QosAdmission::Reject { reason, .. } => Err(HawDBError::Storage(format!(
-                "background external content artifact job rejected: {reason}"
-            ))),
-        }
+        )?;
+        let claim = self
+            .derived_artifact_jobs
+            .claim_external_for_runtime(manifest)
+            .expect("admitted external artifact job must remain pending");
+        self.run_external_content_artifact_job_with_claim(claim, &mut runtime)
     }
 
     pub fn run_next_scheduled_background_external_content_artifact_job_for_runtime_with(
@@ -478,21 +408,8 @@ impl Database {
         };
 
         let scheduler = self.local_qos_scheduler_for_work();
-        let permit =
-            match scheduler.try_start(job.background_work_request(manifest.estimated_operations)) {
-                Ok(permit) => permit,
-                Err(QosAdmission::Defer { reason, .. }) => {
-                    return Err(HawDBError::Storage(format!(
-                        "background external content artifact job deferred: {reason}"
-                    )));
-                }
-                Err(QosAdmission::Reject { reason, .. }) => {
-                    return Err(HawDBError::Storage(format!(
-                        "background external content artifact job rejected: {reason}"
-                    )));
-                }
-                Err(QosAdmission::Admit) => unreachable!("admitted work returns a permit"),
-            };
+        let permit = scheduler
+            .try_start_or_refuse(job.background_work_request(manifest.estimated_operations))?;
 
         let claim = self
             .derived_artifact_jobs
@@ -665,21 +582,12 @@ impl Database {
             return Ok(None);
         };
 
-        match policy.admit(state, &job.background_work_request(estimated_operations)) {
-            QosAdmission::Admit => {
-                let claim = self
-                    .derived_artifact_jobs
-                    .claim_external_by_id(job_id)
-                    .expect("admitted external artifact job must remain pending");
-                self.run_external_content_artifact_job_with_claim(claim, &mut runtime)
-            }
-            QosAdmission::Defer { reason, .. } => Err(HawDBError::Storage(format!(
-                "background external content artifact job deferred: {reason}"
-            ))),
-            QosAdmission::Reject { reason, .. } => Err(HawDBError::Storage(format!(
-                "background external content artifact job rejected: {reason}"
-            ))),
-        }
+        policy.admit_or_refuse(state, &job.background_work_request(estimated_operations))?;
+        let claim = self
+            .derived_artifact_jobs
+            .claim_external_by_id(job_id)
+            .expect("admitted external artifact job must remain pending");
+        self.run_external_content_artifact_job_with_claim(claim, &mut runtime)
     }
 
     pub fn run_scheduled_background_external_content_artifact_job_with(
@@ -698,20 +606,8 @@ impl Database {
         };
 
         let scheduler = self.local_qos_scheduler_for_work();
-        let permit = match scheduler.try_start(job.background_work_request(estimated_operations)) {
-            Ok(permit) => permit,
-            Err(QosAdmission::Defer { reason, .. }) => {
-                return Err(HawDBError::Storage(format!(
-                    "background external content artifact job deferred: {reason}"
-                )));
-            }
-            Err(QosAdmission::Reject { reason, .. }) => {
-                return Err(HawDBError::Storage(format!(
-                    "background external content artifact job rejected: {reason}"
-                )));
-            }
-            Err(QosAdmission::Admit) => unreachable!("admitted work returns a permit"),
-        };
+        let permit =
+            scheduler.try_start_or_refuse(job.background_work_request(estimated_operations))?;
 
         let claim = self
             .derived_artifact_jobs

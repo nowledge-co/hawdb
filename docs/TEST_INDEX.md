@@ -3416,6 +3416,26 @@ pin the mapping:
 No lane, feature matrix or timeout changes. Local replay:
 `cargo test --locked -p hawdb --lib resident_snapshot_admission`.
 
+Refused local QoS background admissions are the same typed refusal
+([#1926](https://github.com/nowledge-co/hawdb/issues/1926)). The QoS owner
+`refusal::tests` (`//crates/qos:hawdb_qos_tests`) pins the mapping of every
+`QosAdmissionCode` to `background_task_saturated`, the operation counts, and
+which refusals are retryable: a deferral, and not a rejection or a request
+larger than its limit. `background_disabled` maps to `CapabilityUnavailable`.
+The root general owner `api::tests::qos_admission_refusals` drives every
+`Database` background and scheduled-background entry point against a full
+background state or scheduler. Each refusal must be retryable and leave the
+handle unpoisoned and usable, and the same call must succeed once the capacity
+is free. The existing per-family tests (`search_projection_*_facade`,
+`external_content_artifacts`, `projected_graph_artifacts`, `schema_indexes`,
+`background_maintenance`, `canonical_snapshot`, `graph_analytics`) and the
+search-crate `tests::*_uses_qos_admission`/`*_defers_when_scheduler_is_full`
+assert the typed variant with exact counts. The automatic checkpoint owner's
+`denied_governor_recovers_without_another_write_or_host_checkpoint` checks the
+typed governor denial. No lane, feature matrix or timeout changes. Local
+replay: `cargo test --locked -p hawdb-qos --lib refusal`,
+`cargo test --locked -p hawdb --all-features --lib qos_admission_refusals`.
+
 ### Typed task stops everywhere
 
 Every producer reports a stopped runtime task as
