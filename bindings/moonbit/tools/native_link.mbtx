@@ -19,7 +19,7 @@ async fn main {
       (
         "libhawdb_moonbit.a", "-ldl -lpthread -framework CoreFoundation -framework IOKit",
       )
-    Some("linux") => ("libhawdb_moonbit.a", "-ldl -lpthread")
+    Some("linux") => ("libhawdb_moonbit.a", "-ldl -lpthread -lm")
     Some("windows") =>
       (
         "hawdb_moonbit.lib", "ws2_32.lib userenv.lib bcrypt.lib advapi32.lib ntdll.lib shell32.lib secur32.lib crypt32.lib iphlpapi.lib ole32.lib",
