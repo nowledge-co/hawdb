@@ -235,3 +235,53 @@ fn recursive_ctes_read_persistent_snapshots_after_reopen() {
         std::fs::remove_dir_all(path).unwrap();
     }
 }
+
+#[test]
+fn exists_binds_names_before_empty_scans_and_short_circuiting() {
+    let mut database = Database::new();
+    for table in ["t", "e"] {
+        database
+            .query_sql(&format!("CREATE TABLE {table} (id BIGINT PRIMARY KEY)"))
+            .unwrap();
+    }
+    for populated in [false, true] {
+        if populated {
+            database.query_sql("INSERT INTO t VALUES (1)").unwrap();
+            database.query_sql("INSERT INTO e VALUES (1)").unwrap();
+        }
+        for prefix in ["", "1 = 1 OR ", "1 = 0 AND "] {
+            for inner in [
+                "SELECT missing FROM e",
+                "SELECT e.missing FROM e",
+                "SELECT t.missing FROM e",
+                "SELECT id FROM e ORDER BY missing",
+                "SELECT id FROM e UNION SELECT id FROM t ORDER BY missing",
+                "SELECT 1 FROM e WHERE t.missing = e.id",
+                "SELECT 1 FROM e WHERE EXISTS (SELECT missing FROM t)",
+                "WITH local(v) AS (VALUES (1)) SELECT missing FROM local",
+            ] {
+                let sql = format!("SELECT id FROM t WHERE {prefix}EXISTS ({inner})");
+                let error = database.query_sql(&sql).expect_err(&sql);
+                assert!(error.to_string().contains("missing"), "{sql}: {error}");
+            }
+            for inner in [
+                "SELECT 1 / (id - id) FROM e",
+                "SELECT 1 / (t.id - t.id) FROM e",
+                "SELECT id AS v FROM e ORDER BY v",
+                "SELECT id FROM e UNION SELECT id FROM t ORDER BY id",
+                "SELECT 1 FROM e WHERE e.id = t.id",
+                "WITH local(v) AS (VALUES (1)) SELECT v FROM local",
+            ] {
+                let sql = format!("SELECT id FROM t WHERE {prefix}EXISTS ({inner})");
+                let result = database
+                    .query_sql(&sql)
+                    .unwrap_or_else(|error| panic!("{sql}: {error}"));
+                assert_eq!(
+                    result.rows.len(),
+                    usize::from(populated && prefix != "1 = 0 AND "),
+                    "{sql}"
+                );
+            }
+        }
+    }
+}

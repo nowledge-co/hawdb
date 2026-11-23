@@ -108,8 +108,10 @@ tracked peak and fallback under a tighter memory limit, and NULL after
 promotion. Early hits stay on the scan and fit a candidate-work budget that
 eager hashing would exceed. The suite also checks mixed-type comparisons.
 Plain EXPLAIN describes the bounded subquery strategies. EXPLAIN ANALYZE reports the executed `SubqueryPredicateExec` and
-identifies hash membership when used. Root `relational_sql::compound_queries` checkpoints,
-reopens, and re-runs parameterized derived/VALUES/subquery reads in
+identifies hash membership when used. Root `relational_sql::compound_queries`
+checks name binding before empty outer scans and AND/OR short-circuiting,
+including correlated, nested and CTE references with lazy unused targets.
+Its persistent cases checkpoint, reopen and re-run derived/VALUES/subquery reads in
 Materialized/Materialized and OutOfCore/DemandPaged modes. Derived tables and
 subquery results are statement-scoped only and never enter WAL, catalog, or
 checkpoint state. Replay with `cargo test --locked -p hawdb-sql-syntax --lib`,

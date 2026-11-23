@@ -24,6 +24,8 @@ use super::{
 use crate::subquery_scope::{CteScope, RelationColumns};
 use std::collections::{HashMap, HashSet};
 
+mod names;
+
 struct SubqueryEvaluator<'a, R: RelationalQueryStoreReader> {
     parameters: &'a [Value],
     state: &'a RelationalState,
@@ -481,6 +483,7 @@ pub(super) fn execute_select_with_subqueries<'a, R: RelationalQueryStoreReader>(
         .subquery_predicate
         .clone()
         .expect("subquery execution requires a subquery predicate");
+    names::validate(&select, state)?;
     validate_subquery_shapes(&predicate, &select, parameters, state, &CteScope::default())?;
     let ledger = QueryMemoryLedger::for_query(resources.execution_memory, resources.task_context)?;
     let tracker = OperatorMemoryTracker::with_account(
