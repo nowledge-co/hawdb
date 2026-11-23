@@ -1295,6 +1295,32 @@ mod lifecycle_tests {
     }
 
     #[test]
+    fn search_projection_catch_up_refusals_report_their_kinds() {
+        let error = HawDBError::SearchProjectionPrefixBehindSource {
+            complete_through_commit_epoch: 3,
+            source_commit_epoch: 7,
+        };
+        let expected = (
+            "search_projection_prefix_behind_source".to_owned(),
+            "execution error: search projection complete-through epoch 3 differs from source snapshot epoch 7; prepare the complete source interval before publishing its watermark".to_owned(),
+        );
+        assert_eq!(engine_error(&error), expected);
+        assert_eq!(query_error(&EmbeddedQueryError::Database(error)), expected);
+        let error = HawDBError::SearchProjectionBatchBudgetExceeded {
+            budget: hawdb::SearchProjectionBatchBudget::GraphDelta,
+            commit_epoch: None,
+            required_operations: 9,
+            limit: 4,
+        };
+        let expected = (
+            "search_projection_batch_budget_exceeded".to_owned(),
+            "storage error: search projection graph delta operation count 9 exceeded configured limit 4".to_owned(),
+        );
+        assert_eq!(engine_error(&error), expected);
+        assert_eq!(query_error(&EmbeddedQueryError::Database(error)), expected);
+    }
+
+    #[test]
     fn streamed_results_keep_the_tagged_transport() {
         let mut engine = HawDBEmbedded::open_in_memory();
         let output = execute_statement(

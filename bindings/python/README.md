@@ -555,6 +555,19 @@ A metadata-only search projection epoch advance that published nothing raises
 failure: the projection keeps its previous epoch; apply or catch up the range
 normally instead.
 
+Bounded search projection catch-up raises `ExecutionError` with
+`kind == "search_projection_prefix_behind_source"`,
+`complete_through_commit_epoch`, `source_commit_epoch` and
+`retryable == False` when the selected changefeed prefix ends before the
+source head; retrying the same budgets refuses again, so cover the whole
+pending interval or re-prepare. A batch larger than its per-batch limit raises
+`ExecutionError` with `kind == "search_projection_batch_budget_exceeded"`,
+`budget` (`"change_batch"`, `"graph_delta"` or `"projection_delta"`),
+`commit_epoch` (the oversized source commit, or `None`),
+`required_operations`, `limit` and `retryable == False`; it was a
+`StorageError` in 0.37 and earlier but is not a storage failure. Neither publishes
+anything, and both keep their message text.
+
 Memory-ledger and spill-quota refusals, and the read ceilings described under
 [Read budgets](#read-budgets-and-query-plans), raise `exceptions.ResourceBudgetError`,
 a subclass of `ExecutionError`, with `resource`, `scope`, `owner`,

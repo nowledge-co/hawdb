@@ -54,11 +54,12 @@ pub use decimal::{Decimal, DecimalError, DecimalType};
 pub use error::{
     HawDBError, ReadBudgetError, ReadBudgetResource, RelationalErrorKind, RelationalErrorSurface,
     ResourceBudgetError, ResourceBudgetKind, ResourceBudgetScope, Result, RuntimeAdmissionRefusal,
-    SearchProjectionEpochAdvanceRefusal, SearchProjectionRebuildRefusal, StorageFormatError,
-    TransactionRetryError, TransactionRetryReason, WalRecordLimit, WalRecordLimitError,
-    APPEND_WAL_FORMAT, LOGICAL_DUMP_FORMAT, RELATIONAL_CHECKPOINT_LAYOUT_FORMAT,
-    RELATIONAL_DURABLE_CODEC_FORMAT, RELATIONAL_ROW_PAGE_FORMAT, RELATIONAL_SCHEMA_FORMAT,
-    SEARCH_PROJECTION_MANIFEST_FORMAT, STORAGE_MANIFEST_FORMAT, WAL_FILE_FORMAT,
+    SearchProjectionBatchBudget, SearchProjectionEpochAdvanceRefusal,
+    SearchProjectionRebuildRefusal, StorageFormatError, TransactionRetryError,
+    TransactionRetryReason, WalRecordLimit, WalRecordLimitError, APPEND_WAL_FORMAT,
+    LOGICAL_DUMP_FORMAT, RELATIONAL_CHECKPOINT_LAYOUT_FORMAT, RELATIONAL_DURABLE_CODEC_FORMAT,
+    RELATIONAL_ROW_PAGE_FORMAT, RELATIONAL_SCHEMA_FORMAT, SEARCH_PROJECTION_MANIFEST_FORMAT,
+    STORAGE_MANIFEST_FORMAT, WAL_FILE_FORMAT,
 };
 pub use graph::{LabelFunction, RelationshipDirection, RelationshipEndpoint};
 pub use graph_rag::{
