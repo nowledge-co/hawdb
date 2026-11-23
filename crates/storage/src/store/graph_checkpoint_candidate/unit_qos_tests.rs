@@ -128,7 +128,7 @@ fn fresh_catch_up_keeps_local_admission_and_resumes_the_same_base_after_denial()
     assert_eq!(fs::read(&base).unwrap(), base_bytes);
     assert_eq!(scheduler.state().running_background_operations, 0);
     catalog = store
-        .publish_checkpoint_candidate(&mut candidate, None, &BTreeSet::new())
+        .publish_checkpoint_candidate(&mut candidate, None, &Default::default())
         .unwrap();
     assert_eq!(store.node_count_for_label(None), 3);
     assert_eq!(old.node_count_for_label(None), 2);

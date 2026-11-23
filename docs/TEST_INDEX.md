@@ -29,7 +29,7 @@ acceptance without rewriting earlier frozen baselines. The checked-in
 proves a v2 row root with a named secondary index and bound index generation
 opens read-only and writable, checkpoints, and reopens. The historical partial-index fixture covers codec v4 and row-page v3.
 The covering-index fixture from main `ebc2c9c4a` covers codec v5 and row-page v4.
-New writers use relational codec v6, row-page v5, and persistent-format version 5.
+New writers use relational codec v6, row-page v5, and persistent-format version 6.
 The existing root checkpoint-layout tests own these reopen checks.
 
 `OCTET_LENGTH` scalar compatibility (https://github.com/nowledge-co/hawdb/issues/1835)
@@ -4659,3 +4659,32 @@ checks the same typed refusal on an `OutOfCore` + `Authoritative` checkpoint
 reopened with defaults. FFI `error_tests::newer_relational_checkpoint_layout_reports_unsupported_storage_format`
 checks the `unsupported_storage_format` kind. No new lane, profile, timeout or
 feature; `PERSISTENT_FORMAT_VERSION` is unchanged.
+
+
+## Carried graph bundles (issue 1641)
+
+The existing storage unit owner (`//crates/storage:hawdb_storage_tests`)
+includes `store::graph_checkpoint::graph_bundle_tests` and the v2 manifest
+codec guards. They cover complete payload/descriptor carry, byte/inode identity,
+relational DDL/writes, backup/restore/scrub, graph WAL replay, direct graph
+Catalog changes and candidate cancellation/catch-up. The original inline
+`store::tests` functions are mechanically included from
+`store/tests/graph_store_cases_{1,2}.rs` in their original namespace; their test
+inventory and execution owner are unchanged.
+
+The root unit owner covers `api::tests::read_transactions::read_transaction_retains_carried_graph_base_until_release`
+(real out-of-core C!=G reader, four checkpoints, graph mutation, graph-only
+retention and release) and `store_facade_tests::derived_repair_tests::carried_graph_repair*`
+(checksum-bound quarantine and interrupted repair before/after head publication).
+The existing power-loss discovery/sharding owner includes
+`api::tests::power_loss::graph_bundle_carry` under both durability policies;
+it materializes the existing complete lost/torn/reordered publication plans
+around both head-rename boundaries and acknowledgement. No profile, timeout,
+feature matrix or new CI lane is introduced.
+
+The full storage TLA suite owns `HawDBGraphBundleCarry` and its three negative
+controls; see [scope and refinement argument](GRAPH_BUNDLE_CARRY.md). Replay
+with `cargo test --locked -p hawdb-storage --lib -- graph_bundle durable_manifest`,
+`cargo test --locked -p hawdb --all-features --lib -- read_transaction_retains_carried_graph carried_graph_repair graph_bundle_carry`,
+and the model/evidence/mutant commands in `docs/tla/README.md`. These bounded
+fixtures do not qualify physical devices, Windows namespace behavior or LDBC/TPC-C throughput.

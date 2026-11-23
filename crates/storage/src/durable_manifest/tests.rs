@@ -24,6 +24,8 @@ fn digest(value: u8) -> Sha256Digest {
 
 fn published() -> DurableManifest {
     DurableManifest {
+        graph_artifact_generation: None,
+        graph_artifact_source_commit_epoch: None,
         checkpoint_generation: Some(7),
         checkpoint_encoded_len: Some(101),
         checkpoint_encoded_checksum: Some(102),
@@ -157,6 +159,15 @@ fn rejected(text: &str) -> String {
     error.to_string()
 }
 
+// Preserve the frozen v1 field oracle while the current writer upgrades the
+// outer manifest. Payload fields must remain byte-for-byte identical.
+fn legacy_fields(text: &str) -> Vec<(String, String)> {
+    let mut entries = fields(text);
+    entries.retain(|(key, _)| !key.starts_with("graph_artifact_"));
+    replace(&mut entries, "version", STORAGE_VERSION);
+    entries
+}
+
 #[test]
 fn frozen_v1_bytes_preserve_all_binding_fields_and_paths() {
     for (expected, bytes) in [
@@ -164,11 +175,11 @@ fn frozen_v1_bytes_preserve_all_binding_fields_and_paths() {
         (published(), PUBLISHED),
     ] {
         expected.validate().unwrap();
-        assert_eq!(expected.encode(), bytes);
+        assert_eq!(legacy_fields(&expected.encode()), fields(bytes));
         let decoded = DurableManifest::decode(bytes).unwrap();
         // Retain the original model's trait surface while comparing every field.
         assert_eq!(format!("{decoded:?}"), format!("{expected:?}"));
-        assert_eq!(decoded.encode(), bytes);
+        assert_eq!(legacy_fields(&decoded.encode()), fields(bytes));
     }
     assert_eq!(
         published().checkpoint_path(Path::new("root")),
@@ -178,6 +189,73 @@ fn frozen_v1_bytes_preserve_all_binding_fields_and_paths() {
         published().wal_path(Path::new("root")),
         Path::new("root").join("wal.7.hawdb")
     );
+}
+
+#[test]
+fn v2_graph_binding_round_trip_and_old_reader_refusal() {
+    let mut carried = published();
+    carried.graph_artifact_generation = Some(3);
+    carried.graph_artifact_source_commit_epoch = Some(20);
+    let adjacency = carried
+        .canonical_adjacency_generation_artifacts
+        .as_mut()
+        .unwrap();
+    adjacency.generation = 3;
+    adjacency.source_commit_epoch = 20;
+    carried.validate().unwrap();
+    let encoded = carried.encode();
+    assert_eq!(encoded.lines().nth(1), Some("version\thawdb-storage-v2"));
+    // The old v1 validator rejects this version before any v2-only field.
+    assert!(matches!(
+        validate_storage_version(MANIFEST_STORAGE_VERSION),
+        Err(HawDBError::UnsupportedStorageFormat(_))
+    ));
+    let decoded = DurableManifest::decode(&encoded).unwrap();
+    assert_eq!(format!("{decoded:?}"), format!("{carried:?}"));
+    assert_eq!(decoded.graph_generation(), Some(3));
+    assert_eq!(decoded.graph_source_commit_epoch(), 20);
+    assert_eq!(
+        decoded.checkpoint_path(Path::new("root")),
+        Path::new("root/checkpoint.7.hawdb")
+    );
+
+    for field in [
+        "graph_artifact_generation",
+        "graph_artifact_source_commit_epoch",
+    ] {
+        let mut missing = fields(&encoded);
+        missing.retain(|(key, _)| key != field);
+        rejected(&frame(&missing));
+        let mut partial = fields(&encoded);
+        replace(&mut partial, field, "none");
+        rejected(&frame(&partial));
+    }
+    for (field, value) in [
+        ("graph_artifact_generation", "0"),
+        ("graph_artifact_generation", "8"),
+        ("graph_artifact_source_commit_epoch", "43"),
+        ("canonical_adjacency_generation", "7"),
+        ("canonical_adjacency_source_commit_epoch", "42"),
+    ] {
+        let mut invalid = fields(&encoded);
+        replace(&mut invalid, field, value);
+        rejected(&frame(&invalid));
+    }
+    let mut legacy_with_new_fields = fields(&encoded);
+    replace(&mut legacy_with_new_fields, "version", STORAGE_VERSION);
+    rejected(&frame(&legacy_with_new_fields));
+    let mut future = fields(&encoded);
+    replace(&mut future, "version", "hawdb-storage-v3");
+    assert!(matches!(
+        DurableManifest::decode(&frame(&future)),
+        Err(HawDBError::UnsupportedStorageFormat(
+            hawdb_core::StorageFormatError::UnsupportedVersion {
+                found: 3,
+                supported: 2,
+                ..
+            }
+        ))
+    ));
 }
 
 #[test]
@@ -304,8 +382,8 @@ fn generation_lsn_and_artifact_ranges_preserve_validation() {
         let mut changed = fields(PUBLISHED);
         replace(&mut changed, key, u64::MAX);
         assert_eq!(
-            DurableManifest::decode(&frame(&changed)).unwrap().encode(),
-            frame(&changed)
+            legacy_fields(&DurableManifest::decode(&frame(&changed)).unwrap().encode()),
+            fields(&frame(&changed))
         );
     }
 }
@@ -358,7 +436,7 @@ fn compatibility_defaults_and_checksum_guards_remain_exact() {
         HawDBError::UnsupportedStorageFormat(hawdb_core::StorageFormatError::UnsupportedVersion {
             format: "storage manifest",
             found: 0,
-            supported: 1,
+            supported: 2,
         })
     );
     let mut malformed = fields(PUBLISHED);
@@ -415,7 +493,7 @@ fn campaign(seeds: u64, cases_per_seed: usize) -> usize {
         }
         let decoded = DurableManifest::decode(&frame(&valid)).unwrap();
         assert_eq!(
-            fields(&decoded.encode())
+            legacy_fields(&decoded.encode())
                 .into_iter()
                 .collect::<BTreeMap<_, _>>(),
             expected
@@ -449,15 +527,21 @@ fn file_round_trip_and_failed_publication_preserve_selected_bytes() {
     let directory = TestDirectory::new();
     let path = directory.0.join("manifest.hawdb");
     DurableManifest::default().write(&path).unwrap();
-    assert_eq!(fs::read_to_string(&path).unwrap(), INITIAL);
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        DurableManifest::default().encode()
+    );
     published().write(&path).unwrap();
-    assert_eq!(fs::read_to_string(&path).unwrap(), PUBLISHED);
-    assert_eq!(DurableManifest::load(&path).unwrap().encode(), PUBLISHED);
+    assert_eq!(fs::read_to_string(&path).unwrap(), published().encode());
+    assert_eq!(
+        DurableManifest::load(&path).unwrap().encode(),
+        published().encode()
+    );
     let tmp = path.with_extension("hawdb.tmp");
     assert!(!tmp.exists());
     fs::create_dir(&tmp).unwrap();
     assert!(DurableManifest::default().write(&path).is_err());
-    assert_eq!(fs::read_to_string(&path).unwrap(), PUBLISHED);
+    assert_eq!(fs::read_to_string(&path).unwrap(), published().encode());
     fs::remove_dir(&tmp).unwrap();
     fs::write(&path, [0xff, 0xfe]).unwrap();
     assert!(DurableManifest::load(&path).is_err());

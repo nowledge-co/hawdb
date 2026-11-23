@@ -18,6 +18,111 @@ use crate::DatabaseReadTransaction;
 use std::sync::{Arc, Barrier};
 
 #[test]
+fn read_transaction_retains_carried_graph_base_until_release() {
+    let path = unique_test_dir("read_transaction_carried_graph");
+    let mut db = Database::open_with_config(
+        &path,
+        DatabaseConfig {
+            storage_residency_mode: StorageResidencyMode::OutOfCore,
+            ..DatabaseConfig::default()
+        },
+    )
+    .unwrap();
+    let mut transaction = db.begin_transaction().unwrap();
+    transaction
+        .query("CREATE (:Carried {id: 1, title: 'old'})")
+        .unwrap();
+    transaction
+        .query_sql("CREATE TABLE carried_rows (id INTEGER PRIMARY KEY)")
+        .unwrap();
+    transaction
+        .query_sql("INSERT INTO carried_rows VALUES (0)")
+        .unwrap();
+    transaction.commit().unwrap();
+    db.checkpoint().unwrap();
+    let initial_graph = db
+        .runtime
+        .get()
+        .unwrap()
+        .store
+        .canonical_segment_manifest()
+        .unwrap()
+        .generation
+        .0;
+    let initial_root = db
+        .runtime
+        .get()
+        .unwrap()
+        .store
+        .durable_root_path()
+        .unwrap()
+        .to_path_buf();
+    let initial_row_checkpoint = initial_root
+        .join(hawdb_storage::relational::relational_row_page_root_descriptor_file(initial_graph));
+    assert!(
+        initial_row_checkpoint.exists(),
+        "the row-G reclamation oracle needs a real source file"
+    );
+    db.query_sql("INSERT INTO carried_rows VALUES (100)")
+        .unwrap();
+    db.checkpoint().unwrap();
+    let mut reader = db.begin_read_transaction().unwrap();
+    let view = reader.published_read_view();
+    let physical = view.physical_generations().collect::<Vec<_>>();
+    assert_eq!(physical.len(), 2);
+    assert_ne!(
+        physical[0], physical[1],
+        "reader must own C and an older graph G"
+    );
+    let graph_generation = physical[1].0;
+    let root = db
+        .runtime
+        .get()
+        .unwrap()
+        .store
+        .durable_root_path()
+        .unwrap()
+        .to_path_buf();
+    let canonical = root
+        .join(hawdb_storage::artifact_files::canonical_artifact_generation_file(graph_generation));
+    let obsolete_row_checkpoint = root.join(
+        hawdb_storage::relational::relational_row_page_root_descriptor_file(graph_generation),
+    );
+    assert!(canonical.exists());
+    assert!(
+        obsolete_row_checkpoint.exists(),
+        "row G must still exist when the C/G reader is registered"
+    );
+    db.query("MATCH (n:Carried) SET n.title = 'new'").unwrap();
+    for id in 1..=4 {
+        db.query_sql(&format!("INSERT INTO carried_rows VALUES ({id})"))
+            .unwrap();
+        db.checkpoint().unwrap();
+        assert!(canonical.exists(), "a live C/G reader must retain G");
+        let rows = reader
+            .query("MATCH (n:Carried) RETURN n.title AS title")
+            .unwrap()
+            .rows;
+        assert_eq!(rows[0]["title"], Value::String("old".into()));
+    }
+    assert!(
+        !obsolete_row_checkpoint.exists(),
+        "retaining G must not retain unrelated old row checkpoint G"
+    );
+    drop(reader);
+    db.query_sql("INSERT INTO carried_rows VALUES (5)").unwrap();
+    db.checkpoint().unwrap();
+    assert!(!canonical.exists(), "released G must become reclaimable");
+    let rows = db
+        .query("MATCH (n:Carried) RETURN n.title AS title")
+        .unwrap()
+        .rows;
+    assert_eq!(rows[0]["title"], Value::String("new".into()));
+    drop(db);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
 fn read_transaction_keeps_snapshot_before_later_commit() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 1, title: 'Before snapshot'})")

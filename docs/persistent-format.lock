@@ -3,7 +3,7 @@
 #     python3 scripts/check-persistent-format.py --update
 # after deciding whether the change makes existing databases unreadable; if
 # it does, bump PERSISTENT_FORMAT_VERSION in crates/storage/src/persistent_format.rs first.
-persistent_format_version 5
+persistent_format_version 6
 crates/storage/src/append_table/codec.rs const APPEND_WAL_MAGIC: &[u8; 8] = b"SKAPWAL1";
 crates/storage/src/append_table/codec.rs const APPEND_CODEC_VERSION: u16 = 3;
 crates/storage/src/append_table/publication.rs const MANIFEST_MAGIC: &[u8; 8] = b"SKAPMAN1";
@@ -29,6 +29,7 @@ crates/storage/src/column_group/mod.rs pub const DELETION_VECTOR_MAGIC: &[u8; 9]
 crates/storage/src/column_group/shadow_metadata.rs const SHADOW_KEY_DICTIONARY_MAGIC: &[u8; 9] = b"SKNSHKEY1";
 crates/storage/src/column_group/shadow_metadata.rs const SHADOW_KEY_DICTIONARY_VERSION: u32 = 1;
 crates/storage/src/durable_manifest.rs pub const STORAGE_VERSION: &str = "hawdb-storage-v1";
+crates/storage/src/durable_manifest.rs pub const MANIFEST_STORAGE_VERSION: &str = "hawdb-storage-v2";
 crates/storage/src/durable_manifest.rs pub const STORAGE_VERSION_REVISION: u16 = 1;
 crates/storage/src/durable_manifest.rs const STORAGE_VERSION_PREFIX: &str = "hawdb-storage-v";
 crates/storage/src/graph_descriptor_page.rs const PAGE_MAGIC: &[u8; 8] = b"SKGDPG01";
@@ -38,7 +39,7 @@ crates/storage/src/graph_descriptor_tree.rs const ROOT_MAGIC: &[u8; 8] = b"SKGDR
 crates/storage/src/graph_descriptor_tree.rs const ROOT_VERSION: u16 = 1;
 crates/storage/src/index_page.rs const PAGE_MAGIC: &[u8; 8] = b"SKINIDX1";
 crates/storage/src/index_page.rs const PAGE_VERSION: u16 = 1;
-crates/storage/src/persistent_format.rs pub const PERSISTENT_FORMAT_VERSION: u32 = 5;
+crates/storage/src/persistent_format.rs pub const PERSISTENT_FORMAT_VERSION: u32 = 6;
 crates/storage/src/projection/artifact.rs const PROJECTED_GRAPH_ARTIFACT_VERSION: u64 = 2;
 crates/storage/src/projection_generation.rs const DATA_MAGIC: &[u8; 8] = b"SKPRGD01";
 crates/storage/src/projection_generation.rs const MANIFEST_MAGIC: &[u8; 8] = b"SKPRGM01";

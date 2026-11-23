@@ -336,6 +336,10 @@ impl DurableStore {
             append,
         } = artifacts;
         let manifest = DurableManifest {
+            graph_artifact_generation: Some(canonical_adjacency.generation.generation),
+            graph_artifact_source_commit_epoch: Some(
+                canonical_adjacency.generation.source_commit_epoch,
+            ),
             checkpoint_generation: Some(generation),
             checkpoint_encoded_len: Some(checkpoint.encoded_len),
             checkpoint_encoded_checksum: Some(checkpoint.encoded_checksum),
@@ -428,6 +432,7 @@ impl DurableStore {
         wal_commit_epoch: u64,
     ) -> Result<()> {
         let generation = manifest.checkpoint_epoch;
+        self.previous_graph_generation = Some(self.graph_generation());
         self.wal_append_file = None;
         self.wal_append_owner = None;
         self.checkpoint_path = manifest.checkpoint_path(&self.root_path);

@@ -26,6 +26,8 @@ mod checkpoint;
 #[path = "durable/checkpoint_tail.rs"]
 mod checkpoint_tail;
 pub use checkpoint_tail::CheckpointWalTail;
+#[path = "durable/graph_bundle.rs"]
+mod graph_bundle;
 #[path = "durable/manifest.rs"]
 mod manifest;
 #[path = "durable/reclamation.rs"]
@@ -80,6 +82,8 @@ fn stable_identity_error(error: StableIdentityMappingError) -> HawDBError {
 
 #[derive(Debug, Clone)]
 pub(super) struct DurableStore {
+    pub(super) previous_graph_generation: Option<u64>,
+    pub(super) checkpoint_graph_catalog: Option<super::Catalog>,
     project_files: crate::file_descriptors::ProjectFileDescriptors,
     _directory_lease: Arc<DatabaseDirectoryLease>,
     pub(super) branch_runtime: Option<super::immutable_root::BranchRuntimeBinding>,
@@ -215,6 +219,7 @@ pub(super) use hawdb_storage::checkpoint::CheckpointImage;
 #[derive(Debug)]
 #[doc(hidden)]
 pub struct PreparedCheckpoint {
+    pub(super) checkpoint_graph_catalog: super::Catalog,
     pub(super) source_commit_epoch: u64,
     pub(super) source_checkpoint_epoch: u64,
     pub(super) source_next_lsn: u64,
@@ -612,6 +617,8 @@ impl DurableStore {
             relational_checkpoint_encoded_len: None,
             relational_checkpoint_encoded_checksum: None,
             relational_checkpoint_encoded_sha256: None,
+            previous_graph_generation: None,
+            checkpoint_graph_catalog: None,
             canonical_manifest_encoded_len: manifest.canonical_manifest_encoded_len,
             canonical_manifest_encoded_checksum: manifest.canonical_manifest_encoded_checksum,
             canonical_manifest_encoded_sha256: manifest.canonical_manifest_encoded_sha256,

@@ -120,6 +120,16 @@ manifest parsing. The Rust regression in `store::immutable_root` exercises the
 corresponding closure publication and path materialization with identical
 artifact bytes.
 
+## Unchanged graph bundle carry
+
+`HawDBGraphBundleCarry` separates checkpoint generation C from retained graph
+bundle G/E, with candidate capture/selection, graph mutations, relational
+writes, one held reader, cancellation and independent graph/row reclamation.
+Its three controls reject dirty reuse, omission of current G and omission of
+reader G. See [invariants, Rust mapping and proof limits](../GRAPH_BUNDLE_CARRY.md).
+It complements the byte/selector barrier and immutable-path closure models;
+unchanged single-generation models alone do not qualify C!=G.
+
 ## Durable WAL and Checkpoint Publication
 
 `HawDBAutomaticCheckpoint` checks one old/candidate generation handoff with

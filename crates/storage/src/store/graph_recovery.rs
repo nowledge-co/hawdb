@@ -608,6 +608,7 @@ impl GraphStore {
             }
         }
         if let Some(durable) = &mut self.durable {
+            durable.checkpoint_graph_catalog = Some(catalog.clone());
             durable.relational_checkpoint_encoded_len =
                 relational_checkpoint.map(|metadata| metadata.encoded_len);
             durable.relational_checkpoint_encoded_checksum =
