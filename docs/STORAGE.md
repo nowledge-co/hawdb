@@ -950,6 +950,38 @@ WAL replay entry bound.
 `DatabaseConfig::storage_residency_mode` selects materialized, out-of-core, or
 automatic checkpoint loading. Automatic mode materializes small canonical
 artifacts and retains larger artifacts behind a bounded `SegmentCache`.
+Hosts can set `auto_materialize_checkpoint_bytes` (default 64 MiB) to
+adjust the automatic crossover, or select `OutOfCore` explicitly. The
+`segment_cache_capacity_bytes` field (default 256 MiB) bounds retained
+storage pages. Smaller caches save memory and can increase I/O, especially
+when queries revisit more pages than the cache can retain. Set the policy when
+opening the database, including through `HawDBEmbeddedOpenOptions::config`
+or `EmbeddedStoreOpenOptions::with_database_config`.
+
+```rust
+use hawdb::{Database, DatabaseConfig, StorageResidencyMode};
+
+let config = DatabaseConfig {
+    storage_residency_mode: StorageResidencyMode::OutOfCore,
+    segment_cache_capacity_bytes: 16 * 1024 * 1024,
+    ..DatabaseConfig::default()
+};
+let db = Database::open_with_config("graph.hawdb", config)?;
+# Ok::<(), hawdb::HawDBError>(())
+```
+
+Use `storage_residency_report()` to compare cache residency, misses,
+evictions and live graph deltas, and sample process RSS separately. A storage
+cache budget covers cache-owned pages. Materialized rows, in-flight queries
+and other components have separate memory costs. Hosts can coordinate runtime
+admission across multiple embedded governors with a shared
+`ProcessMemoryPolicy` and fresh process RSS samples.
+
+A fused projection with a required `id(n) = ...` bound can use a
+`NodeIdSeek`. The seek checks the label of the visible node before decoding
+the needed properties, then applies the residual predicate. `EXPLAIN ANALYZE`
+reports the identity pruning strategy and visited candidates.
+
 Canonical node, relationship, adjacency, exact-property, executor, search
 projection, analytics, and checked snapshot-export paths use owned iterators so
 a scan holds at most one decoded segment plus its caller-owned batch or TopN.

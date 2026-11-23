@@ -139,6 +139,21 @@ pub enum Predicate {
 }
 
 impl Predicate {
+    /// Finds an identity equality that every matching row must satisfy.
+    /// The caller must still evaluate the original predicate on the candidate.
+    pub fn required_identity_equality(&self, variable: &str) -> Option<&Value> {
+        match self {
+            Self::IdEq {
+                variable: current,
+                value,
+            } if current == variable => Some(value),
+            Self::And(predicates) => predicates
+                .iter()
+                .find_map(|predicate| predicate.required_identity_equality(variable)),
+            _ => None,
+        }
+    }
+
     /// Whether the storage mutation commands can evaluate this predicate as a
     /// property filter of one node or relationship. Expression predicates,
     /// constants and pattern predicates need the row evaluator instead.

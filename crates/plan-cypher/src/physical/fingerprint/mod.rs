@@ -1751,6 +1751,7 @@ fn write_load_csv_source(output: &mut String, source: &crate::LoadCsvSource) {
 fn write_node_projection_access(output: &mut String, access: &NodeProjectionAccess) {
     match access {
         NodeProjectionAccess::LabelScan => output.push_str("label_scan"),
+        NodeProjectionAccess::IdSeek => output.push_str("id_seek"),
         NodeProjectionAccess::PropertyValues { property, values } => {
             output.push_str("property_values(");
             write_identifier(output, property);

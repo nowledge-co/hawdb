@@ -1554,7 +1554,8 @@ fn bind_node_projection_access(
     parameters: BindingAction<'_>,
 ) -> Result<()> {
     match access {
-        hawdb_plan_cypher::NodeProjectionAccess::LabelScan => Ok(()),
+        hawdb_plan_cypher::NodeProjectionAccess::LabelScan
+        | hawdb_plan_cypher::NodeProjectionAccess::IdSeek => Ok(()),
         hawdb_plan_cypher::NodeProjectionAccess::PropertyValues { values, .. } => {
             bind_values(values, parameters)
         }

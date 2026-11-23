@@ -435,7 +435,7 @@ fn append_node_identity(
     };
     let mut node = context
         .store
-        .projected_node_owned_admitted(node_id, &properties, &mut |bytes| {
+        .projected_node_owned_admitted(node_id, None, &properties, &mut |bytes| {
             runtime_checkpoint(context.task_context)?;
             hydration.grow(bytes)?;
             Ok(())

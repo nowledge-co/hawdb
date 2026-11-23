@@ -40,6 +40,8 @@ pub struct CompositeOrderedSeek {
 #[derive(Debug, Clone, PartialEq)]
 pub enum NodeProjectionAccess {
     LabelScan,
+    /// An identity equality in the fused predicate supplies the seek key.
+    IdSeek,
     PropertyValues {
         property: String,
         values: Vec<Value>,
@@ -75,6 +77,7 @@ impl NodeProjectionAccess {
     pub fn kind_name(&self) -> &'static str {
         match self {
             Self::LabelScan => "label_scan",
+            Self::IdSeek => "id_seek",
             Self::PropertyValues { .. } => "property_values",
             Self::PropertyUnion { .. } => "property_union",
             Self::CompositeEquality { .. } => "composite_equality",
@@ -89,6 +92,7 @@ impl NodeProjectionAccess {
     pub fn physical_operator_name(&self) -> &'static str {
         match self {
             Self::LabelScan => "SeqNodeScan",
+            Self::IdSeek => "NodeIdSeek",
             Self::PropertyValues { values, .. } if values.len() == 1 => "IndexNodeSeek",
             Self::PropertyValues { .. } => "IndexNodeMultiSeek",
             Self::PropertyUnion { .. } => "IndexNodeUnionSeek",
@@ -125,7 +129,7 @@ crate::impl_retained_heap_for_struct!(CompositeOrderedSeek {
 impl crate::RetainedHeapBytes for NodeProjectionAccess {
     fn retained_heap_bytes(&self) -> Option<usize> {
         match self {
-            Self::LabelScan => crate::checked_retained_heap_sum([]),
+            Self::LabelScan | Self::IdSeek => crate::checked_retained_heap_sum([]),
             Self::PropertyValues { property, values } => crate::checked_retained_heap_sum([
                 crate::RetainedHeapBytes::retained_heap_bytes(property),
                 crate::RetainedHeapBytes::retained_heap_bytes(values),
