@@ -52,7 +52,7 @@ pub use hawdb_fuzz_contracts::{
     NOWLEDGE_QUERY_FUZZ_HARNESS_PROTOCOL,
 };
 pub use optimizer_qualification::{
-    qualify_generated_optimizer_case, qualify_optimizer_read,
+    qualify_bounded_order_case, qualify_generated_optimizer_case, qualify_optimizer_read,
     GeneratedOptimizerQualificationReport, OptimizerQualificationComparison,
     OptimizerQualificationReport, OptimizerQualificationVariant, PlanAgreement,
 };

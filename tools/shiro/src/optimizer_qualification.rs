@@ -5,7 +5,8 @@
 
 use super::*;
 use hawdb::optimizer::{
-    OptimizerQualificationOptions, OptimizerRuleAssertion, OptimizerSearchDirective, RuleOutcome,
+    OptimizerBoundedOrderAlternative, OptimizerQualificationOptions, OptimizerRuleAssertion,
+    OptimizerSearchDirective, RuleOutcome,
 };
 use hawdb::QueryRequest;
 
@@ -215,6 +216,127 @@ pub fn qualify_generated_optimizer_case(
     })
 }
 
+/// Generate a statement shape that admits two executable pagination strategies.
+pub fn qualify_bounded_order_case(
+    seed: u64,
+    index: usize,
+    additional: &[OptimizerQualificationVariant],
+) -> Result<JsonValue, FuzzError> {
+    if index >= MAX_CASE_COUNT || additional.len() > 6 {
+        return Err(FuzzError::new(
+            "bounded-order qualification limits exceeded",
+        ));
+    }
+    let input = seed.wrapping_add((index as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15));
+    let row_count = 4 + (input % 13) as i64;
+    let mut mutations = [
+        "CREATE NODE TABLE ShiroOrder",
+        "CREATE PROPERTY ON NODE TABLE ShiroOrder(id) TYPE INT NOT NULL",
+        "CREATE PROPERTY ON NODE TABLE ShiroOrder(sort_key) TYPE INT",
+    ]
+    .into_iter()
+    .map(Mutation::new)
+    .collect::<Vec<_>>();
+    for id in 0..row_count {
+        let key = (input ^ (id as u64).wrapping_mul(0xbf58_476d_1ce4_e5b9)) % 7;
+        mutations.push(Mutation {
+            cypher: "CREATE (:ShiroOrder {id: $id, sort_key: $key})".into(),
+            parameters: Parameters::from([
+                ("id".into(), Value::Int(id)),
+                (
+                    "key".into(),
+                    if key == 0 {
+                        Value::Null
+                    } else {
+                        Value::Int((key % 3) as i64)
+                    },
+                ),
+            ]),
+        });
+    }
+    let minimum = if index.is_multiple_of(4) {
+        row_count
+    } else {
+        (input % 3) as i64
+    };
+    let query = QueryInvocation {
+        cypher: "MATCH (n:ShiroOrder) WHERE n.id >= $min RETURN n.id AS id, n.sort_key AS key, datetime() AS observed ORDER BY key ASC, id DESC SKIP $offset LIMIT $limit".into(),
+        parameters: Parameters::from([
+            ("min".into(), Value::Int(minimum)),
+            ("offset".into(), Value::Int(((input >> 8) % 4) as i64)),
+            ("limit".into(), Value::Int(1 + ((input >> 16) % 6) as i64)),
+        ]),
+        result_semantics: ResultSemantics::Ordered,
+    };
+    let mut variants = additional.to_vec();
+    variants.extend(
+        [
+            OptimizerBoundedOrderAlternative::TopN,
+            OptimizerBoundedOrderAlternative::SortThenLimit,
+        ]
+        .map(|alternative| OptimizerQualificationVariant {
+            options: OptimizerQualificationOptions::default()
+                .with_bounded_order_alternative(alternative),
+            search: OptimizerSearchDirective::Memo,
+            assertions: Vec::new(),
+        }),
+    );
+    let report = qualify_optimizer_read(&mutations, &query, &variants)?;
+    let mut output = bounded_order_json(&report);
+    output["seed"] = json!(seed);
+    output["case_index"] = json!(index);
+    output["family"] = json!("bounded_order");
+    output["replay"] = json!({
+        "mutations": mutations.iter().map(mutation_json).collect::<Vec<_>>(),
+        "query": query_invocation_json(&query),
+        "statement_clock": report.statement_clock,
+        "variants": variants.iter().map(variant_json).collect::<Vec<_>>(),
+    });
+    Ok(output)
+}
+
+fn bounded_order_json(report: &OptimizerQualificationReport) -> JsonValue {
+    let pair = verify_bounded_order_pair(&report.comparisons);
+    let verified = pair.is_ok();
+    let mut output = report.json();
+    output["different_plan_observed"] = json!(verified);
+    output["bounded_order_failure"] = json!(pair.err());
+    output["success"] = json!(report.success() && verified);
+    output
+}
+
+fn verify_bounded_order_pair(
+    comparisons: &[OptimizerQualificationComparison],
+) -> Result<(), &'static str> {
+    // The generated family appends these two required runs after any extra variants.
+    let [.., top_n, sort_then_limit] = comparisons else {
+        return Err("missing forced bounded-order executions");
+    };
+    if [top_n, sort_then_limit]
+        .iter()
+        .any(|comparison| comparison.comparison == PlanAgreement::Failure)
+    {
+        return Err("forced bounded-order execution failed qualification");
+    }
+    let (Some(top_n), Some(sort_then_limit)) = (
+        top_n.execution.plan_fingerprint.as_deref(),
+        sort_then_limit.execution.plan_fingerprint.as_deref(),
+    ) else {
+        return Err("missing forced bounded-order plan fingerprint");
+    };
+    if top_n == sort_then_limit {
+        return Err("forced bounded-order executions used the same plan");
+    }
+    // The generated query has a single pagination site at its physical root.
+    if !top_n.starts_with("TopNExec(") {
+        return Err("forced TopN execution did not select TopNExec");
+    }
+    if !sort_then_limit.starts_with("LimitExec(SortExec(") {
+        return Err("forced Sort-plus-Limit execution did not select LimitExec over SortExec");
+    }
+    Ok(())
+}
+
 fn variant_json(variant: &OptimizerQualificationVariant) -> JsonValue {
     use hawdb::optimizer::OptionalOptimizerRule;
     json!({
@@ -421,6 +543,65 @@ mod tests {
         let replay = qualify_optimizer_read(&fixture(), &query, &variants).unwrap();
         assert_eq!(report.json(), replay.json());
     }
+    #[test]
+    fn generated_bounded_order_compares_real_plans_and_replays_exactly() {
+        for index in 0..8 {
+            let report = qualify_bounded_order_case(7, index, &[]).unwrap();
+            assert_eq!(report["success"], true, "{report:#}");
+            assert_eq!(report["different_plan_observed"], true);
+            assert!(report["bounded_order_failure"].is_null());
+            assert_eq!(report["different_plan_agreements"], 1);
+            assert_eq!(report["same_plan_agreements"], 1);
+            assert_eq!(report, qualify_bounded_order_case(7, index, &[]).unwrap());
+        }
+    }
+
+    #[test]
+    fn generated_bounded_order_rejects_duplicate_and_swapped_forced_plans() {
+        use OptimizerBoundedOrderAlternative::{SortThenLimit, TopN};
+        let fixture = fixture();
+        let query = query("MATCH (n:Item) RETURN n.external AS id ORDER BY id LIMIT 30");
+        for (choices, expected_failure) in [
+            (
+                [TopN, SortThenLimit, SortThenLimit],
+                "forced bounded-order executions used the same plan",
+            ),
+            (
+                [SortThenLimit, TopN, TopN],
+                "forced bounded-order executions used the same plan",
+            ),
+            (
+                [TopN, SortThenLimit, TopN],
+                "forced TopN execution did not select TopNExec",
+            ),
+        ] {
+            let variants = choices.map(|choice| {
+                variant(
+                    OptimizerQualificationOptions::default().with_bounded_order_alternative(choice),
+                )
+            });
+            let report = qualify_optimizer_read(&fixture, &query, &variants).unwrap();
+            assert!(report.success());
+            assert!(report.different_plan_agreements > 0);
+            let [_, first, second] = report.comparisons.as_slice() else {
+                panic!("expected one additional variant and two forced executions");
+            };
+            assert_eq!(first.execution.outcome, second.execution.outcome);
+            assert_eq!(
+                first.execution.plan_fingerprint == second.execution.plan_fingerprint,
+                choices[1] == choices[2],
+            );
+            let output = bounded_order_json(&report);
+            assert_eq!(output["success"], false, "{output:#}");
+            assert_eq!(output["different_plan_observed"], false);
+            assert_eq!(output["bounded_order_failure"], expected_failure);
+            assert_eq!(
+                output["different_plan_agreements"],
+                report.different_plan_agreements,
+            );
+        }
+    }
+
     #[test]
     fn candidate_batches_share_an_automatic_clock() {
         let mut db = Database::new();
