@@ -3519,6 +3519,21 @@ general owner runs `embedded_store::tests::search_marker_tests`.
 No lane, feature matrix or timeout changes. Local replay:
 `cargo test --locked -p hawdb --lib search_marker`.
 
+### Missing search projection refusals
+
+A missing search projection is a non-poisoning `Semantic` refusal, not
+`Storage` damage ([#1927](https://github.com/nowledge-co/hawdb/issues/1927)).
+The root general owner runs
+`embedded_store::tests::missing_search_projection_tests`. On a handle opened
+without a projection, and on an incremental handle whose reader was detached by
+a failed re-attach (its durable selector removed), candidate search, knowledge
+retrieval, document hydration and sampled recall validation (and, without a
+projection, cleanup retry) refuse with `Semantic`. The handle is not poisoned
+and keeps serving graph reads and writes.
+
+No lane, feature matrix or timeout changes. Local replay:
+`cargo test --locked -p hawdb --lib missing_search_projection`.
+
 ### Mutation RETURN
 
 Kùzu-compatible `RETURN` after a mutation clause ([#1789](https://github.com/nowledge-co/hawdb/issues/1789), [#1794](https://github.com/nowledge-co/hawdb/issues/1794), [#1793](https://github.com/nowledge-co/hawdb/issues/1793)).
