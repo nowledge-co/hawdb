@@ -348,6 +348,52 @@
       "kinds": [
         "nullable_int"
       ]
+    },
+    {
+      "id": "adapted/subselect/exists-or-correlation",
+      "source": {
+        "file": "data/expected/subselect.out",
+        "first_line": 1114,
+        "last_line": 1124
+      },
+      "kinds": [
+        "int",
+        "int",
+        "int"
+      ]
+    },
+    {
+      "id": "with/nested-cte-shadowing",
+      "source": {
+        "file": "data/expected/with.out",
+        "first_line": 181,
+        "last_line": 201
+      },
+      "kinds": [
+        "int"
+      ]
+    },
+    {
+      "id": "subselect/derived-select",
+      "source": {
+        "file": "data/expected/subselect.out",
+        "first_line": 21,
+        "last_line": 25
+      },
+      "kinds": [
+        "int"
+      ]
+    },
+    {
+      "id": "subselect/parenthesized-derived-select",
+      "source": {
+        "file": "data/expected/subselect.out",
+        "first_line": 27,
+        "last_line": 31
+      },
+      "kinds": [
+        "int"
+      ]
     }
   ]
 }

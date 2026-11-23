@@ -99,7 +99,7 @@ fn upstream_case(id: &str) {
     let expectations: Expectations =
         serde_json::from_slice(&fs::read(root.join("data/hawdb-expectations.json")).unwrap())
             .unwrap();
-    assert_eq!(expectations.cases.len(), 29);
+    assert_eq!(expectations.cases.len(), 33);
     let expected = expectations
         .cases
         .iter()
@@ -217,3 +217,16 @@ regression!(
 regression!(recursive_with_sum, "with/recursive-sum");
 regression!(subselect_row_null, "adapted/subselect/row-not-in-null");
 regression!(subselect_empty_null, "adapted/subselect/empty-not-in-null");
+
+regression!(
+    subselect_exists_or_correlation,
+    "adapted/subselect/exists-or-correlation"
+);
+
+regression!(nested_cte_shadowing, "with/nested-cte-shadowing");
+
+regression!(derived_select, "subselect/derived-select");
+regression!(
+    parenthesized_derived_select,
+    "subselect/parenthesized-derived-select"
+);

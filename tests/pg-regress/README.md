@@ -61,23 +61,40 @@ The additional selection keeps the upstream query text unchanged:
 - `adapted/select_implicit/non-projected-order-key`: ordering by an input column
   omitted from the projection, preserving both result order and duplicate rows.
 - `subselect/`: three stock queries for matching and nonmatching scalar
-  membership on a FROM-less implicit row.
+  membership on a FROM-less implicit row, plus two unchanged derived-table
+  queries checking ordinary and extra-parenthesized subselects.
 - `adapted/subselect/`: six stock queries for constant, uncorrelated, nested
   and correlated membership, row `NOT IN` with partial NULLs, and scalar
   `NOT IN` over an empty result with a nullable left operand. The eight-row
   fixture stores the unused `f3` column as BIGINT to preserve the integer
   INSERTs. The two NULL cases use ordinary CREATE TABLE inside their isolated
   schemas in place of CREATE TEMP TABLE.
+- `adapted/subselect/exists-or-correlation`: unchanged correlated EXISTS inside
+  OR over the original eleven logical rows. An ordinary table replaces the TEMP
+  partitioned fixture, and explicit values expand `generate_series(0,10)` with
+  integer `x/2` and `x+1`. Partition planning, ANALYZE and series execution are
+  not covered. The six expected result rows come directly from upstream.
+- `with/nested-cte-shadowing`: unchanged nested WITH/RECURSIVE query with a local
+  `w6` shadowing an enclosing `w6`, checking the upstream one-row result.
 - `with/recursive-sum`: the stock recursive CTE that sums the integers from 1
   through 100.
 
-The latter two fixtures use the original, already unique `a` column as a BIGINT
+The `select_having` and `select_implicit` fixtures use the original, already
+unique `a` column as a BIGINT
 primary key, BIGINT for `b`, TEXT for CHAR columns and explicit INSERT targets.
 All original values are retained. CHAR padding/width and integer-width semantics
 are outside this adaptation. Existing raw int8 cases remain unchanged. The five
 other `select_having.sql` queries are unselected because they need aggregate
 ORDER BY, scalar LOWER, expression GROUP BY or arithmetic predicates. They are
 not counted as passes.
+
+Two additional selected source cases, `adapted/subselect/row-in-values` and
+`row-not-in-values`, remain explicitly **UNSUPPORTED** in the live manifest.
+Their unchanged `CAST(... AS int4)` currently produces HawDB's semantic error
+`CAST requires a numeric target type`. They are excluded from the 33 passing
+HawDB-only cases, and the queries are not rewritten to hide this limitation.
+Their eight original rows remain recorded with the explicit integral-valued
+`f3` fixture adaptation for later qualification.
 
 Each expected-output range must echo the exact selected query and belong to a
 checksum-verified source. Assertions preserve column names, value kinds,
@@ -89,7 +106,7 @@ The manifest retains the source query and any ordering clause verbatim.
 
 ## Run locally
 
-Run all 29 migrated cases on HawDB alone with the pinned Rust toolchain:
+Run all 33 migrated cases on HawDB alone with the pinned Rust toolchain:
 
 ```bash
 make pg-regress-hawdb
@@ -98,7 +115,7 @@ cargo test --locked --manifest-path tests/pg-regress/Cargo.toml --no-default-fea
 ```
 
 Cargo also runs two existing checksum/selection controls imported from the suite
-loader. Those controls are separate from the 29 migrated PostgreSQL cases.
+loader. Those controls are separate from the 33 migrated PostgreSQL cases.
 
 ### Optional live comparisons
 

@@ -4097,6 +4097,260 @@
           }
         }
       ]
+    },
+    {
+      "id": "adapted/subselect/row-not-in-values",
+      "group": "adapted",
+      "steps": [
+        {
+          "sql": "CREATE TABLE SUBSELECT_TBL (\n  f1 integer,\n  f2 integer,\n  f3 float\n);",
+          "execute_sql": "CREATE TABLE SUBSELECT_TBL (f1 integer, f2 integer, f3 BIGINT);",
+          "adaptation": "Store the eight original integral-valued f3 inputs as BIGINT instead of float, preserving all values and NULLs. The unchanged membership query casts f3 to int4; floating-point assignment, fractional conversion and width semantics are outside this fixture.",
+          "source": {
+            "file": "data/sql/subselect.sql",
+            "first_line": 30,
+            "last_line": 34
+          }
+        },
+        {
+          "sql": "INSERT INTO SUBSELECT_TBL VALUES (1, 2, 3);",
+          "source": {
+            "file": "data/sql/subselect.sql",
+            "first_line": 36,
+            "last_line": 36
+          }
+        },
+        {
+          "sql": "INSERT INTO SUBSELECT_TBL VALUES (2, 3, 4);",
+          "source": {
+            "file": "data/sql/subselect.sql",
+            "first_line": 37,
+            "last_line": 37
+          }
+        },
+        {
+          "sql": "INSERT INTO SUBSELECT_TBL VALUES (3, 4, 5);",
+          "source": {
+            "file": "data/sql/subselect.sql",
+            "first_line": 38,
+            "last_line": 38
+          }
+        },
+        {
+          "sql": "INSERT INTO SUBSELECT_TBL VALUES (1, 1, 1);",
+          "source": {
+            "file": "data/sql/subselect.sql",
+            "first_line": 39,
+            "last_line": 39
+          }
+        },
+        {
+          "sql": "INSERT INTO SUBSELECT_TBL VALUES (2, 2, 2);",
+          "source": {
+            "file": "data/sql/subselect.sql",
+            "first_line": 40,
+            "last_line": 40
+          }
+        },
+        {
+          "sql": "INSERT INTO SUBSELECT_TBL VALUES (3, 3, 3);",
+          "source": {
+            "file": "data/sql/subselect.sql",
+            "first_line": 41,
+            "last_line": 41
+          }
+        },
+        {
+          "sql": "INSERT INTO SUBSELECT_TBL VALUES (6, 7, 8);",
+          "source": {
+            "file": "data/sql/subselect.sql",
+            "first_line": 42,
+            "last_line": 42
+          }
+        },
+        {
+          "sql": "INSERT INTO SUBSELECT_TBL VALUES (8, 9, NULL);",
+          "source": {
+            "file": "data/sql/subselect.sql",
+            "first_line": 43,
+            "last_line": 43
+          }
+        },
+        {
+          "sql": "SELECT f1, f2\n  FROM SUBSELECT_TBL\n  WHERE (f1, f2) NOT IN (SELECT f2, CAST(f3 AS int4) FROM SUBSELECT_TBL\n                         WHERE f3 IS NOT NULL);",
+          "source": {
+            "file": "data/sql/subselect.sql",
+            "first_line": 59,
+            "last_line": 62
+          }
+        }
+      ],
+      "unsupported": "The unchanged upstream query uses CAST(... AS int4), which HawDB currently rejects with Semantic(\"CAST requires a numeric target type\"). Keep the original query; this is not a PostgreSQL-compatible error or a passing membership test."
+    },
+    {
+      "id": "adapted/subselect/row-in-values",
+      "group": "adapted",
+      "steps": [
+        {
+          "sql": "CREATE TABLE SUBSELECT_TBL (\n  f1 integer,\n  f2 integer,\n  f3 float\n);",
+          "execute_sql": "CREATE TABLE SUBSELECT_TBL (f1 integer, f2 integer, f3 BIGINT);",
+          "adaptation": "Store the eight original integral-valued f3 inputs as BIGINT instead of float, preserving all values and NULLs. The unchanged membership query casts f3 to int4; floating-point assignment, fractional conversion and width semantics are outside this fixture.",
+          "source": {
+            "file": "data/sql/subselect.sql",
+            "first_line": 30,
+            "last_line": 34
+          }
+        },
+        {
+          "sql": "INSERT INTO SUBSELECT_TBL VALUES (1, 2, 3);",
+          "source": {
+            "file": "data/sql/subselect.sql",
+            "first_line": 36,
+            "last_line": 36
+          }
+        },
+        {
+          "sql": "INSERT INTO SUBSELECT_TBL VALUES (2, 3, 4);",
+          "source": {
+            "file": "data/sql/subselect.sql",
+            "first_line": 37,
+            "last_line": 37
+          }
+        },
+        {
+          "sql": "INSERT INTO SUBSELECT_TBL VALUES (3, 4, 5);",
+          "source": {
+            "file": "data/sql/subselect.sql",
+            "first_line": 38,
+            "last_line": 38
+          }
+        },
+        {
+          "sql": "INSERT INTO SUBSELECT_TBL VALUES (1, 1, 1);",
+          "source": {
+            "file": "data/sql/subselect.sql",
+            "first_line": 39,
+            "last_line": 39
+          }
+        },
+        {
+          "sql": "INSERT INTO SUBSELECT_TBL VALUES (2, 2, 2);",
+          "source": {
+            "file": "data/sql/subselect.sql",
+            "first_line": 40,
+            "last_line": 40
+          }
+        },
+        {
+          "sql": "INSERT INTO SUBSELECT_TBL VALUES (3, 3, 3);",
+          "source": {
+            "file": "data/sql/subselect.sql",
+            "first_line": 41,
+            "last_line": 41
+          }
+        },
+        {
+          "sql": "INSERT INTO SUBSELECT_TBL VALUES (6, 7, 8);",
+          "source": {
+            "file": "data/sql/subselect.sql",
+            "first_line": 42,
+            "last_line": 42
+          }
+        },
+        {
+          "sql": "INSERT INTO SUBSELECT_TBL VALUES (8, 9, NULL);",
+          "source": {
+            "file": "data/sql/subselect.sql",
+            "first_line": 43,
+            "last_line": 43
+          }
+        },
+        {
+          "sql": "SELECT f1 AS \"Correlated Field\"\n  FROM SUBSELECT_TBL\n  WHERE (f1, f2) IN (SELECT f2, CAST(f3 AS int4) FROM SUBSELECT_TBL\n                     WHERE f3 IS NOT NULL);",
+          "source": {
+            "file": "data/sql/subselect.sql",
+            "first_line": 80,
+            "last_line": 83
+          }
+        }
+      ],
+      "unsupported": "The unchanged upstream query uses CAST(... AS int4), which HawDB currently rejects with Semantic(\"CAST requires a numeric target type\"). Keep the original query; this is not a PostgreSQL-compatible error or a passing membership test."
+    },
+    {
+      "id": "adapted/subselect/exists-or-correlation",
+      "group": "adapted",
+      "steps": [
+        {
+          "sql": "create temp table exists_tbl (c1 int, c2 int, c3 int) partition by list (c1);",
+          "source": {
+            "file": "data/sql/subselect.sql",
+            "first_line": 594,
+            "last_line": 594
+          },
+          "execute_sql": "create table exists_tbl (c1 int, c2 int, c3 int);",
+          "adaptation": "Use one ordinary table in the isolated schema instead of a TEMP partitioned parent and child tables. Preserve all eleven logical rows; partition planning and ANALYZE are not selected or qualified."
+        },
+        {
+          "sql": "insert into exists_tbl select x, x/2, x+1 from generate_series(0,10) x;",
+          "source": {
+            "file": "data/sql/subselect.sql",
+            "first_line": 597,
+            "last_line": 597
+          },
+          "execute_sql": "insert into exists_tbl values (0, 0, 1), (1, 0, 2), (2, 1, 3), (3, 1, 4), (4, 2, 5), (5, 2, 6), (6, 3, 7), (7, 3, 8), (8, 4, 9), (9, 4, 10), (10, 5, 11);",
+          "adaptation": "Expand the exact upstream generate_series(0,10) fixture with integer x/2 and x+1 into eleven literal rows. Series execution is not qualified."
+        },
+        {
+          "sql": "select * from exists_tbl t1\n  where (exists(select 1 from exists_tbl t2 where t1.c1 = t2.c2) or c3 < 0);",
+          "source": {
+            "file": "data/sql/subselect.sql",
+            "first_line": 602,
+            "last_line": 603
+          }
+        }
+      ]
+    },
+    {
+      "id": "with/nested-cte-shadowing",
+      "group": "with",
+      "steps": [
+        {
+          "sql": "WITH RECURSIVE w1(c1) AS\n (WITH w2(c2) AS\n  (WITH w3(c3) AS\n   (WITH w4(c4) AS\n    (WITH w5(c5) AS\n     (WITH RECURSIVE w6(c6) AS\n      (WITH w6(c6) AS\n       (WITH w8(c8) AS\n        (SELECT 1)\n        SELECT * FROM w8)\n       SELECT * FROM w6)\n      SELECT * FROM w6)\n     SELECT * FROM w5)\n    SELECT * FROM w4)\n   SELECT * FROM w3)\n  SELECT * FROM w2)\nSELECT * FROM w1;",
+          "source": {
+            "file": "data/sql/with.sql",
+            "first_line": 100,
+            "last_line": 116
+          }
+        }
+      ]
+    },
+    {
+      "id": "subselect/derived-select",
+      "group": "subselect",
+      "steps": [
+        {
+          "sql": "SELECT * FROM (SELECT 1 AS x) ss;",
+          "source": {
+            "file": "data/sql/subselect.sql",
+            "first_line": 13,
+            "last_line": 13
+          }
+        }
+      ]
+    },
+    {
+      "id": "subselect/parenthesized-derived-select",
+      "group": "subselect",
+      "steps": [
+        {
+          "sql": "SELECT * FROM ((SELECT 1 AS x)) ss;",
+          "source": {
+            "file": "data/sql/subselect.sql",
+            "first_line": 14,
+            "last_line": 14
+          }
+        }
+      ]
     }
   ]
 }
