@@ -714,6 +714,58 @@ fn admit_selected(
     Ok(())
 }
 
+/// Verifies a text record stream's order, bounds and count like
+/// [`select_documents`] with nothing selected, reading each record through
+/// one admitted line buffer of at most `max_record_bytes`.
+pub(super) fn verify_text_records(
+    text: &mut dyn BufRead,
+    segment: Bounds<'_>,
+    max_record_bytes: u64,
+    memory: &hawdb_executor::QueryMemoryAccount,
+    task: &hawdb_core::RuntimeTaskContext,
+) -> Result<()> {
+    let mut line_memory = memory.reserve(0)?;
+    let mut line = Vec::new();
+    let mut previous = None::<String>;
+    let mut count = 0usize;
+    while read_record(
+        text,
+        &mut line,
+        usize::try_from(max_record_bytes).unwrap_or(usize::MAX),
+        task,
+        &mut line_memory,
+    )? {
+        let record = std::str::from_utf8(&line).map_err(|_| invalid("invalid record UTF-8"))?;
+        let record = match record.strip_suffix('\n') {
+            Some(record) => record.strip_suffix('\r').unwrap_or(record),
+            None => record,
+        };
+        if record.is_empty() || record == "HAWDB_SEARCH_SEGMENT_V1" {
+            continue;
+        }
+        let (id, _) = summarize_document_line(record)?;
+        if count == 0 && id != segment.first {
+            return Err(invalid("document bounds do not match its descriptor"));
+        }
+        if previous.as_ref().is_some_and(|previous| previous >= &id) {
+            return Err(invalid("documents are not strictly ordered"));
+        }
+        count = count
+            .checked_add(1)
+            .ok_or_else(|| invalid("document count overflow"))?;
+        if count > segment.count {
+            return Err(invalid("document count exceeds its descriptor"));
+        }
+        previous = Some(id);
+    }
+    if count != segment.count || previous.as_deref() != Some(segment.last) {
+        return Err(invalid(
+            "document count or bounds do not match its descriptor",
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn select_documents(
     text: &mut dyn BufRead,
     segment: Bounds<'_>,

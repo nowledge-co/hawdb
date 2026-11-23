@@ -757,7 +757,10 @@ bounds, order, oversized ids and every truncation. A record above the
 1-MiB buffered-block limit hydrates and deep-verifies through the streaming
 re-encoder. An index whose boundary between two frames is moved (spans still
 tiling the range, CRCs and inflated lengths recomputed) is refused by both a
-streamed run and every single-block read. Envelope
+streamed run and every single-block read. Deep verification of a ~4 MiB
+document succeeds under a 3.5 MiB task reservation with a live-allocation peak
+below it (15 MiB before the block-wise verifier) and is a typed `MemoryBytes`
+refusal at 64 KiB. Envelope
 artifacts written as before #1917 still read and verify. The content cache
 serves repeated reads without I/O, releases its pins, refuses admission above
 its capacity without changing results, and never admits a damaged block.

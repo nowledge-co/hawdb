@@ -652,3 +652,80 @@ fn streamed_runs_and_single_block_reads_agree_on_frame_boundaries() {
     drop(reader);
     fs::remove_dir_all(root).unwrap();
 }
+
+/// A task admitted with `bytes` of working memory.
+fn task_with_memory(
+    governor: &hawdb_qos::RuntimeGovernor,
+    bytes: u64,
+) -> (hawdb_qos::RuntimePermit, hawdb_core::RuntimeTaskContext) {
+    let permit = governor
+        .try_admit(hawdb_qos::RuntimeWorkRequest::background_maintenance(bytes))
+        .unwrap();
+    let task = permit.bind_task_context(Default::default());
+    (permit, task)
+}
+
+#[test]
+fn deep_verification_of_a_large_document_stays_within_task_memory() {
+    let _serial = crate::test_allocation::serial();
+    let root = crate::test_temp_dir().join(format!(
+        "hawdb-content-blocks-verify-{}-{}",
+        std::process::id(),
+        CANDIDATE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&root).unwrap();
+    let mut documents = (0..3)
+        .map(|number| document_sized(number, SMALL))
+        .collect::<Vec<_>>();
+    // Long words keep the large record within the lexical token limit.
+    let mut content = String::new();
+    while content.len() < (4 << 20) - (64 << 10) {
+        content.push_str(&format!("{}{} ", "v".repeat(60), content.len() % 991));
+    }
+    documents[1].content = content;
+    let mut writer = SearchOutOfCoreGenerationWriter::create(&root, Default::default()).unwrap();
+    for document in &documents {
+        writer.push(document.clone()).unwrap();
+    }
+    writer.finish().unwrap();
+    let reader = open(&root, 0);
+    let governor = hawdb_qos::RuntimeGovernor::new(
+        hawdb_qos::RuntimeGovernorConfig::shared_host(),
+        hawdb_qos::RuntimeResourceSnapshot::from_parts(
+            hawdb_qos::RuntimeResourceBudget::from_limits(
+                NonZeroUsize::new(2).unwrap(),
+                None,
+                None,
+            ),
+            hawdb_qos::RuntimeMemorySnapshot::from_limits(
+                Some(4 << 30),
+                Some(4 << 30),
+                None,
+                None,
+                None,
+            ),
+        ),
+        hawdb_qos::IoConcurrencyBudget::new(2, 1),
+    );
+    // Less task memory than the ~4 MiB document (~8 MiB as a text line): the
+    // record streams through the taps and is never materialized.
+    let allowance = 3584u64 << 10;
+    let (permit, task) = task_with_memory(&governor, allowance);
+    let (result, peak) = crate::test_allocation::measure(|| reader.verify_content_segments(&task));
+    let report = result.unwrap();
+    assert_eq!(report.documents, documents.len() as u64);
+    assert!(peak < allowance as usize, "peak {peak}");
+    drop((task, permit));
+    // Far less memory than one decoder needs is a typed refusal, not a
+    // storage fault or an unaccounted allocation.
+    let (_permit, task) = task_with_memory(&governor, 64 << 10);
+    let (result, peak) = crate::test_allocation::measure(|| reader.verify_content_segments(&task));
+    assert!(
+        matches!(result, Err(HawDBError::ResourceBudgetExceeded(ref error))
+            if error.resource == hawdb_core::ResourceBudgetKind::MemoryBytes),
+        "{result:?}"
+    );
+    assert!(peak < 1 << 20, "peak {peak}");
+    drop(reader);
+    fs::remove_dir_all(root).unwrap();
+}

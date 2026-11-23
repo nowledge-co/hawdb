@@ -152,6 +152,15 @@ Blocks above 1 MiB (one large record) take the same streaming path in hit
 hydration. Their guarantee is unchanged: nothing is released from a segment
 with any damaged block.
 
+**Deep verification** (`SearchOutOfCoreReader::verify_content_segments`)
+reads each `blocks1` segment the way sparse reads would, block by block: the
+verified index, then every buffered block's frame, CRCs and records scanned in
+place (ids borrowed, no record materialized), and every block above 1 MiB
+through the streaming taps without re-encoding it. It holds one block and one
+decoder, charged to the task's memory reservation; a reservation below that is
+a typed `MemoryBytes` refusal. `stream1` segments are checked through one
+admitted record buffer instead of an unbounded line.
+
 ## Content cache
 
 Each `SearchOutOfCoreReader` owns a `hawdb_storage::cache::SegmentCache` of

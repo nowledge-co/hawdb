@@ -998,35 +998,34 @@ impl SearchOutOfCoreReader {
                 {
                     return Err(invalid("segment range exceeds its artifact"));
                 }
-                super::hydration::read_validated(
-                    super::hydration::RangeReader {
-                        file: &artifact.payload,
-                        offset: range.offset,
-                        remaining: range.length,
-                    },
-                    range.length,
-                    range.checksum,
-                    self.config.max_uncompressed_segment_bytes.get(),
-                    Some(super::hydration::ReadAdmission {
-                        memory: &memory,
-                        task,
-                        max_header_bytes: self.config.max_document_header_bytes.get(),
-                    }),
-                    |text| {
-                        super::hydration::select_documents(
-                            text,
-                            super::hydration::Bounds::of(segment),
-                            super::hydration::Wanted {
-                                ids: &BTreeSet::new(),
-                                embeddings: true,
-                            },
-                            super::hydration::HydrationBudget {
-                                limit: u64::MAX,
-                                used: 0,
-                            },
-                        )
-                    },
-                )?;
+                if artifact.content_encoding == ContentEncoding::Blocks1 {
+                    self.verify_block_segment(artifact, segment, &memory, task)?;
+                } else {
+                    super::hydration::read_validated(
+                        super::hydration::RangeReader {
+                            file: &artifact.payload,
+                            offset: range.offset,
+                            remaining: range.length,
+                        },
+                        range.length,
+                        range.checksum,
+                        self.config.max_uncompressed_segment_bytes.get(),
+                        Some(super::hydration::ReadAdmission {
+                            memory: &memory,
+                            task,
+                            max_header_bytes: self.config.max_document_header_bytes.get(),
+                        }),
+                        |text| {
+                            super::hydration::verify_text_records(
+                                text,
+                                super::hydration::Bounds::of(segment),
+                                self.config.max_uncompressed_segment_bytes.get(),
+                                &memory.spool,
+                                task,
+                            )
+                        },
+                    )?;
+                }
                 report.segments += 1;
                 if artifact.content_encoding == ContentEncoding::Blocks1 {
                     report.block_segments += 1;
@@ -1036,6 +1035,89 @@ impl SearchOutOfCoreReader {
             }
         }
         Ok(report)
+    }
+}
+
+impl SearchOutOfCoreReader {
+    /// Verifies one `blocks1` segment block by block, exactly as sparse reads
+    /// would read each block: its index, then every buffered block's frame,
+    /// CRCs and records in place (ids borrowed, nothing decoded), and every
+    /// streamed block through the taps alone. Memory is one block and its
+    /// decoder, charged to the task; no record is materialized.
+    fn verify_block_segment(
+        &self,
+        artifact: &super::SearchOutOfCoreSegmentReader,
+        segment: &SearchSegmentDescriptorEntry,
+        memory: &crate::build_memory::BuildMemory,
+        task: &hawdb_core::RuntimeTaskContext,
+    ) -> Result<()> {
+        let range = segment
+            .payload_range
+            .ok_or_else(|| invalid("segment has no payload range"))?;
+        let source = super::hydration::PlainSource {
+            file: &artifact.payload,
+            base: range.offset,
+        };
+        let mut reads = Reads::default();
+        let index = load_index(
+            &source,
+            None,
+            range.offset,
+            Expect {
+                length: range.length,
+                checksum: range.checksum,
+                max_uncompressed_bytes: self.config.max_uncompressed_segment_bytes.get(),
+                descriptor: Some((
+                    segment.document_count,
+                    &segment.first_document_id,
+                    &segment.last_document_id,
+                )),
+            },
+            Some(&memory.spool),
+            &mut reads,
+        )?;
+        let mut decoder = None;
+        for (block, entry) in index.entries().iter().enumerate() {
+            crate::build_control::checkpoint(task)?;
+            if u64::from(entry.uncompressed_len) > MAX_BUFFERED_BLOCK_BYTES {
+                stream_blocks(
+                    super::hydration::RangeReader {
+                        file: &artifact.payload,
+                        offset: range.offset + entry.offset,
+                        remaining: u64::from(entry.compressed_len),
+                    },
+                    &index,
+                    block..block + 1,
+                    Some(super::hydration::DecodeAdmission {
+                        memory: &memory.spool,
+                        task,
+                        max_header_bytes: self.config.max_document_header_bytes.get(),
+                    }),
+                    // The taps verify the block while it drains.
+                    |_| Ok(()),
+                )?;
+            } else {
+                let decoder = match &mut decoder {
+                    Some(decoder) => decoder,
+                    None => decoder.insert(BlockDecoder::new(Some(&memory.spool), Some(task))?),
+                };
+                let body = load_block(
+                    &source,
+                    None,
+                    range.offset,
+                    entry,
+                    decoder,
+                    Some(&memory.spool),
+                    &mut reads,
+                )?;
+                records::scan(
+                    &body,
+                    super::hydration::Bounds::of_block(&index, entry),
+                    |_| Ok(()),
+                )?;
+            }
+        }
+        Ok(())
     }
 }
 
