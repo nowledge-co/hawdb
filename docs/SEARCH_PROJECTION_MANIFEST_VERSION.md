@@ -190,9 +190,13 @@ sets, alongside the documents they already hold in memory.
   This includes every version-2 selector. Before downgrading to one of these
   releases, publish content after the last epoch advance (checkpoint or catch
   up), so that the selector is back at version 1.
-- A version-3 selector names V4 descriptors, which HawDB releases before
-  #1746 cannot read. They refuse the selector with the typed error above.
-  Only a rebuild with the older binary returns such a projection to version 1.
+- A version-3 selector names V4 descriptors, which HawDB 0.37.x and earlier
+  cannot read. HawDB 0.33.0 through 0.37.x have the gate (#1764) and support
+  selector version 2, so they refuse a version-3 selector with the typed error
+  above. HawDB 0.31.0 and 0.32.0 fail it as `Storage`. Only a rebuild with the
+  older binary returns such a projection to a version that binary reads. A
+  generation whose descriptors keep every value set still writes V3
+  descriptors and is not affected.
 - Selectors written by a development build between #1762 and #1763 can carry
   `content_source_graph_commit_epoch` without the version fields. This reader
   accepts them, and the next publication stamps the version.
