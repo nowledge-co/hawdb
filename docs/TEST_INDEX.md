@@ -760,7 +760,12 @@ tiling the range, CRCs and inflated lengths recomputed) is refused by both a
 streamed run and every single-block read. Deep verification of a ~4 MiB
 document succeeds under a 3.5 MiB task reservation with a live-allocation peak
 below it (15 MiB before the block-wise verifier) and is a typed `MemoryBytes`
-refusal at 64 KiB. Text-only hits are charged the bytes they hold (no stored
+refusal at 64 KiB. A task or query account that admits the streaming
+decoder's context but not a large block's frame window is the typed
+`MemoryBytes` refusal of that window, not `Storage`, through hit hydration, a
+whole-segment read and deep verification
+(`hydration::query::tests::a_refused_frame_window_after_an_admitted_decoder_stays_typed`).
+Text-only hits are charged the bytes they hold (no stored
 vector) through one count from selection to the cross-segment check and
 `hydrated_bytes`: two hits sharing a segment and two hits split over two
 segments are both refused between one and two hits' bytes and both served at

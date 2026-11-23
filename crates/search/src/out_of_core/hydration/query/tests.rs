@@ -237,3 +237,124 @@ fn query_hydration_preserves_wire_grammar_budgets_and_unselected_integrity() {
     .is_err());
     assert_eq!(ledger.snapshot().used_bytes, 0);
 }
+
+/// A decoder whose context is admitted but whose frame window is not fails
+/// mid-stream, inside `begin_frame`. Hydration of a streamed block, a
+/// whole-segment read and deep verification all return that typed memory
+/// refusal, not a storage fault (#1917 review).
+#[test]
+fn a_refused_frame_window_after_an_admitted_decoder_stays_typed() {
+    use crate::out_of_core::content_blocks::MAX_BUFFERED_BLOCK_BYTES;
+    let root =
+        crate::test_temp_dir().join(format!("hawdb-frame-window-refusal-{}", std::process::id()));
+    fs::create_dir(&root).unwrap();
+    let mut documents = (0..3)
+        .map(|number| document(format!("doc:{number}"), "small words ".repeat(40)))
+        .collect::<Vec<_>>();
+    // Long words keep the large record within the lexical token limit.
+    let mut content = String::new();
+    while content.len() <= MAX_BUFFERED_BLOCK_BYTES as usize {
+        content.push_str(&format!("{}{} ", "w".repeat(60), content.len() % 977));
+    }
+    documents[1].content = content;
+    let mut writer = SearchOutOfCoreGenerationWriter::create(&root, Default::default()).unwrap();
+    for document in &documents {
+        writer.push(document.clone()).unwrap();
+    }
+    writer.finish().unwrap();
+    let reader = SearchOutOfCoreReader::open(&root).unwrap();
+    let route = reader.segment_for_document("doc:1").unwrap().unwrap();
+    let artifact = &reader.segments[route.artifact_index];
+    let range = route.segment.payload_range.unwrap();
+    // The refusal is the frame window (over 1 MiB), not the decoder context
+    // (256 KiB), which was admitted.
+    let window_refused = |result: Result<()>| match result {
+        Err(HawDBError::ResourceBudgetExceeded(ref error))
+            if error.resource == hawdb_core::ResourceBudgetKind::MemoryBytes
+                && error.requested > MAX_BUFFERED_BLOCK_BYTES => {}
+        other => panic!("{other:?}"),
+    };
+    let governor = hawdb_qos::RuntimeGovernor::new(
+        hawdb_qos::RuntimeGovernorConfig::shared_host(),
+        hawdb_qos::RuntimeResourceSnapshot::from_parts(
+            hawdb_qos::RuntimeResourceBudget::from_limits(
+                NonZeroUsize::new(2).unwrap(),
+                None,
+                None,
+            ),
+            hawdb_qos::RuntimeMemorySnapshot::from_limits(
+                Some(4 << 30),
+                Some(4 << 30),
+                None,
+                None,
+                None,
+            ),
+        ),
+        hawdb_qos::IoConcurrencyBudget::new(2, 1),
+    );
+    let grant = NonZeroUsize::new(768 << 10).unwrap();
+    let permit = governor
+        .try_admit(
+            hawdb_qos::RuntimeWorkRequest::background_maintenance(1 << 20).with_io_wave_slots(1),
+        )
+        .unwrap();
+    let task = permit.bind_task_context(Default::default());
+
+    // Hydration streams the large block.
+    let ledger = QueryMemoryLedger::new(grant);
+    let account = ledger.account(QueryMemoryClass::ExternalRead, "hydration query", grant);
+    let scope = crate::build_memory::read::QueryIoScope::acquire(&task).unwrap();
+    let query = QueryContext {
+        memory: &account,
+        task: &task,
+        execution: Some(&permit),
+        io_scope: Some(&scope),
+    };
+    window_refused(
+        read_selected(
+            &reader,
+            artifact,
+            route.segment,
+            &BTreeSet::from(["doc:1".to_string()]),
+            0,
+            &mut SearchOutOfCoreMetrics::default(),
+            Scan {
+                query,
+                embeddings: false,
+            },
+        )
+        .map(drop),
+    );
+
+    // A whole-segment read admits the first block's frame, then is refused
+    // the large one.
+    let mut segment = vec![0; range.length as usize];
+    read_search_range(&artifact.payload, range.offset, &mut segment).unwrap();
+    window_refused(read_validated_with_account(
+        Cursor::new(&segment),
+        range.length,
+        range.checksum,
+        reader.config.max_uncompressed_segment_bytes.get(),
+        Some(DecodeAdmission {
+            memory: &account,
+            task: &task,
+            max_header_bytes: 4096,
+        }),
+        |_| Ok(()),
+    ));
+    drop((scope, account));
+    assert_eq!(ledger.snapshot().used_bytes, 0);
+    drop((task, permit));
+
+    // Deep verification holds a buffered-block decoder and the streaming
+    // decoder's context, but not the large block's window.
+    let permit = governor
+        .try_admit(hawdb_qos::RuntimeWorkRequest::background_maintenance(
+            1 << 20,
+        ))
+        .unwrap();
+    let task = permit.bind_task_context(Default::default());
+    window_refused(reader.verify_content_segments(&task).map(drop));
+    drop((task, permit, reader));
+    fs::remove_dir_all(root).unwrap();
+}

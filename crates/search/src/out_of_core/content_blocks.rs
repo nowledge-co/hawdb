@@ -861,7 +861,7 @@ pub(super) fn stream_blocks<T, B: std::ops::Deref<Target = [u8]>>(
         count: 0,
     };
     let compressed_input = BufReader::with_capacity(8192, &mut compressed);
-    let run = |decoder: &mut dyn Read| -> (Result<T>, io::Result<u64>) {
+    let run = |decoder: &mut dyn Read| -> (Result<T>, io::Result<u64>, bool) {
         let mut inflated = InflatedTap {
             inner: decoder.take(expected_inflated.saturating_add(1)),
             index,
@@ -879,14 +879,9 @@ pub(super) fn stream_blocks<T, B: std::ops::Deref<Target = [u8]>>(
         let selected = select(&mut records::TextRecords::new(&mut raw));
         let drained = io::copy(&mut raw, &mut io::sink());
         drop(raw);
-        if inflated.block != blocks.end && failure.borrow().is_none() {
-            failure
-                .borrow_mut()
-                .replace(invalid("blocks end before their index"));
-        }
-        (selected, drained)
+        (selected, drained, inflated.block == blocks.end)
     };
-    let (selected, drained) = match admission {
+    let (selected, drained, inflated_all) = match admission {
         Some(admission) => {
             let mut decoder = crate::build_memory::decoder::Decoder::with_account(
                 compressed_input,
@@ -903,16 +898,32 @@ pub(super) fn stream_blocks<T, B: std::ops::Deref<Target = [u8]>>(
     if let Some(admission) = admission {
         crate::build_control::checkpoint(admission.task)?;
     }
+    // An integrity failure a tap saw comes first.
     if let Some(error) = failure.borrow_mut().take() {
         return Err(error);
+    }
+    // A failed decoder admission (its frame window is admitted inside the
+    // read) or sink leaves the run unfinished. Preserve that first failure,
+    // typed, instead of replacing it with a truncation or consumption error,
+    // which only describes runs that read to their end without one.
+    let selected = selected?;
+    drained.map_err(crate::build_memory::read::io_error)?;
+    if !inflated_all {
+        return Err(invalid("blocks end before their index"));
     }
     if compressed.block != entries.len() || compressed.count != expected_compressed {
         return Err(invalid("blocks were not consumed exactly"));
     }
-    if let Err(error) = drained {
-        return selected.and_then(|_| Err(crate::build_memory::read::io_error(error)));
+    Ok(selected)
+}
+
+/// A short read is a truncated segment; any other failure (a typed refusal
+/// from an admitted reader, an I/O error) keeps its own cause.
+fn read_error(error: io::Error, truncated: &str) -> HawDBError {
+    if error.kind() == io::ErrorKind::UnexpectedEof && error.get_ref().is_none() {
+        return invalid(truncated);
     }
-    selected
+    crate::build_memory::read::io_error(error)
 }
 
 /// Whole-segment read of a `blocks1` segment whose magic has already been
@@ -930,7 +941,7 @@ pub(super) fn read_segment<T>(
     header[..8].copy_from_slice(MAGIC);
     input
         .read_exact(&mut header[8..])
-        .map_err(|_| invalid("header is truncated"))?;
+        .map_err(|error| read_error(error, "header is truncated"))?;
     let index_len = Header::declared_index_len(&header)?;
     if index_len > max_uncompressed_bytes || HEADER_BYTES as u64 + index_len > length {
         return Err(invalid("index exceeds its segment"));
@@ -941,7 +952,7 @@ pub(super) fn read_segment<T>(
     bytes[..HEADER_BYTES].copy_from_slice(&header);
     input
         .read_exact(&mut bytes[HEADER_BYTES..])
-        .map_err(|_| invalid("index is truncated"))?;
+        .map_err(|error| read_error(error, "index is truncated"))?;
     let index = Index::parse(
         Held::Owned(bytes, lease),
         Expect {

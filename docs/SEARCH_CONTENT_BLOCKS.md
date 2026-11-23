@@ -150,7 +150,11 @@ bounded re-encoder (16 KiB output plus one hex step, charged to the decode
 admission), so their parsers, digests and record admission are unchanged.
 Blocks above 1 MiB (one large record) take the same streaming path in hit
 hydration. Their guarantee is unchanged: nothing is released from a segment
-with any damaged block.
+with any damaged block. A streamed run reports the first failure: a block's
+integrity failure first, then the consumer's or decoder's own error (so a
+refused frame window stays a typed `MemoryBytes` refusal), and a run that
+ends before its index or leaves compressed bytes unread is `Storage` only when
+neither failed.
 
 **Hydration budget.** `SearchOutOfCoreConfig::max_hydrated_bytes` charges a
 hit the bytes its decoded document holds; a text-only hit holds no stored
