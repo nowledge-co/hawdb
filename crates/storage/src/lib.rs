@@ -85,6 +85,9 @@ pub mod graph_overlay;
 pub use hawdb_core::ids;
 pub use hawdb_core::ids::{NodeId, NodeRecord, ProjectedNodeRecord, RelId, RelRecord};
 mod immutable_files;
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub use immutable_files::{RetirementPause, RetirementPauseArm};
 #[doc(hidden)]
 pub mod immutable_object;
 pub mod index_page;

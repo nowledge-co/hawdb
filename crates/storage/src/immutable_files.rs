@@ -40,11 +40,21 @@ fn link_alias(source: &Path, destination: &Path) -> io::Result<()> {
 }
 
 mod checkpoint;
+mod opening;
+#[cfg(any(test, feature = "test-support"))]
+mod retirement_pause;
 pub(crate) use checkpoint::CheckpointImmutableFileError;
+use opening::OpeningGate;
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub use retirement_pause::{RetirementPause, RetirementPauseArm};
 
 #[cfg(test)]
 #[path = "immutable_files/checkpoint_lock_tests.rs"]
 mod checkpoint_lock_tests;
+#[cfg(test)]
+#[path = "immutable_files/retirement_tests.rs"]
+mod retirement_tests;
 
 /// How a verified open established the object's identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,9 +112,14 @@ pub(crate) struct ImmutableFileHandles {
     /// that object consumes the entry; see [`Self::mount`]. Bounded by
     /// [`MOUNT_VERIFICATION_RECORDS_PER_PROJECT`].
     mount_verified: Mutex<MountVerificationRecords>,
-    opening: Mutex<()>,
-    // Private checkpoint validation keeps objects protected after releasing
-    // the short cache-opening lock. Retirement can defer without waiting.
+    /// Serializes every cold open with retirement. Order: `opening`, then
+    /// `checkpoint_validation` (only ever tried), then `handles`.
+    opening: OpeningGate,
+    /// Private checkpoint validation keeps objects protected after releasing
+    /// `opening`. Retirement defers instead of waiting for it. Ordinary reads
+    /// must not take it: retirement of one object is no reason to refuse a
+    /// read of another. `opening` covers their cold opens and the strong count
+    /// under `handles` covers every lease they hold.
     checkpoint_validation: RwLock<()>,
 }
 
@@ -165,7 +180,7 @@ impl ImmutableFileHandles {
             access_tick: AtomicU64::new(0),
             bindings: Mutex::new(BTreeMap::new()),
             mount_verified: Mutex::new(MountVerificationRecords::default()),
-            opening: Mutex::new(()),
+            opening: OpeningGate::default(),
             checkpoint_validation: RwLock::new(()),
         }
     }
@@ -201,10 +216,7 @@ impl ImmutableFileHandles {
     /// Refuse to unlink an in-flight read; idle cache entries must not retain
     /// unlinked storage indefinitely in a long-lived project.
     pub(crate) fn retire_unreachable(&self, reference: ObjectReference) -> io::Result<()> {
-        let _opening = self
-            .opening
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let _opening = self.opening.lock();
         let _validation = match self.checkpoint_validation.try_write() {
             Ok(validation) => validation,
             Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
@@ -215,20 +227,36 @@ impl ImmutableFileHandles {
                 ));
             }
         };
-        let handles = self
-            .handles
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        if handles.iter().any(|(key, handle)| {
-            key.reference() == Some(reference) && Arc::strong_count(&handle.file) != 1
-        }) {
-            return Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "unreachable immutable object still has an active read",
-            ));
+        #[cfg(any(test, feature = "test-support"))]
+        retirement_pause::reached(reference);
+        // Warm reads lease from the map without `opening`, so each entry must
+        // be seen idle and removed under one `handles` lock. Once no entry is
+        // left, only a cold open could lease again, and `opening` excludes it.
+        loop {
+            let removed = {
+                let mut handles = self
+                    .handles
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                let matching = |key: &CacheKey| key.reference() == Some(reference);
+                if handles
+                    .iter()
+                    .any(|(key, handle)| matching(key) && Arc::strong_count(&handle.file) != 1)
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "unreachable immutable object still has an active read",
+                    ));
+                }
+                let key = handles.keys().find(|key| matching(key)).cloned();
+                key.map(|key| Self::take_handle(&mut handles, key))
+            };
+            let Some(removed) = removed else {
+                break;
+            };
+            removed.close();
+            self.state.record_cache_evictions(1);
         }
-        drop(handles);
-        self.remove_idle_matching(|key| key.reference() == Some(reference), usize::MAX);
         self.mount_verified
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -439,18 +467,6 @@ impl ImmutableFileHandles {
         context: &FileOpenContext,
         control: &mut impl crate::file_io::ReadAdmissionControl,
     ) -> io::Result<(Arc<File>, u64)> {
-        // Keep retirement from racing the gap between cache lookup and the
-        // returned lease. A held native Arc then provides the in-flight proof.
-        let _validation = match self.checkpoint_validation.try_read() {
-            Ok(guard) => guard,
-            Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
-            Err(std::sync::TryLockError::WouldBlock) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::WouldBlock,
-                    "immutable retirement is active",
-                ))
-            }
-        };
         let key = match source {
             Some(source) => CacheKey::Captured(source.key.clone()),
             None => CacheKey::Managed(
@@ -466,10 +482,10 @@ impl ImmutableFileHandles {
         }
         // Coalesce cold opens without holding the eviction map across admission.
         // This serializes file validation, never waits for descriptor capacity.
-        let _opening = self
-            .opening
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        // Retirement takes `opening` too, so it cannot run between this miss
+        // and the insertion that makes the new lease visible to it.
+        // The wait observes the caller's cancellation and deadline.
+        let _opening = self.opening.lock_controlled(control)?;
         control.checkpoint()?;
         if let Some(file) = self.cached_key(&key) {
             self.state.record_cache_hit();
@@ -521,11 +537,6 @@ impl ImmutableFileHandles {
     }
 
     fn cached(&self, reference: ObjectReference) -> Option<Arc<File>> {
-        let _validation = match self.checkpoint_validation.try_read() {
-            Ok(guard) => guard,
-            Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
-            Err(std::sync::TryLockError::WouldBlock) => return None,
-        };
         self.cached_key(&CacheKey::Managed(reference))
     }
 
@@ -661,6 +672,14 @@ impl ImmutableFileHandles {
 }
 
 impl ImmutableFileHandles {
+    /// Unmaps one entry. The caller holds `handles`, has seen the entry idle,
+    /// and closes the result after releasing the lock.
+    fn take_handle(handles: &mut BTreeMap<CacheKey, CachedHandle>, key: CacheKey) -> RemovedHandle {
+        let handle = handles.remove(&key).expect("selected idle handle exists");
+        let empty = handles.is_empty().then(|| std::mem::take(handles));
+        RemovedHandle { key, handle, empty }
+    }
+
     // No temporary key vectors: the cloned key keeps its metadata admitted
     // through native close and empty BTree node deallocation outside the lock.
     fn remove_idle_matching(
@@ -677,18 +696,12 @@ impl ImmutableFileHandles {
                     .filter(|(key, handle)| eligible(key) && Arc::strong_count(&handle.file) == 1)
                     .min_by_key(|(_, handle)| handle.last_used)
                     .map(|(key, _)| key.clone());
-                key.map(|key| {
-                    let handle = handles.remove(&key).expect("selected idle handle exists");
-                    let empty = handles.is_empty().then(|| std::mem::take(&mut *handles));
-                    (key, handle, empty)
-                })
+                key.map(|key| Self::take_handle(&mut handles, key))
             };
-            let Some((key, handle, empty)) = removed else {
+            let Some(removed) = removed else {
                 break;
             };
-            drop(handle);
-            drop(empty);
-            drop(key);
+            removed.close();
             count += 1;
         }
         self.state.record_cache_evictions(count);
@@ -737,6 +750,20 @@ impl ImmutableFileHandles {
 
     pub(crate) fn retire_source(&self, capture: u64) {
         self.remove_idle_matching(|key| key.capture() == Some(capture), usize::MAX);
+    }
+}
+
+struct RemovedHandle {
+    key: CacheKey,
+    handle: CachedHandle,
+    empty: Option<BTreeMap<CacheKey, CachedHandle>>,
+}
+
+impl RemovedHandle {
+    fn close(self) {
+        drop(self.handle);
+        drop(self.empty);
+        drop(self.key);
     }
 }
 
@@ -1042,7 +1069,7 @@ mod tests {
         let binding = handles.binding(&path).unwrap().unwrap();
         let context = crate::file_descriptors::context_for_path(&path).unwrap();
         let work = CheckpointWorkContext::default();
-        let opening = handles.opening.lock().unwrap();
+        let opening = handles.opening.lock();
         assert!(matches!(
             handles.checkpoint_get(&binding, &context, &work),
             Err(CheckpointImmutableFileError::Work(

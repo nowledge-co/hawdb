@@ -1639,6 +1639,33 @@ always uses a non-strict descriptor policy; foreground reads retain the host's
 configured policy. This does not relax memory or physical-I/O admission. See
 [descriptor capacity](../FILE_DESCRIPTOR_CAPACITY.md).
 
+Ordinary reads never take the validation guard. Retirement is decided for one
+object at a time, so the project-wide guard refused reads of unrelated objects
+([#1959](https://github.com/nowledge-co/hawdb/issues/1959)); root pins already
+keep a reader's own objects out of a sweep. A warm read leases its native handle
+under the handle-map lock and waits for nothing. A cold open and retirement
+exclude each other through the opening gate; the wait is as long as one
+retirement, which itself waits for nothing once it holds the gate, or one other
+cold open. A read admitted with a control observes its cancellation and deadline
+while waiting; a plain positioned read reports them at its next checkpoint. Retirement sees every cached handle
+of its object idle and unmaps it under one handle-map lock, so a lease taken
+first makes it return `WouldBlock`; the sweep keeps that object as retryable
+debt and goes on. Lock order, outermost first:
+
+| Lock | Taken by | Acquisition | May be held while taking |
+| --- | --- | --- | --- |
+| opening gate | cold open, retirement; checkpoint open (try only) | wait (cancellable with a control) or try | all below |
+| validation guard | checkpoint open (shared), retirement (exclusive) | try only | handle map, records |
+| handle map | every lease, insertion, eviction, retirement | short wait, no I/O | nothing |
+| mount records, bindings | mount, cold open, retirement | short wait, no I/O | nothing |
+| descriptor counts | permit acquire/release, eviction counters | short wait, no I/O | nothing |
+
+A checkpoint open keeps the shared validation guard after it releases the gate
+and only tries the gate afterwards, so it never closes a wait cycle. Native
+handles close outside the handle map. The exhaustive step model in
+`immutable_files::retirement_tests::protocol_model` covers two readers of two
+cache keys of one object beside its retirement.
+
 Paused real I/O tests prove foreground progress, retirement deferral, verified
 same-object handle reuse and actual object-sweep source retention followed by
 successful retry. They keep the actual governor's memory and I/O reservation,
