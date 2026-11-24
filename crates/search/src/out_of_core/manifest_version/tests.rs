@@ -476,9 +476,14 @@ fn content_encoding_and_value_summary_versions_compose_across_publication() {
                 let reader = SearchOutOfCoreReader::open(&path).unwrap();
                 reader.advance_source_graph_commit_epoch(5).unwrap();
                 let legacy_version = if stream1 { 2 } else { 3 };
-                let legacy = future_selector(&selector(&path), |body| {
-                    body.insert("format_version".into(), legacy_version.into());
-                });
+                let mut body = read_as(&selector(&path), READER_VERSION).unwrap();
+                body.format_version = legacy_version;
+                let checksum = checksum_bytes(&serde_json::to_vec(&body).unwrap());
+                let legacy = serde_json::to_vec(&super::super::SearchOutOfCoreManifestEnvelope {
+                    body,
+                    checksum,
+                })
+                .unwrap();
                 std::fs::write(path.join(OUT_OF_CORE_MANIFEST_FILE), &legacy).unwrap();
                 let manifest = read_as(&legacy, READER_VERSION).unwrap();
                 assert_eq!(manifest.min_reader_version, legacy_version);
