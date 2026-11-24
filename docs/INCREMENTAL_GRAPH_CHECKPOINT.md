@@ -123,3 +123,7 @@ Keep per-round order and foreground mutation times, and retain whole-run
 measurements separately; a lower overall median cannot hide a regressed
 control or tail. The controller is a developer measurement tool, not a host
 production integration path.
+
+[Performance evidence and current acceptance status](benchmarks/pr1961/README.md)
+keep timed source revisions separate from the compact identity follow-up.
+Checkpoint/file-byte improvements do not waive foreground or tail acceptance.

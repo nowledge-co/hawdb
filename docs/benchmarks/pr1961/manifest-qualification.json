@@ -1,0 +1,130 @@
+[
+  {
+    "group": "paired-128-512-node_property",
+    "variant": "baseline",
+    "manifest_sha256": "2ca5e5a4f97b8bd25ad8378e6f964e7b9efb4c32a888f722e705830021defac3",
+    "fields": {
+      "version": "hawdb-storage-v2",
+      "checkpoint_epoch": "127",
+      "checkpoint_commit_epoch": "704",
+      "graph_artifact_generation": "127",
+      "graph_artifact_source_commit_epoch": "704",
+      "canonical_adjacency_generation": "127",
+      "canonical_adjacency_source_commit_epoch": "704",
+      "wal_replay_start_lsn": "705",
+      "next_lsn": "705"
+    }
+  },
+  {
+    "group": "paired-128-512-node_property",
+    "variant": "candidate",
+    "manifest_sha256": "085282f0c039981d6ca3b291c694309140aae781f1fbd3b43f39c7f637daf96b",
+    "fields": {
+      "version": "hawdb-storage-v3",
+      "checkpoint_epoch": "127",
+      "checkpoint_commit_epoch": "704",
+      "graph_artifact_generation": "127",
+      "graph_artifact_source_commit_epoch": "704",
+      "canonical_adjacency_generation": "3",
+      "canonical_adjacency_source_commit_epoch": "642",
+      "wal_replay_start_lsn": "705",
+      "next_lsn": "705"
+    }
+  },
+  {
+    "group": "paired-128-512-relationship_property",
+    "variant": "baseline",
+    "manifest_sha256": "12878e3e0740c7e5edd6bc55ab5ed8a8d53aba7f478df00722611c71e0a2409d",
+    "fields": {
+      "version": "hawdb-storage-v2",
+      "checkpoint_epoch": "127",
+      "checkpoint_commit_epoch": "704",
+      "graph_artifact_generation": "127",
+      "graph_artifact_source_commit_epoch": "704",
+      "canonical_adjacency_generation": "127",
+      "canonical_adjacency_source_commit_epoch": "704",
+      "wal_replay_start_lsn": "705",
+      "next_lsn": "705"
+    }
+  },
+  {
+    "group": "paired-128-512-relationship_property",
+    "variant": "candidate",
+    "manifest_sha256": "fe550d85b79604717bc6d0aa6d18ac57f5198737806f97be079078a84345b0e3",
+    "fields": {
+      "version": "hawdb-storage-v3",
+      "checkpoint_epoch": "127",
+      "checkpoint_commit_epoch": "704",
+      "graph_artifact_generation": "127",
+      "graph_artifact_source_commit_epoch": "704",
+      "canonical_adjacency_generation": "127",
+      "canonical_adjacency_source_commit_epoch": "704",
+      "wal_replay_start_lsn": "705",
+      "next_lsn": "705"
+    }
+  },
+  {
+    "group": "paired-512-4096-node_property",
+    "variant": "baseline",
+    "manifest_sha256": "e57d63714e872d6f41c0506606a0176e4bafb430f0459dd55ef3fbefaea4866c",
+    "fields": {
+      "version": "hawdb-storage-v2",
+      "checkpoint_epoch": "127",
+      "checkpoint_commit_epoch": "4672",
+      "graph_artifact_generation": "127",
+      "graph_artifact_source_commit_epoch": "4672",
+      "canonical_adjacency_generation": "127",
+      "canonical_adjacency_source_commit_epoch": "4672",
+      "wal_replay_start_lsn": "4673",
+      "next_lsn": "4673"
+    }
+  },
+  {
+    "group": "paired-512-4096-node_property",
+    "variant": "candidate",
+    "manifest_sha256": "82f0e77f4d05e35d4bf906cd3e9c91bcdcd04214eff3ed9d277d7bdec7b805f1",
+    "fields": {
+      "version": "hawdb-storage-v3",
+      "checkpoint_epoch": "127",
+      "checkpoint_commit_epoch": "4672",
+      "graph_artifact_generation": "127",
+      "graph_artifact_source_commit_epoch": "4672",
+      "canonical_adjacency_generation": "3",
+      "canonical_adjacency_source_commit_epoch": "4610",
+      "wal_replay_start_lsn": "4673",
+      "next_lsn": "4673"
+    }
+  },
+  {
+    "group": "paired-512-4096-relationship_property",
+    "variant": "baseline",
+    "manifest_sha256": "689950713fb60e209a247171ac418b4a183fbc99916cbb04f8c8cd011cf04224",
+    "fields": {
+      "version": "hawdb-storage-v2",
+      "checkpoint_epoch": "127",
+      "checkpoint_commit_epoch": "4672",
+      "graph_artifact_generation": "127",
+      "graph_artifact_source_commit_epoch": "4672",
+      "canonical_adjacency_generation": "127",
+      "canonical_adjacency_source_commit_epoch": "4672",
+      "wal_replay_start_lsn": "4673",
+      "next_lsn": "4673"
+    }
+  },
+  {
+    "group": "paired-512-4096-relationship_property",
+    "variant": "candidate",
+    "manifest_sha256": "58fa195153b4b68cccda8ae21f6fb5b7393281c21593ceeb37821f5c9c21edb2",
+    "fields": {
+      "version": "hawdb-storage-v3",
+      "checkpoint_epoch": "127",
+      "checkpoint_commit_epoch": "4672",
+      "graph_artifact_generation": "127",
+      "graph_artifact_source_commit_epoch": "4672",
+      "canonical_adjacency_generation": "127",
+      "canonical_adjacency_source_commit_epoch": "4672",
+      "wal_replay_start_lsn": "4673",
+      "next_lsn": "4673"
+    }
+  }
+]

@@ -5126,3 +5126,9 @@ from generation zero and retain independent canonical/adjacency pins. A 64-bit
 compile-time size ceiling keeps the extra origin within the original 56-byte
 published identity. Public optional getters and diagnostic Debug formatting
 retain their previous semantics.
+
+Source-bound measurements, complete raw operation pairs, foreground controls,
+exploratory whole-run data and the remaining packed-identity acceptance gate
+are recorded in [PR #1961 evidence](benchmarks/pr1961/README.md). Its reference
+controller/analysis scripts remain manual developer artifacts; they add no CI
+job, scheduled campaign or production dependency.
