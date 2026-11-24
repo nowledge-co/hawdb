@@ -86,20 +86,24 @@ forward pass over the range.
 - A content segment entry in the selector records its payload framing:
   `content_encoding: "blocks1"`. The field is omitted for `stream1`.
 - Any selector that references a `blocks1` artifact has `min_reader_version`
-  3 ([SEARCH_PROJECTION_MANIFEST_VERSION.md](SEARCH_PROJECTION_MANIFEST_VERSION.md)).
-  A reader with the version gate and version 2 refuses it with
+  of at least 3
+  ([SEARCH_PROJECTION_MANIFEST_VERSION.md](SEARCH_PROJECTION_MANIFEST_VERSION.md)):
+  3 when no selected segment has a V4 descriptor (#1746), and 4 otherwise. A
+  reader with the version gate and version 2 refuses a version-3 selector with
   `UnsupportedStorageFormat(UnsupportedVersion { format:
   SEARCH_PROJECTION_MANIFEST_FORMAT, found: 3, supported: 2 })` before it opens
   any artifact. Releases without the gate (0.31.0, 0.32.0) report `Storage`.
 - This reader still reads `stream1` artifacts: existing projections keep
   working unchanged. Every new generation, delta, compaction output and rebuild
   writes `blocks1`, so `stream1` artifacts disappear as compaction proceeds. A
-  selector whose artifacts are all `stream1` keeps its lower version.
+  selector whose artifacts are all `stream1` keeps its lower version, unless a
+  selected segment has a V4 descriptor, which requires version 4.
 - `PERSISTENT_FORMAT_VERSION` does not change: no existing database becomes
   unreadable. The record layout change (layout 2) lands in the same format
   round as `blocks1` itself, behind the same selector version 3, so there is
   one selector version bump. The metadata sidecar, the resident snapshot
-  writer and the descriptor (`HAWDB_SEARCH_SEGMENTS_V3`) are unchanged.
+  writer and the descriptor grammar are unchanged by `blocks1`; a `blocks1`
+  segment can have a V3 or a V4 descriptor.
 - A segment's admission (`max_uncompressed_segment_bytes`) bounds both its
   text encoding, as before, and its binary records. Binary records are
   smaller except for vectors of mostly one-digit components (4 bytes against
