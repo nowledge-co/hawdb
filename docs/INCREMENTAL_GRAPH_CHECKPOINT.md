@@ -83,6 +83,16 @@ durability cache or deferred directory batch. Final object namespace barriers,
 head publication and full existing-object validation still execute. A low-level
 caller that changes the public object-store path gets a fresh owner and its
 complete namespace barriers rather than inheriting receipts from another path.
+Fresh sealed producers on Unix are fully verified and synchronized, then linked
+directly into the immutable namespace. Their source descriptor stays held until
+the installed regular file is checked against its identity and stamp. It closes
+before the final directory barrier, preserving descriptor headroom. An uncertain
+link is retained as evidence and poisons the publisher; a different inode never
+passes merely because its bytes or mtime match. Public caller sources still copy,
+different-device producers bypass the extra verification before copying, unsupported
+links fall back to copying, and non-Unix producers keep the staging path. Final
+object namespace persistence, full carried-content validation and managed COW
+remain mandatory. No staging cleanup barrier is needed for a name never created.
 The outer manifest is v3 and engine persistent format is 8; older binaries
 reject the version before interpreting independent origins. This reader retains
 v1/v2 uniform-bundle decoding with their original constraints. Payload codecs

@@ -5144,6 +5144,16 @@ object-store path; restored-stamp corruption must fail before changing the head.
 Each refusal reopens the old head and replays the complete acknowledged writes.
 This remains in the existing storage unit lane; no new timing CI is introduced.
 
+Unix sealed-producer publication also has direct-link coverage in the same
+immutable-object storage unit owner: source bytes are fully hashed and synced,
+the installed link must match a held source inode, and the final object name
+barrier cannot be skipped. No intermediate staging name is created. Unsupported
+links retain copying and managed COW, while other platforms retain staging.
+Source replacement with identical bytes/restored mtime refuses publication and
+retains foreign link evidence. A focused PowerLossModel observation before and
+after the target directory barrier checks lost names versus complete persisted
+payloads; existing root lost/torn/reordered cases remain integration owners.
+
 The same storage unit owner includes `read_view::generation_identity_tests`:
 compact physical-origin representation must distinguish an absent checkpoint
 from generation zero and retain independent canonical/adjacency pins. A 64-bit

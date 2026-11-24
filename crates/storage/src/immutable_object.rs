@@ -14,8 +14,10 @@
 
 //! Content-addressed immutable object publication.
 //!
-//! Objects are first written to an operation-owned staging file.  The file is
-//! synced before an exclusive hard-link installation. A buffered payload is
+//! Public caller payloads are written to an operation-owned staging file. It is
+//! synced before an exclusive hard-link installation. Unix sealed checkpoint
+//! producers can install their verified, synchronized inode directly instead.
+//! A buffered payload is
 //! read back and compared first; a streamed file is hashed as it is written
 //! and recorded in the process-local `published` registry once durable.
 //! Existing objects are accepted only when their complete bytes match the
