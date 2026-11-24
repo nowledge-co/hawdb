@@ -3788,6 +3788,8 @@ one-batch WAL/reopen in the existing root API partition.
 - `scripts/check-license-headers.test.py` is a pinned-HawkEye fixture
   check for full/SPDX forms, Python/Shell shebangs, excluded/unsupported files,
   Go line headers/build constraints, MoonBit sources/interfaces/manifests,
+  exact-name `pkg.generated.mbti` exclusions at root and nested paths while
+  similarly named `.mbt` sources and other `.mbti` files remain checked,
   generated output/dependency exclusions, historical benchmark evidence,
   mixed valid/invalid batches, wrong owners/licenses and byte preservation.
   The staged-file hook uses the same HawkEye rules for both header templates.

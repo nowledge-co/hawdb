@@ -1,0 +1,83 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "nowledge-co/hawdb"
+
+import {
+  "moonbitlang/core/debug",
+}
+
+// Values
+pub fn open(String) -> Result[Database, HawdbError]
+
+pub fn open_in_memory() -> Result[Database, HawdbError]
+
+pub fn open_read_only(String) -> Result[Database, HawdbError]
+
+pub fn version() -> String
+
+// Errors
+#derive(@debug.Debug)
+pub(all) suberror HawdbError {
+  Engine(String, String)
+  Codec(String)
+  Closed
+}
+pub fn HawdbError::describe(Self) -> String
+
+// Types and methods
+pub struct Database {
+  handle : NativeHandle
+}
+pub fn Database::begin(Self) -> Result[Transaction, HawdbError]
+pub fn Database::begin_read(Self) -> Result[Transaction, HawdbError]
+pub fn Database::close(Self) -> Unit
+pub fn Database::is_open(Self) -> Bool
+pub fn Database::query(Self, String, Map[String, Value]) -> Result[QueryResult, HawdbError]
+pub fn Database::query_or_raise(Self, String, Map[String, Value]) -> QueryResult raise HawdbError
+pub fn Database::query_raw(Self, String, String) -> Result[String, String]
+pub fn Database::query_sql(Self, String, Array[Value]) -> Result[QueryResult, HawdbError]
+pub fn Database::query_sql_or_raise(Self, String, Array[Value]) -> QueryResult raise HawdbError
+pub fn Database::query_sql_raw(Self, String, String) -> Result[String, String]
+pub fn[T] Database::with_read_transaction(Self, (Transaction) -> Result[T, HawdbError]) -> Result[T, HawdbError]
+pub fn[T] Database::with_transaction(Self, (Transaction) -> Result[T, HawdbError]) -> Result[T, HawdbError]
+
+type NativeHandle
+
+type NativeTransaction
+
+pub(all) struct QueryResult {
+  columns : Array[String]
+  rows : Array[Array[Value]]
+}
+pub fn QueryResult::get(Self, Int32, String) -> Value?
+
+pub struct Transaction {
+  native : NativeTransaction
+  owner : Database
+  read_only : Bool
+}
+pub fn Transaction::close(Self) -> Unit
+pub fn Transaction::commit(Self) -> Result[QueryResult, HawdbError]
+pub fn Transaction::is_open(Self) -> Bool
+pub fn Transaction::query(Self, String, Map[String, Value]) -> Result[QueryResult, HawdbError]
+pub fn Transaction::query_sql(Self, String, Array[Value]) -> Result[QueryResult, HawdbError]
+pub fn Transaction::rollback(Self) -> Result[Unit, HawdbError]
+
+#derive(@debug.Debug)
+pub(all) enum Value {
+  Null
+  Bool(Bool)
+  Int(Int64)
+  Decimal(String)
+  Float(Double)
+  Text(String)
+  Binary(Bytes)
+  Uuid(String)
+  Temporal(String, String)
+  Vector(Array[Double])
+  List(Array[Value])
+  Map(Map[String, Value])
+}
+
+// Type aliases
+
+// Traits

@@ -12,7 +12,12 @@ fn failed(label : String, detail : String) -> Bool {
 }
 
 ///|
-fn cypher(db : @hawdb.Database, label : String, statement : String, params : String) -> Bool {
+fn cypher(
+  db : @hawdb.Database,
+  label : String,
+  statement : String,
+  params : String,
+) -> Bool {
   match db.query_raw(statement, params) {
     Ok(_) => true
     Err(err) => failed(label, err)
@@ -20,7 +25,12 @@ fn cypher(db : @hawdb.Database, label : String, statement : String, params : Str
 }
 
 ///|
-fn sql(db : @hawdb.Database, label : String, statement : String, params : String) -> Bool {
+fn sql(
+  db : @hawdb.Database,
+  label : String,
+  statement : String,
+  params : String,
+) -> Bool {
   match db.query_sql_raw(statement, params) {
     Ok(_) => true
     Err(err) => failed(label, err)
@@ -29,7 +39,11 @@ fn sql(db : @hawdb.Database, label : String, statement : String, params : String
 
 ///|
 /// Compare structured rows instead of searching an output string.
-fn expect_rows(label : String, response : Result[String, String], expected : String) -> Bool {
+fn expect_rows(
+  label : String,
+  response : Result[String, String],
+  expected : String,
+) -> Bool {
   let data = match response {
     Ok(data) => data
     Err(err) => return failed(label, err)
@@ -86,7 +100,7 @@ fn expect_named_rows(
           if columns.length() != expected_columns.length() {
             return failed(label, "column count mismatch: " + data)
           }
-          let indices : Array[Int] = []
+          let indices : Array[Int32] = []
           for expected_name in expected_columns {
             let mut index = -1
             let mut count = 0
@@ -97,13 +111,17 @@ fn expect_named_rows(
                     index = i
                     count = count + 1
                   }
-                _ => return failed(label, "column name must be a string: " + data)
+                _ =>
+                  return failed(label, "column name must be a string: " + data)
               }
             }
             if count != 1 {
               return failed(
                 label,
-                "expected exactly one column named " + expected_name + ": " + data,
+                "expected exactly one column named " +
+                expected_name +
+                ": " +
+                data,
               )
             }
             indices.push(index)
@@ -113,7 +131,10 @@ fn expect_named_rows(
             match row {
               Json::Array(values) => {
                 if values.length() != columns.length() {
-                  return failed(label, "row width does not match columns: " + data)
+                  return failed(
+                    label,
+                    "row width does not match columns: " + data,
+                  )
                 }
                 let ordered : Array[Json] = []
                 for index in indices {
@@ -127,8 +148,15 @@ fn expect_named_rows(
           let got = Json::array(projected).stringify()
           let want = expected_json.stringify()
           if got != want {
-            return failed(label, "columns=" + Json::array(columns).stringify() +
-              " projected rows=" + got + " expected=" + want)
+            return failed(
+              label,
+              "columns=" +
+              Json::array(columns).stringify() +
+              " projected rows=" +
+              got +
+              " expected=" +
+              want,
+            )
           }
           println("CASE_PASS " + label)
           true
@@ -146,13 +174,12 @@ fn graph_case() -> Bool {
     Ok(db) => db
     Err(err) => return failed("graph.open", err.describe())
   }
-  for statement in [
-    "CREATE (:Person {name: 'alice'})",
-    "CREATE (:Person {name: 'bob'})",
-    "CREATE (:Person {name: 'carol'})",
-    "MATCH (a:Person {name: 'alice'}), (b:Person {name: 'bob'}) CREATE (a)-[:KNOWS]->(b)",
-    "MATCH (b:Person {name: 'bob'}), (c:Person {name: 'carol'}) CREATE (b)-[:KNOWS]->(c)",
-  ] {
+  for
+    statement in [
+      "CREATE (:Person {name: 'alice'})", "CREATE (:Person {name: 'bob'})", "CREATE (:Person {name: 'carol'})",
+      "MATCH (a:Person {name: 'alice'}), (b:Person {name: 'bob'}) CREATE (a)-[:KNOWS]->(b)",
+      "MATCH (b:Person {name: 'bob'}), (c:Person {name: 'carol'}) CREATE (b)-[:KNOWS]->(c)",
+    ] {
     if !cypher(db, "graph.setup", statement, "{}") {
       db.close()
       return false
@@ -160,7 +187,10 @@ fn graph_case() -> Bool {
   }
   let ok = expect_rows(
     "graph.social_two_hops",
-    db.query_raw("MATCH (:Person {name: 'alice'})-[:KNOWS]->()-[:KNOWS]->(fof) RETURN fof.name AS name", "{}"),
+    db.query_raw(
+      "MATCH (:Person {name: 'alice'})-[:KNOWS]->()-[:KNOWS]->(fof) RETURN fof.name AS name",
+      "{}",
+    ),
     "[[\"carol\"]]",
   )
   db.close()
@@ -174,9 +204,18 @@ fn sql_case() -> Bool {
     Ok(db) => db
     Err(err) => return failed("sql.open", err.describe())
   }
-  if !sql(db, "sql.schema", "CREATE TABLE business_orders (id BIGINT PRIMARY KEY, amount BIGINT)", "[]") ||
-    !sql(db, "sql.insert1", "INSERT INTO business_orders (id, amount) VALUES ($1, $2)", "[1,12]") ||
-    !sql(db, "sql.insert2", "INSERT INTO business_orders (id, amount) VALUES ($1, $2)", "[2,34]") {
+  if !sql(
+      db, "sql.schema", "CREATE TABLE business_orders (id BIGINT PRIMARY KEY, amount BIGINT)",
+      "[]",
+    ) ||
+    !sql(
+      db, "sql.insert1", "INSERT INTO business_orders (id, amount) VALUES ($1, $2)",
+      "[1,12]",
+    ) ||
+    !sql(
+      db, "sql.insert2", "INSERT INTO business_orders (id, amount) VALUES ($1, $2)",
+      "[2,34]",
+    ) {
     db.close()
     return false
   }
@@ -197,16 +236,21 @@ fn vector_case() -> Bool {
     Ok(db) => db
     Err(err) => return failed("vector.open", err.describe())
   }
-  if !sql(db, "vector.schema", "CREATE TABLE business_vectors (id BIGINT PRIMARY KEY, embedding VECTOR(2))", "[]") ||
-    !sql(db, "vector.insert", "INSERT INTO business_vectors (id, embedding) VALUES ($1, $2)", "[1,{\"$vector\":[1.0,-0.0]}]") {
+  if !sql(
+      db, "vector.schema", "CREATE TABLE business_vectors (id BIGINT PRIMARY KEY, embedding VECTOR(2))",
+      "[]",
+    ) ||
+    !sql(
+      db, "vector.insert", "INSERT INTO business_vectors (id, embedding) VALUES ($1, $2)",
+      "[1,{\"$vector\":[1.0,-0.0]}]",
+    ) {
     db.close()
     return false
   }
   let ok = expect_rows(
     "vector.exact_l2",
     db.query_sql_raw(
-      "SELECT l2_distance(embedding, $1) AS distance FROM business_vectors",
-      "[{\"$vector\":[1.0,-0.0]}]",
+      "SELECT l2_distance(embedding, $1) AS distance FROM business_vectors", "[{\"$vector\":[1.0,-0.0]}]",
     ),
     "[[0.0]]",
   )
@@ -227,11 +271,25 @@ fn session_case() -> Bool {
   // endpoints and undecorated CREATE references. Creating a message node
   // and attaching it are separate statements until we expose transactions;
   // this fixture checks persistence/order, not multi-statement atomicity.
-  if !cypher(db, "session.create", "CREATE (:SuiteSession {id: $id, title: $title})", "{\"id\":\"s1\",\"title\":\"MoonBit Session\"}") ||
-    !cypher(db, "session.user.create", "CREATE (:SuiteMessage {sid: $sid, idx: $idx, role: $role, body: $body})", "{\"sid\":\"s1\",\"idx\":0,\"role\":\"user\",\"body\":\"你好，MoonBit\"}") ||
-    !cypher(db, "session.user.attach", "MATCH (s:SuiteSession {id: $sid}), (m:SuiteMessage {sid: $sid, idx: $idx}) CREATE (s)-[:HAS_MESSAGE]->(m)", "{\"sid\":\"s1\",\"idx\":0}") ||
-    !cypher(db, "session.assistant.create", "CREATE (:SuiteMessage {sid: $sid, idx: $idx, role: $role, body: $body})", "{\"sid\":\"s1\",\"idx\":1,\"role\":\"assistant\",\"body\":\"HawDB 已保存\"}") ||
-    !cypher(db, "session.assistant.attach", "MATCH (s:SuiteSession {id: $sid}), (m:SuiteMessage {sid: $sid, idx: $idx}) CREATE (s)-[:HAS_MESSAGE]->(m)", "{\"sid\":\"s1\",\"idx\":1}") {
+  if !cypher(
+      db, "session.create", "CREATE (:SuiteSession {id: $id, title: $title})", "{\"id\":\"s1\",\"title\":\"MoonBit Session\"}",
+    ) ||
+    !cypher(
+      db, "session.user.create", "CREATE (:SuiteMessage {sid: $sid, idx: $idx, role: $role, body: $body})",
+      "{\"sid\":\"s1\",\"idx\":0,\"role\":\"user\",\"body\":\"你好，MoonBit\"}",
+    ) ||
+    !cypher(
+      db, "session.user.attach", "MATCH (s:SuiteSession {id: $sid}), (m:SuiteMessage {sid: $sid, idx: $idx}) CREATE (s)-[:HAS_MESSAGE]->(m)",
+      "{\"sid\":\"s1\",\"idx\":0}",
+    ) ||
+    !cypher(
+      db, "session.assistant.create", "CREATE (:SuiteMessage {sid: $sid, idx: $idx, role: $role, body: $body})",
+      "{\"sid\":\"s1\",\"idx\":1,\"role\":\"assistant\",\"body\":\"HawDB 已保存\"}",
+    ) ||
+    !cypher(
+      db, "session.assistant.attach", "MATCH (s:SuiteSession {id: $sid}), (m:SuiteMessage {sid: $sid, idx: $idx}) CREATE (s)-[:HAS_MESSAGE]->(m)",
+      "{\"sid\":\"s1\",\"idx\":1}",
+    ) {
     db.close()
     return false
   }
@@ -280,7 +338,8 @@ fn error_case() -> Bool {
   )
   db.close()
   db.close()
-  let closed = match db.query_raw("MATCH (n:RecoveryProbe) RETURN n.n AS answer", "{}") {
+  let closed = match
+    db.query_raw("MATCH (n:RecoveryProbe) RETURN n.n AS answer", "{}") {
     Err(_) => true
     Ok(_) => false
   }
@@ -331,20 +390,28 @@ fn typed_case() -> Bool {
       if result.rows.length() != 1 {
         failed("typed.read", "row count mismatch")
       } else {
-        match (result.get(0, "hi"), result.get(0, "lo"), result.get(0, "body"), result.get(0, "nested")) {
+        match
+          (
+            result.get(0, "hi"),
+            result.get(0, "lo"),
+            result.get(0, "body"),
+            result.get(0, "nested"),
+          ) {
           (
             Some(@hawdb.Value::Int(hi)),
             Some(@hawdb.Value::Int(lo)),
             Some(@hawdb.Value::Text(body)),
             Some(@hawdb.Value::List(nested)),
-          ) => {
-            if hi != max || lo != min || body != "MoonBit 中文 🤣" || nested.length() != 3 {
+          ) =>
+            if hi != max ||
+              lo != min ||
+              body != "MoonBit 中文 🤣" ||
+              nested.length() != 3 {
               failed("typed.read", "typed value mismatch")
             } else {
               println("CASE_PASS typed.cypher_int64_nested")
               true
             }
-          }
           _ => failed("typed.read", "incorrect ADT variants")
         }
       }
@@ -401,7 +468,10 @@ fn typed_value_roundtrip() -> Bool {
       "empty": @hawdb.Value::List([]),
       "nullable": @hawdb.Value::Null,
       "flag": @hawdb.Value::Bool(true),
-      "child": @hawdb.Value::List([@hawdb.Value::Int(-42L), @hawdb.Value::Text("💾数据库")]),
+      "child": @hawdb.Value::List([
+        @hawdb.Value::Int(-42L),
+        @hawdb.Value::Text("💾数据库"),
+      ]),
     }),
   }
   let created = db.query(
@@ -422,12 +492,13 @@ fn typed_value_roundtrip() -> Bool {
   let passed = match retrieved {
     Err(err) => failed("typed.values.read", err.describe())
     Ok(result) =>
-      match (
-        result.get(0, "binary"),
-        result.get(0, "empty_binary"),
-        result.get(0, "uuid"),
-        result.get(0, "nested"),
-      ) {
+      match
+        (
+          result.get(0, "binary"),
+          result.get(0, "empty_binary"),
+          result.get(0, "uuid"),
+          result.get(0, "nested"),
+        ) {
         (
           Some(@hawdb.Value::Binary(binary)),
           Some(@hawdb.Value::Binary(empty)),
@@ -441,15 +512,29 @@ fn typed_value_roundtrip() -> Bool {
             binary[3] == 0x7f &&
             empty.length() == 0 &&
             uuid == "550e8400-e29b-41d4-a716-446655440000" {
-            match (nested.get("nullable"), nested.get("flag"), nested.get("child"), nested.get("empty")) {
-              (Some(@hawdb.Value::Null), Some(@hawdb.Value::Bool(true)), Some(@hawdb.Value::List(child)), Some(@hawdb.Value::List(empty_list))) =>
+            match
+              (
+                nested.get("nullable"),
+                nested.get("flag"),
+                nested.get("child"),
+                nested.get("empty"),
+              ) {
+              (
+                Some(@hawdb.Value::Null),
+                Some(@hawdb.Value::Bool(true)),
+                Some(@hawdb.Value::List(child)),
+                Some(@hawdb.Value::List(empty_list)),
+              ) =>
                 if child.length() == 2 && empty_list.length() == 0 {
                   println("CASE_PASS typed.binary_uuid_nested")
                   true
                 } else {
-                  failed("typed.binary_uuid_nested", "incorrect nested value lengths")
+                  failed(
+                    "typed.binary_uuid_nested", "incorrect nested value lengths",
+                  )
                 }
-              _ => failed("typed.binary_uuid_nested", "incorrect nested ADT shape")
+              _ =>
+                failed("typed.binary_uuid_nested", "incorrect nested ADT shape")
             }
           } else {
             failed("typed.binary_uuid_nested", "wrong binary bytes or UUID")
@@ -469,17 +554,22 @@ fn typed_vector_roundtrip() -> Bool {
     Ok(db) => db
     Err(err) => return failed("typed.vector.open", err.describe())
   }
-  match db.query_sql("CREATE TABLE typed_vectors (id BIGINT PRIMARY KEY, embedding VECTOR(2))", []) {
+  match
+    db.query_sql(
+      "CREATE TABLE typed_vectors (id BIGINT PRIMARY KEY, embedding VECTOR(2))",
+      [],
+    ) {
     Err(err) => {
       db.close()
       return failed("typed.vector.schema", err.describe())
     }
     Ok(_) => ()
   }
-  match db.query_sql(
-    "INSERT INTO typed_vectors (id, embedding) VALUES ($1, $2)",
-    [@hawdb.Value::Int(1L), @hawdb.Value::Vector([1.0, -0.0])],
-  ) {
+  match
+    db.query_sql("INSERT INTO typed_vectors (id, embedding) VALUES ($1, $2)", [
+      @hawdb.Value::Int(1L),
+      @hawdb.Value::Vector([1.0, -0.0]),
+    ]) {
     Err(err) => {
       db.close()
       return failed("typed.vector.insert", err.describe())
@@ -494,12 +584,18 @@ fn typed_vector_roundtrip() -> Bool {
     Err(err) => failed("typed.vector.read", err.describe())
     Ok(result) =>
       match (result.get(0, "embedding"), result.get(0, "distance")) {
-        (Some(@hawdb.Value::Vector(coords)), Some(@hawdb.Value::Float(distance))) =>
-          if coords.length() == 2 && coords[0] == 1.0 && coords[1] == 0.0 && distance == 0.0 {
+        (Some(@hawdb.Value::Vector(coords)), Some(@hawdb.Value::Float(distance))
+        ) =>
+          if coords.length() == 2 &&
+            coords[0] == 1.0 &&
+            coords[1] == 0.0 &&
+            distance == 0.0 {
             println("CASE_PASS typed.vector_roundtrip")
             true
           } else {
-            failed("typed.vector_roundtrip", "vector coordinates or distance differ")
+            failed(
+              "typed.vector_roundtrip", "vector coordinates or distance differ",
+            )
           }
         _ => failed("typed.vector_roundtrip", "wrong result ADT")
       }
@@ -559,7 +655,8 @@ fn typed_temporal_roundtrip() -> Bool {
     "span": @hawdb.Value::Temporal("duration", "P1M2DT3.5S"),
     "plain": @hawdb.Value::Map({ "$date": @hawdb.Value::Text("not-a-date") }),
   }
-  match db.query("CREATE (:TemporalRoundtrip {id: $id, day: $day, span: $span})", p) {
+  match
+    db.query("CREATE (:TemporalRoundtrip {id: $id, day: $day, span: $span})", p) {
     Err(err) => {
       db.close()
       return failed("typed.temporal.create", err.describe())
@@ -573,7 +670,8 @@ fn typed_temporal_roundtrip() -> Bool {
   let ok = match data {
     Err(err) => failed("typed.temporal.read", err.describe())
     Ok(result) =>
-      match (result.get(0, "day"), result.get(0, "span"), result.get(0, "plain")) {
+      match
+        (result.get(0, "day"), result.get(0, "span"), result.get(0, "plain")) {
         (
           Some(@hawdb.Value::Temporal(day_kind, day)),
           Some(@hawdb.Value::Temporal(span_kind, span)),
@@ -603,12 +701,13 @@ fn typed_rejections() -> Bool {
     Ok(db) => db
     Err(err) => return failed("typed.reject.open", err.describe())
   }
-  let rejected = match db.query(
-    "CREATE (:Reject {embedding: $v})",
-    { "v": @hawdb.Value::Vector([]) },
-  ) {
+  let rejected = match
+    db.query("CREATE (:Reject {embedding: $v})", {
+      "v": @hawdb.Value::Vector([]),
+    }) {
     Err(@hawdb.HawdbError::Codec(_)) => true
-    Err(err) => return failed("typed.invalid_vector", "wrong error: " + err.describe())
+    Err(err) =>
+      return failed("typed.invalid_vector", "wrong error: " + err.describe())
     Ok(_) => return failed("typed.invalid_vector", "empty vector accepted")
   }
   if rejected {
@@ -637,7 +736,8 @@ fn transaction_case() -> Bool {
     Err(err) => return failed("transaction.begin", err.describe())
   }
   for id in [1L, 2L] {
-    match tx.query("CREATE (:TxItem {id: $id})", {"id": @hawdb.Value::Int(id)}) {
+    match
+      tx.query("CREATE (:TxItem {id: $id})", { "id": @hawdb.Value::Int(id) }) {
       Ok(_) => ()
       Err(err) => return failed("transaction.write", err.describe())
     }
@@ -647,16 +747,21 @@ fn transaction_case() -> Bool {
     Err(_) => true
     Ok(_) => false
   }
-  if !blocked { return failed("transaction.autocommit", "parent query was allowed") }
+  if !blocked {
+    return failed("transaction.autocommit", "parent query was allowed")
+  }
   match tx.commit() {
     Ok(_) => ()
     Err(err) => return failed("transaction.commit", err.describe())
   }
-  let values = match db.query("MATCH (n:TxItem) RETURN n.id AS id ORDER BY n.id", {}) {
+  let values = match
+    db.query("MATCH (n:TxItem) RETURN n.id AS id ORDER BY n.id", {}) {
     Ok(v) => v
     Err(err) => return failed("transaction.select", err.describe())
   }
-  if values.rows.length() != 2 { return failed("transaction.commit", "both writes not visible") }
+  if values.rows.length() != 2 {
+    return failed("transaction.commit", "both writes not visible")
+  }
   let rollback = match db.begin() {
     Ok(v) => v
     Err(err) => return failed("transaction.rollback.begin", err.describe())
@@ -673,7 +778,9 @@ fn transaction_case() -> Bool {
     Ok(v) => v
     Err(err) => return failed("transaction.rollback.query", err.describe())
   }
-  if remaining.rows.length() != 2 { return failed("transaction.rollback", "rolled-back node still present") }
+  if remaining.rows.length() != 2 {
+    return failed("transaction.rollback", "rolled-back node still present")
+  }
   println("CASE_PASS transaction.commit_rollback")
   let snapshot = match db.begin_read() {
     Ok(v) => v
@@ -687,12 +794,16 @@ fn transaction_case() -> Bool {
     Ok(v) => v
     Err(err) => return failed("read_snapshot.query", err.describe())
   }
-  if old.rows.length() != 2 { return failed("read_snapshot.stability", "read snapshot saw later write") }
+  if old.rows.length() != 2 {
+    return failed("read_snapshot.stability", "read snapshot saw later write")
+  }
   let denied = match snapshot.query("CREATE (:TxItem {id: 5})", {}) {
     Err(_) => true
     Ok(_) => false
   }
-  if !denied { return failed("read_snapshot.write", "read scope permitted write") }
+  if !denied {
+    return failed("read_snapshot.write", "read scope permitted write")
+  }
   snapshot.close()
   snapshot.close()
   db.close()
@@ -710,10 +821,10 @@ fn readonly_case() -> Bool {
     Ok(v) => v
     Err(e) => return failed("readonly.open", e.describe())
   }
-  let result = match db.query(
-    "MATCH (s:SuiteSession {id: $id}) RETURN s.title AS title",
-    {"id": @hawdb.Value::Text("s1")},
-  ) {
+  let result = match
+    db.query("MATCH (s:SuiteSession {id: $id}) RETURN s.title AS title", {
+      "id": @hawdb.Value::Text("s1"),
+    }) {
     Ok(v) => v
     Err(e) => return failed("readonly.query", e.describe())
   }
@@ -789,7 +900,9 @@ fn scoped_transaction_case() -> Bool {
     Ok(v) => v
     Err(e) => return failed("scoped.open", e.describe())
   }
-  let committed : Result[String, @hawdb.HawdbError] = db.with_transaction(fn(tx) {
+  let committed : Result[String, @hawdb.HawdbError] = db.with_transaction(fn(
+    tx,
+  ) {
     match tx.query("CREATE (:Scoped {id: 1})", {}) {
       Ok(_) => Ok("done")
       Err(e) => Err(e)
@@ -810,7 +923,9 @@ fn scoped_transaction_case() -> Bool {
     Err(@hawdb.HawdbError::Codec("intentional callback failure")) => ()
     _ => return failed("scoped.rollback", "callback error did not propagate")
   }
-  let count : Result[Int, @hawdb.HawdbError] = db.with_read_transaction(fn(read) {
+  let count : Result[Int32, @hawdb.HawdbError] = db.with_read_transaction(fn(
+    read,
+  ) {
     match read.query("MATCH (n:Scoped) RETURN n.id AS id", {}) {
       Ok(output) => Ok(output.rows.length())
       Err(e) => Err(e)
@@ -822,7 +937,9 @@ fn scoped_transaction_case() -> Bool {
     Err(e) => failed("scoped.read", e.describe())
   }
   db.close()
-  if success { println("CASE_PASS transaction.scoped_callbacks") }
+  if success {
+    println("CASE_PASS transaction.scoped_callbacks")
+  }
   success
 }
 
@@ -842,7 +959,10 @@ fn transaction_sql_case() -> Bool {
     Err(e) => return failed("transaction.sql.begin", e.describe())
   }
   for id in [1L, 2L] {
-    match tx.query_sql("INSERT INTO tx_sql (id) VALUES ($1)", [@hawdb.Value::Int(id)]) {
+    match
+      tx.query_sql("INSERT INTO tx_sql (id) VALUES ($1)", [
+        @hawdb.Value::Int(id),
+      ]) {
       Err(e) => return failed("transaction.sql.insert", e.describe())
       Ok(_) => ()
     }
@@ -876,7 +996,7 @@ fn nested_depth_case() -> Bool {
   for i = 0; i < 70; i = i + 1 {
     deep = @hawdb.Value::List([deep])
   }
-  let answer = db.query("CREATE (:Deep {nested: $v})", {"v": deep})
+  let answer = db.query("CREATE (:Deep {nested: $v})", { "v": deep })
   let rejected = match answer {
     Err(@hawdb.HawdbError::Codec(message)) => message.contains("64")
     _ => false
@@ -885,16 +1005,18 @@ fn nested_depth_case() -> Bool {
   // Previously Map entries restarted depth at zero, bypassing the limit.
   let mut map_deep = @hawdb.Value::Null
   for i = 0; i < 70; i = i + 1 {
-    map_deep = @hawdb.Value::Map({"child": map_deep})
+    map_deep = @hawdb.Value::Map({ "child": map_deep })
   }
-  let map_answer = db.query("CREATE (:DeepMap {nested: $v})", {"v": map_deep})
+  let map_answer = db.query("CREATE (:DeepMap {nested: $v})", { "v": map_deep })
   let map_rejected = match map_answer {
     Err(@hawdb.HawdbError::Codec(message)) => message.contains("64")
     _ => false
   }
   if !map_rejected {
     db.close()
-    return failed("typed.map_max_nesting", "over-deep maps bypassed codec depth limit")
+    return failed(
+      "typed.map_max_nesting", "over-deep maps bypassed codec depth limit",
+    )
   }
   db.close()
   println("CASE_PASS typed.map_max_nesting")
@@ -902,7 +1024,9 @@ fn nested_depth_case() -> Bool {
     println("CASE_PASS typed.max_nesting")
     true
   } else {
-    failed("typed.max_nesting", "over-deep parameters were not rejected by codec")
+    failed(
+      "typed.max_nesting", "over-deep parameters were not rejected by codec",
+    )
   }
 }
 
@@ -916,15 +1040,24 @@ fn typed_marker_map_case() -> Bool {
   }
   let params : Map[String, @hawdb.Value] = {
     "id": @hawdb.Value::Text("marker-map"),
-    "uuid_map": @hawdb.Value::Map({"$uuid": @hawdb.Value::Text("ordinary-text")}),
-    "binary_map": @hawdb.Value::Map({"$binary": @hawdb.Value::Text("not-base64")}),
-    "vector_map": @hawdb.Value::Map({"$vector": @hawdb.Value::Text("not-a-vector")}),
-    "escape_map": @hawdb.Value::Map({"$map": @hawdb.Value::Text("literal-key")}),
+    "uuid_map": @hawdb.Value::Map({
+      "$uuid": @hawdb.Value::Text("ordinary-text"),
+    }),
+    "binary_map": @hawdb.Value::Map({
+      "$binary": @hawdb.Value::Text("not-base64"),
+    }),
+    "vector_map": @hawdb.Value::Map({
+      "$vector": @hawdb.Value::Text("not-a-vector"),
+    }),
+    "escape_map": @hawdb.Value::Map({
+      "$map": @hawdb.Value::Text("literal-key"),
+    }),
   }
-  match db.query(
-    "CREATE (:MarkerMap {id: $id, uuid_map: $uuid_map, binary_map: $binary_map, vector_map: $vector_map, escape_map: $escape_map})",
-    params,
-  ) {
+  match
+    db.query(
+      "CREATE (:MarkerMap {id: $id, uuid_map: $uuid_map, binary_map: $binary_map, vector_map: $vector_map, escape_map: $escape_map})",
+      params,
+    ) {
     Err(e) => {
       db.close()
       return failed("typed.marker_map.create", e.describe())
@@ -933,19 +1066,26 @@ fn typed_marker_map_case() -> Bool {
   }
   let rows = db.query(
     "MATCH (n:MarkerMap {id: $id}) RETURN n.uuid_map AS a, n.binary_map AS b, n.vector_map AS c, n.escape_map AS d",
-    {"id": @hawdb.Value::Text("marker-map")},
+    { "id": @hawdb.Value::Text("marker-map") },
   )
   let ok = match rows {
     Err(e) => failed("typed.marker_map.read", e.describe())
     Ok(result) =>
-      match (result.get(0, "a"), result.get(0, "b"), result.get(0, "c"), result.get(0, "d")) {
+      match
+        (
+          result.get(0, "a"),
+          result.get(0, "b"),
+          result.get(0, "c"),
+          result.get(0, "d"),
+        ) {
         (
           Some(@hawdb.Value::Map(a)),
           Some(@hawdb.Value::Map(b)),
           Some(@hawdb.Value::Map(c)),
           Some(@hawdb.Value::Map(d)),
         ) =>
-          match (a.get("$uuid"), b.get("$binary"), c.get("$vector"), d.get("$map")) {
+          match
+            (a.get("$uuid"), b.get("$binary"), c.get("$vector"), d.get("$map")) {
             (
               Some(@hawdb.Value::Text("ordinary-text")),
               Some(@hawdb.Value::Text("not-base64")),
@@ -958,7 +1098,9 @@ fn typed_marker_map_case() -> Bool {
       }
   }
   db.close()
-  if ok { println("CASE_PASS typed.marker_map") }
+  if ok {
+    println("CASE_PASS typed.marker_map")
+  }
   ok
 }
 
@@ -1009,20 +1151,26 @@ fn parent_close_transaction_case() -> Bool {
   db.close()
   if tx.is_open() {
     tx.close()
-    return failed("transaction.parent_close.write", "write transaction remained open")
+    return failed(
+      "transaction.parent_close.write", "write transaction remained open",
+    )
   }
   match tx.query("CREATE (:ParentClose {id: 2})", {}) {
     Err(@hawdb.HawdbError::Closed) => ()
     _ => {
       tx.close()
-      return failed("transaction.parent_close.write", "query after parent close was not Closed")
+      return failed(
+        "transaction.parent_close.write", "query after parent close was not Closed",
+      )
     }
   }
   match tx.commit() {
     Err(@hawdb.HawdbError::Closed) => ()
     _ => {
       tx.close()
-      return failed("transaction.parent_close.write", "commit after parent close was not Closed")
+      return failed(
+        "transaction.parent_close.write", "commit after parent close was not Closed",
+      )
     }
   }
   tx.close()
@@ -1049,7 +1197,9 @@ fn parent_close_transaction_case() -> Bool {
     Err(@hawdb.HawdbError::Closed) => ()
     _ => {
       read.close()
-      return failed("transaction.parent_close.read", "read after parent close was not Closed")
+      return failed(
+        "transaction.parent_close.read", "read after parent close was not Closed",
+      )
     }
   }
   read.close()
@@ -1068,7 +1218,12 @@ fn api_error_contract_case() -> Bool {
   }
   let null_case = match db.query_sql("SELECT NULL AS present", []) {
     Ok(result) =>
-      match (result.get(0, "present"), result.get(0, "missing"), result.get(10, "present")) {
+      match
+        (
+          result.get(0, "present"),
+          result.get(0, "missing"),
+          result.get(10, "present"),
+        ) {
         (Some(@hawdb.Value::Null), None, None) => true
         _ => false
       }
@@ -1076,14 +1231,17 @@ fn api_error_contract_case() -> Bool {
   }
   if !null_case {
     db.close()
-    return failed("api.null_absent", "NULL, missing column, or missing row semantics changed")
+    return failed(
+      "api.null_absent", "NULL, missing column, or missing row semantics changed",
+    )
   }
   println("CASE_PASS api.null_absent")
 
-  let cypher_error : Result[@hawdb.QueryResult, @hawdb.HawdbError] =
-    Ok(db.query_or_raise("NOT A VALID CYPHER QUERY", {})) catch {
-      error => Err(error)
-    }
+  let cypher_error : Result[@hawdb.QueryResult, @hawdb.HawdbError] = Ok(
+    db.query_or_raise("NOT A VALID CYPHER QUERY", {}),
+  ) catch {
+    error => Err(error)
+  }
   match cypher_error {
     Err(@hawdb.HawdbError::Engine("parse", _)) => ()
     _ => {
@@ -1091,24 +1249,30 @@ fn api_error_contract_case() -> Bool {
       return failed("api.raise_cypher", "raise adapter changed engine error")
     }
   }
-  let sql_error : Result[@hawdb.QueryResult, @hawdb.HawdbError] =
-    Ok(db.query_sql_or_raise("NOT A VALID SQL QUERY", [])) catch {
-      error => Err(error)
-    }
+  let sql_error : Result[@hawdb.QueryResult, @hawdb.HawdbError] = Ok(
+    db.query_sql_or_raise("NOT A VALID SQL QUERY", []),
+  ) catch {
+    error => Err(error)
+  }
   match sql_error {
     Err(@hawdb.HawdbError::Engine(_, _)) => ()
     _ => {
       db.close()
-      return failed("api.raise_sql", "SQL raise adapter lost structured engine error")
+      return failed(
+        "api.raise_sql", "SQL raise adapter lost structured engine error",
+      )
     }
   }
   println("CASE_PASS api.raise_bridge")
 
   db.close()
   let deep = @hawdb.Value::Vector([])
-  match db.query("CREATE (:Never {v: $v})", {"v": deep}) {
+  match db.query("CREATE (:Never {v: $v})", { "v": deep }) {
     Err(@hawdb.HawdbError::Closed) => ()
-    _ => return failed("api.closed_precedence", "closed database must be checked before encoding")
+    _ =>
+      return failed(
+        "api.closed_precedence", "closed database must be checked before encoding",
+      )
   }
   println("CASE_PASS api.closed_precedence")
   true
@@ -1135,7 +1299,9 @@ fn scoped_cleanup_case() -> Bool {
     Err(@hawdb.HawdbError::Closed) => ()
     _ => {
       db.close()
-      return failed("transaction.cleanup.closed_scope", "commit after scope close was allowed")
+      return failed(
+        "transaction.cleanup.closed_scope", "commit after scope close was allowed",
+      )
     }
   }
   let after = match db.query("MATCH (n:ScopedCleanup) RETURN n.id AS id", {}) {
@@ -1144,9 +1310,13 @@ fn scoped_cleanup_case() -> Bool {
   }
   if !after {
     db.close()
-    return failed("transaction.cleanup.rollback", "abandoned writes escaped cleanup")
+    return failed(
+      "transaction.cleanup.rollback", "abandoned writes escaped cleanup",
+    )
   }
-  let committed : Result[String, @hawdb.HawdbError] = db.with_transaction(fn(tx) {
+  let committed : Result[String, @hawdb.HawdbError] = db.with_transaction(fn(
+    tx,
+  ) {
     match tx.query("CREATE (:ScopedCleanup {id: 2})", {}) {
       Ok(_) => Ok("ok")
       Err(e) => Err(e)
@@ -1156,10 +1326,14 @@ fn scoped_cleanup_case() -> Bool {
     Ok("ok") => ()
     _ => {
       db.close()
-      return failed("transaction.cleanup.reuse", "subsequent transaction failed")
+      return failed(
+        "transaction.cleanup.reuse", "subsequent transaction failed",
+      )
     }
   }
-  let read : Result[Int, @hawdb.HawdbError] = db.with_read_transaction(fn(tx) {
+  let read : Result[Int32, @hawdb.HawdbError] = db.with_read_transaction(fn(
+    tx,
+  ) {
     match tx.query("MATCH (n:ScopedCleanup) RETURN n.id AS id", {}) {
       Ok(result) => {
         tx.close()
@@ -1174,7 +1348,10 @@ fn scoped_cleanup_case() -> Bool {
       println("CASE_PASS transaction.scoped_cleanup")
       true
     }
-    _ => failed("transaction.scoped_cleanup", "read-scope cleanup was not idempotent")
+    _ =>
+      failed(
+        "transaction.scoped_cleanup", "read-scope cleanup was not idempotent",
+      )
   }
 }
 
@@ -1216,7 +1393,8 @@ fn typed_decimal_roundtrip() -> Bool {
     Err(e) => return failed("typed.decimal.open", e.describe())
   }
   let text = "9007199254740993.0100"
-  let exact = match db.query_sql("SELECT $1 AS amount", [@hawdb.Value::Decimal(text)]) {
+  let exact = match
+    db.query_sql("SELECT $1 AS amount", [@hawdb.Value::Decimal(text)]) {
     Ok(result) =>
       match result.get(0, "amount") {
         Some(@hawdb.Value::Decimal(value)) => value == text
@@ -1224,10 +1402,10 @@ fn typed_decimal_roundtrip() -> Bool {
       }
     Err(_) => false
   }
-  let escaped = match db.query(
-    "UNWIND [1] AS row RETURN $plain AS plain",
-    {"plain": @hawdb.Value::Map({"$decimal": @hawdb.Value::Text("ordinary")})},
-  ) {
+  let escaped = match
+    db.query("UNWIND [1] AS row RETURN $plain AS plain", {
+      "plain": @hawdb.Value::Map({ "$decimal": @hawdb.Value::Text("ordinary") }),
+    }) {
     Ok(result) =>
       match result.get(0, "plain") {
         Some(@hawdb.Value::Map(values)) =>
@@ -1239,7 +1417,8 @@ fn typed_decimal_roundtrip() -> Bool {
       }
     Err(_) => false
   }
-  let refused = match db.query_sql("SELECT $1 AS amount", [@hawdb.Value::Decimal("NaN")]) {
+  let refused = match
+    db.query_sql("SELECT $1 AS amount", [@hawdb.Value::Decimal("NaN")]) {
     Err(_) => true
     Ok(_) => false
   }
@@ -1248,35 +1427,85 @@ fn typed_decimal_roundtrip() -> Bool {
     println("CASE_PASS typed.decimal")
     true
   } else {
-    failed("typed.decimal", "precision, scale, marker-map identity or invalid value refusal changed")
+    failed(
+      "typed.decimal", "precision, scale, marker-map identity or invalid value refusal changed",
+    )
   }
 }
 
 ///|
 fn main {
-  if !graph_case() { return }
-  if !sql_case() { return }
-  if !vector_case() { return }
-  if !session_case() { return }
-  if !error_case() { return }
-  if !typed_case() { return }
-  if !api_error_contract_case() { return }
-  if !typed_value_roundtrip() { return }
-  if !typed_vector_roundtrip() { return }
-  if !typed_temporal_roundtrip() { return }
-  if !typed_decimal_roundtrip() { return }
-  if !typed_non_finite_roundtrip() { return }
-  if !typed_marker_map_case() { return }
-  if !typed_vector_range_case() { return }
-  if !typed_rejections() { return }
-  if !transaction_case() { return }
-  if !parent_close_transaction_case() { return }
-  if !lifecycle_stress_case() { return }
-  if !transaction_boundary_case() { return }
-  if !readonly_case() { return }
-  if !scoped_transaction_case() { return }
-  if !scoped_cleanup_case() { return }
-  if !transaction_sql_case() { return }
-  if !nested_depth_case() { return }
+  if !graph_case() {
+    return
+  }
+  if !sql_case() {
+    return
+  }
+  if !vector_case() {
+    return
+  }
+  if !session_case() {
+    return
+  }
+  if !error_case() {
+    return
+  }
+  if !typed_case() {
+    return
+  }
+  if !api_error_contract_case() {
+    return
+  }
+  if !typed_value_roundtrip() {
+    return
+  }
+  if !typed_vector_roundtrip() {
+    return
+  }
+  if !typed_temporal_roundtrip() {
+    return
+  }
+  if !typed_decimal_roundtrip() {
+    return
+  }
+  if !typed_non_finite_roundtrip() {
+    return
+  }
+  if !typed_marker_map_case() {
+    return
+  }
+  if !typed_vector_range_case() {
+    return
+  }
+  if !typed_rejections() {
+    return
+  }
+  if !transaction_case() {
+    return
+  }
+  if !parent_close_transaction_case() {
+    return
+  }
+  if !lifecycle_stress_case() {
+    return
+  }
+  if !transaction_boundary_case() {
+    return
+  }
+  if !readonly_case() {
+    return
+  }
+  if !scoped_transaction_case() {
+    return
+  }
+  if !scoped_cleanup_case() {
+    return
+  }
+  if !transaction_sql_case() {
+    return
+  }
+  if !nested_depth_case() {
+    return
+  }
   println("HAWDB_MOONBIT_BUSINESS_SUITE_PASS")
 }
