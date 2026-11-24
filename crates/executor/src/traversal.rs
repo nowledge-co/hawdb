@@ -23,9 +23,8 @@ use crate::kernel::{push_bounded_operator_binding, OperatorMemoryTracker};
 use crate::observer::ExecutionObserver;
 use crate::pipeline::{runtime_checkpoint, AccountedBindingSet};
 use crate::predicate::{
-    combine_property_filters, label_ids_for_pattern, node_matches_label_pattern,
-    node_matches_property_filter, property_filter_from_properties, property_filter_matches_values,
-    relationship_properties_match,
+    combine_property_filters, label_ids_for_pattern, node_matches_property_filter,
+    property_filter_from_properties, property_filter_matches_values, relationship_properties_match,
 };
 use crate::store::{AdjacencyReadMemory, GraphExecutionRead, ScanControl};
 use crate::{
@@ -468,10 +467,11 @@ pub(crate) fn projected_node_with_allocation(
         task.charge_work(1)?;
     }
     let mut allocation = None;
-    let Some(node) = store.projected_node_owned_admitted(id, properties, &mut |bytes| {
-        allocation = Some(admit(bytes)?);
-        Ok(())
-    })?
+    let Some(node) =
+        store.projected_node_owned_admitted(id, label_ids, properties, &mut |bytes| {
+            allocation = Some(admit(bytes)?);
+            Ok(())
+        })?
     else {
         return Ok(None);
     };
@@ -485,7 +485,7 @@ pub(crate) fn projected_node_with_allocation(
             "projected node read returned a record without admission".into(),
         ));
     };
-    Ok(node_matches_label_pattern(&node, label_ids).then_some((node, allocation)))
+    Ok(Some((node, allocation)))
 }
 
 fn visit_one_hop_relationships_selected(

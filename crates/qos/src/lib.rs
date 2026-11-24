@@ -16,6 +16,7 @@
 
 mod device;
 mod process_memory;
+mod refusal;
 mod resource;
 mod runtime;
 
@@ -1085,7 +1086,17 @@ impl LocalQosScheduler {
         &self,
         request: WorkRequest,
     ) -> std::result::Result<LocalQosPermit, QosAdmission> {
-        let admission = self.admit_and_charge(&request, None);
+        self.try_start_with_state(request)
+            .map_err(|(admission, _)| admission)
+    }
+
+    /// Admit and charge `request`. A refusal also returns the charged state
+    /// it was decided against, so callers can report its headroom.
+    fn try_start_with_state(
+        &self,
+        request: WorkRequest,
+    ) -> std::result::Result<LocalQosPermit, (QosAdmission, LocalQosState)> {
+        let (admission, refused_state) = self.admit_and_charge(&request, None);
         self.record_admission(&request, &admission);
         match admission {
             QosAdmission::Admit => Ok(LocalQosPermit {
@@ -1094,7 +1105,7 @@ impl LocalQosScheduler {
                 started_at: Instant::now(),
                 released: false,
             }),
-            admission => Err(admission),
+            admission => Err((admission, refused_state)),
         }
     }
 
@@ -1110,7 +1121,7 @@ impl LocalQosScheduler {
             request,
             started_at,
         });
-        let admission = self.admit_and_charge(&slot.request, Some(&slot));
+        let (admission, _) = self.admit_and_charge(&slot.request, Some(&slot));
         self.record_admission(&slot.request, &admission);
         match admission {
             QosAdmission::Admit => Ok(LocalQosBatchPermit {
@@ -1123,13 +1134,15 @@ impl LocalQosScheduler {
     }
 
     /// Admit under the policy and charge background work. Idle batches are
-    /// reclaimed only when their charge would refuse this request.
+    /// reclaimed only when their charge would refuse this request. A refusal
+    /// also returns the charged state it was decided against (default
+    /// otherwise).
     fn admit_and_charge(
         &self,
         request: &WorkRequest,
         batch: Option<&Arc<BatchSlot>>,
-    ) -> QosAdmission {
-        let (admission, reclaimed) = {
+    ) -> (QosAdmission, LocalQosState) {
+        let (admission, reclaimed, refused_state) = {
             let mut state = self.inner.lock();
             let mut admission = self.inner.policy.admit(&state.charged, request);
             let mut reclaimed = Vec::new();
@@ -1150,7 +1163,12 @@ impl LocalQosScheduler {
                     state.batches.push(batch.clone());
                 }
             }
-            (admission, reclaimed)
+            let refused_state = if matches!(admission, QosAdmission::Admit) {
+                LocalQosState::default()
+            } else {
+                state.charged.clone()
+            };
+            (admission, reclaimed, refused_state)
         };
         if !reclaimed.is_empty() {
             let now = Instant::now();
@@ -1159,7 +1177,7 @@ impl LocalQosScheduler {
                     .record_completion(&slot.request, slot.started_at, now, true);
             }
         }
-        admission
+        (admission, refused_state)
     }
 
     fn record_admission(&self, request: &WorkRequest, admission: &QosAdmission) {

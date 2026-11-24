@@ -1701,7 +1701,8 @@ fn graph_and_relational_state_share_wal_epoch_and_checkpoint_publication() {
             .expect("commit graph and relational row");
         assert_eq!(store.commit_epoch(), 2);
         store.checkpoint(&catalog).expect("publish checkpoint");
-        assert!(path.join("relational.1.hawdb").exists());
+        // Row-page and overflow roots carry rows without a full-row file (#1737).
+        assert!(!path.join("relational.1.hawdb").exists());
         assert_eq!(
             store
                 .relational_state()
@@ -1711,7 +1712,7 @@ fn graph_and_relational_state_share_wal_epoch_and_checkpoint_publication() {
         store
             .backup_to(&catalog, &backup)
             .expect("back up relational checkpoint");
-        assert!(backup.join("relational.2.hawdb").exists());
+        assert!(!backup.join("relational.2.hawdb").exists());
     }
 
     {
@@ -1839,6 +1840,8 @@ fn relational_checkpoint_corruption_fails_scrub_and_reopen() {
                 },
             )
             .expect("create relational table");
+        // Exercise verification of the explicit legacy downgrade file.
+        store.set_legacy_relational_checkpoint_file_enabled(true);
         store.checkpoint(&catalog).expect("publish checkpoint");
 
         let relational_path = path.join("relational.1.hawdb");

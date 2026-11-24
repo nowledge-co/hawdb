@@ -166,10 +166,12 @@ mod projected_graph_execution;
 mod projection_generations;
 mod property_defaults;
 mod published_object_verification;
+mod qos_admission_refusals;
 mod query_execution;
 mod query_observability;
 mod read_transactions;
 mod relational_access_cost;
+mod relational_checkpoint_format;
 mod relational_checkpoint_layout_refusal;
 mod relational_cross_join;
 mod relational_explain_output;
@@ -2808,6 +2810,23 @@ fn idempotent_raw_insert_and_dirty_mark_commit_atomically_on_both_paths() {
     );
 }
 
+/// A refused local QoS background admission is a typed, non-poisoning
+/// `RuntimeAdmissionRefused(background_task_saturated)` (#1926), never a
+/// storage error. `requested`/`available` are estimated operations.
+#[track_caller]
+fn assert_background_refusal(error: &HawDBError, requested: u64, available: u64, retryable: bool) {
+    assert_eq!(
+        error,
+        &HawDBError::RuntimeAdmissionRefused(crate::RuntimeAdmissionRefusal {
+            code: "background_task_saturated",
+            requested,
+            available,
+            retryable,
+        }),
+        "{error}"
+    );
+}
+
 fn unique_test_dir(name: &str) -> std::path::PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -2889,6 +2908,33 @@ fn active_generation_path(
         "{prefix}.{}.hawdb",
         generation.expect("active generation must exist")
     ))
+}
+
+/// Corrupts exactly one byte in a disposable fixture without changing its
+/// inode, length or (by default) modification time. This preserves the
+/// mounted identity stamp so the requested segment's digest checks the bytes.
+fn flip_test_file_byte(
+    path: &std::path::Path,
+    offset: u64,
+    modified: Option<std::time::SystemTime>,
+) {
+    use std::io::{Read, Seek, SeekFrom, Write};
+
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .unwrap();
+    let modified = modified.unwrap_or_else(|| file.metadata().unwrap().modified().unwrap());
+    let mut byte = [0_u8];
+    file.seek(SeekFrom::Start(offset)).unwrap();
+    file.read_exact(&mut byte).unwrap();
+    byte[0] ^= 0xff;
+    file.seek(SeekFrom::Start(offset)).unwrap();
+    file.write_all(&byte).unwrap();
+    file.sync_all().unwrap();
+    file.set_times(std::fs::FileTimes::new().set_modified(modified))
+        .unwrap();
 }
 
 fn read_test_durable_text(path: &std::path::Path) -> std::io::Result<String> {

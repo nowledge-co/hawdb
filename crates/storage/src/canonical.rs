@@ -3697,6 +3697,18 @@ impl CanonicalNodeInput<'_> {
         node_payload_has_any_label(self.payload, std::slice::from_ref(&label))
     }
 
+    pub(crate) fn matches_any_label(
+        &self,
+        labels: &[LabelId],
+    ) -> Result<bool, CanonicalSegmentError> {
+        for &label in labels {
+            if self.has_label(label)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     pub fn decode_selected<P>(
         self,
         required_properties: &BTreeSet<String>,

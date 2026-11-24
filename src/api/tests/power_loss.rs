@@ -32,6 +32,7 @@ mod consumer_reclamation;
 mod consumer_vector_incremental;
 mod graph_bundle_carry;
 mod object_reclamation;
+mod relational_checkpoint;
 mod resident_search_checkpoint;
 mod runtime_roots;
 mod search_projection;
@@ -1352,6 +1353,181 @@ fn schema_indexes_and_nested_data_survive_power_loss_in_configured_residencies()
                 "branch-power-mode-v1 residency={mode:?} indexes={indexes:?} high_water={}",
                 metrics.high_water
             );
+        }
+    }
+}
+
+const SYSTEM_SCHEMA_BATCH_OWNERS: usize = 3;
+
+/// Registries that each create an empty table and an index on it (#1942).
+fn system_schema_batch() -> Vec<crate::SystemSchemaRegistry> {
+    (0..SYSTEM_SCHEMA_BATCH_OWNERS)
+        .map(|ordinal| {
+            crate::SystemSchemaRegistry::new(
+                format!("power.batch{ordinal}"),
+                [crate::SystemSchemaMigration::new(
+                    1,
+                    "initial",
+                    [
+                        format!("CREATE TABLE power_batch_{ordinal} (id TEXT PRIMARY KEY, kind TEXT NOT NULL)"),
+                        format!("CREATE INDEX power_batch_{ordinal}_kind ON power_batch_{ordinal} (kind)"),
+                    ],
+                )],
+            )
+        })
+        .collect()
+}
+
+fn system_schema_batch_ids(database: &mut Database, ordinal: usize, kind: &str) -> Vec<String> {
+    let mut ids = database
+        .query_sql_with_params(
+            &format!("SELECT id FROM power_batch_{ordinal} WHERE kind = $1"),
+            &[Value::String(kind.into())],
+        )
+        .unwrap()
+        .rows
+        .into_iter()
+        .map(|row| match row.get("id") {
+            Some(Value::String(id)) => id.clone(),
+            value => panic!("expected a batch row id, got {value:?}"),
+        })
+        .collect::<Vec<_>>();
+    ids.sort_unstable();
+    ids
+}
+
+/// Returns whether the batch is applied, after proving that every owner,
+/// table and index is present together or absent together, and that rows
+/// committed after the schema survive whole or not at all.
+fn assert_system_schema_batch_atomic(database: &mut Database, tail_rows: bool) -> bool {
+    let recorded = database
+        .query_sql("SELECT owner FROM hawdb_schema_migrations")
+        .unwrap()
+        .rows
+        .into_iter()
+        .filter(|row| matches!(row.get("owner"), Some(Value::String(owner)) if owner.starts_with("power.batch")))
+        .count();
+    assert!(
+        recorded == 0 || recorded == SYSTEM_SCHEMA_BATCH_OWNERS,
+        "partially applied system schema batch: {recorded} owners"
+    );
+    let applied = recorded == SYSTEM_SCHEMA_BATCH_OWNERS;
+    let mut tail = None;
+    for ordinal in 0..SYSTEM_SCHEMA_BATCH_OWNERS {
+        if !applied {
+            assert!(database
+                .query_sql(&format!("SELECT id FROM power_batch_{ordinal}"))
+                .is_err());
+            continue;
+        }
+        let ids = system_schema_batch_ids(database, ordinal, "tail");
+        let present = match ids.as_slice() {
+            [] => false,
+            [id] if id == "tail" => true,
+            ids => panic!("unexpected batch rows {ids:?}"),
+        };
+        assert!(tail_rows || !present, "rows observed before their commit");
+        assert_eq!(*tail.get_or_insert(present), present, "torn tail commit");
+        // Recovered indexes serve rows written after recovery.
+        database
+            .query_sql(&format!(
+                "INSERT INTO power_batch_{ordinal} (id, kind) VALUES ('recovered', 'after')"
+            ))
+            .unwrap();
+        assert_eq!(
+            system_schema_batch_ids(database, ordinal, "after"),
+            vec!["recovered".to_string()]
+        );
+    }
+    applied
+}
+
+#[test]
+fn batched_system_schema_registries_are_whole_or_absent_across_power_loss() {
+    use hawdb_storage::config::StorageResidencyMode;
+    for mode in [
+        StorageResidencyMode::Materialized,
+        StorageResidencyMode::OutOfCore,
+    ] {
+        for durability in [
+            DurabilityPolicy::SyncOnEveryWrite,
+            DurabilityPolicy::SyncOnCheckpoint,
+        ] {
+            let mut fixture = Fixture::new();
+            let config = DatabaseConfig {
+                max_open_files: 32,
+                strict_capacity_limit: true,
+                storage_residency_mode: mode,
+                ..Default::default()
+            };
+            let open = |root: &Path| {
+                Database::open_with_durability_and_config(root, durability, config.clone()).unwrap()
+            };
+            let mut database = open(&fixture.root);
+            database.checkpoint().unwrap();
+            let main = database
+                .describe_branch(BranchSelector::Name("main".into()))
+                .unwrap()
+                .id;
+            fixture
+                .model
+                .observe(ObservationPoint {
+                    event: IoEvent::Rename,
+                    relative_path: PathBuf::from("branches")
+                        .join(main.to_string())
+                        .join("branch.head"),
+                    boundary: ObservationBoundary::Before,
+                    skip_matches: 0,
+                    include_descendants: false,
+                    keep_last: false,
+                })
+                .unwrap();
+            database
+                .apply_system_schema_registries(&system_schema_batch())
+                .unwrap();
+            fixture.model.capture().unwrap();
+            let during_checkpoint = fixture
+                .model
+                .take_observation()
+                .unwrap()
+                .expect("the batch schema checkpoint must replace the branch head");
+            let mut transaction = database.begin_transaction().unwrap();
+            for ordinal in 0..SYSTEM_SCHEMA_BATCH_OWNERS {
+                transaction
+                    .query_sql(&format!(
+                        "INSERT INTO power_batch_{ordinal} (id, kind) VALUES ('tail', 'tail')"
+                    ))
+                    .unwrap();
+            }
+            transaction.commit().unwrap();
+            let after_tail = fixture.model.capture().unwrap();
+            drop(database);
+
+            for plan in publication_fault_plans(&during_checkpoint) {
+                let root = fixture.image(&during_checkpoint, &plan);
+                let mut recovered = open(&root);
+                let applied = assert_system_schema_batch_atomic(&mut recovered, false);
+                if durability == DurabilityPolicy::SyncOnEveryWrite {
+                    assert!(applied, "{mode:?} {plan:?}");
+                }
+            }
+            for plan in [CrashPlan::default(), after_tail.persist_all_plan()] {
+                let root = fixture.image(&after_tail, &plan);
+                let mut recovered = open(&root);
+                // The batch's schema checkpoint completed before the tail.
+                assert!(
+                    assert_system_schema_batch_atomic(&mut recovered, true),
+                    "{mode:?} {durability:?} {plan:?}"
+                );
+                if durability == DurabilityPolicy::SyncOnEveryWrite
+                    || plan == after_tail.persist_all_plan()
+                {
+                    assert_eq!(
+                        system_schema_batch_ids(&mut recovered, 0, "tail"),
+                        vec!["tail".to_string()]
+                    );
+                }
+            }
         }
     }
 }

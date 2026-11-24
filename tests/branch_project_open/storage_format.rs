@@ -333,6 +333,10 @@ fn unsupported_full_checkpoint_preserves_recovery_files() {
         let project = Project::new();
         let mut catalog = hawdb_core::Catalog::default();
         let mut store = GraphStore::open(&project.0, &mut catalog).unwrap();
+        // The refusal under test reads the legacy full-row checkpoint file,
+        // which checkpoints write only when the legacy layout is enabled
+        // (#1737).
+        store.set_legacy_relational_checkpoint_file_enabled(true);
         store
             .commit_relational_transaction(&mut catalog, view_transaction())
             .unwrap();

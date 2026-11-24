@@ -18,7 +18,6 @@
 use super::*;
 use hawdb_storage::immutable_object::{forget_published_object, published_object_skipped_rehashes};
 use std::collections::BTreeMap;
-use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -125,22 +124,8 @@ fn reopen_and_pick_skipped_object(path: &Path) -> (PathBuf, Results) {
 
 /// Flips one byte in the middle of `path` in place: same inode and length.
 fn flip_middle_byte(path: &Path, modified: Option<SystemTime>) {
-    let original = std::fs::metadata(path).unwrap().modified().unwrap();
     let length = std::fs::metadata(path).unwrap().len();
-    let mut file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(path)
-        .unwrap();
-    let mut byte = [0_u8];
-    file.seek(SeekFrom::Start(length / 2)).unwrap();
-    file.read_exact(&mut byte).unwrap();
-    byte[0] ^= 0xa5;
-    file.seek(SeekFrom::Start(length / 2)).unwrap();
-    file.write_all(&byte).unwrap();
-    file.sync_all().unwrap();
-    file.set_times(std::fs::FileTimes::new().set_modified(modified.unwrap_or(original)))
-        .unwrap();
+    super::flip_test_file_byte(path, length / 2, modified);
 }
 
 /// Opens, reads and finally scrubs; returns the first error. Any read that
@@ -316,28 +301,26 @@ fn every_skipped_object_corruption_is_refused_or_scrubbed() {
     std::fs::remove_dir_all(path).unwrap();
 }
 
-/// Object files the single branch mounts: those sharing an inode with a
-/// branch `data` alias, with their lengths.
+/// Current checkpoint objects mounted by this branch, deduplicated by
+/// reference. Older retained producers can also share object-store inodes.
 #[cfg(unix)]
 fn mounted_objects(root: &Path) -> BTreeMap<PathBuf, u64> {
-    use std::os::unix::fs::MetadataExt;
-    let identity = |metadata: &std::fs::Metadata| (metadata.dev(), metadata.ino());
-    let mut aliases = std::collections::BTreeSet::new();
-    for branch in std::fs::read_dir(root.join("branches")).unwrap() {
-        let Ok(entries) = std::fs::read_dir(branch.unwrap().path().join("data")) else {
-            continue;
-        };
-        for alias in entries {
-            aliases.insert(identity(&std::fs::metadata(alias.unwrap().path()).unwrap()));
-        }
-    }
-    let mounted = object_files(root)
+    use hawdb_storage::branch_head::read_branch_head;
+    use hawdb_storage::immutable_object::ImmutableObjectStore;
+    use hawdb_storage::sealed_root::SealedRoot;
+
+    let branch = super::test_main_branch_directory(root).unwrap();
+    let head = read_branch_head(&branch.join("branch.head")).unwrap();
+    let objects = ImmutableObjectStore::open(root.join("branches/objects")).unwrap();
+    let sealed = SealedRoot::decode(&objects.read(head.sealed_root).unwrap()).unwrap();
+    let mounted = sealed
+        .checkpoint_bindings
         .into_iter()
-        .filter_map(|object| {
-            let metadata = std::fs::metadata(&object).unwrap();
-            aliases
-                .contains(&identity(&metadata))
-                .then_some((object, metadata.len()))
+        .map(|binding| {
+            (
+                objects.object_path(binding.reference),
+                binding.reference.byte_length,
+            )
         })
         .collect::<BTreeMap<_, _>>();
     assert!(!mounted.is_empty(), "the branch mounts checkpoint objects");
@@ -357,6 +340,7 @@ fn new_process_open_hashes_each_mounted_object_once() {
         let mut db = Database::open(&path).unwrap();
         results(&mut db)
     };
+    let mounted = mounted_objects(&path);
     let forget_all = |path: &Path| {
         for object in object_files(path) {
             forget_published_object(&object).unwrap();
@@ -370,7 +354,7 @@ fn new_process_open_hashes_each_mounted_object_once() {
         let metrics = db.file_descriptor_metrics().unwrap();
         assert_eq!(
             metrics.identity_verified_bytes,
-            mounted_objects(&path).values().sum::<u64>(),
+            mounted.values().sum::<u64>(),
             "each mounted object is hashed once, not again on its first cold open: {metrics:?}"
         );
         assert!(metrics.mount_verification_reuses > 0, "{metrics:?}");
@@ -381,7 +365,7 @@ fn new_process_open_hashes_each_mounted_object_once() {
 
     // Damage that keeps inode, length and modification time is still refused
     // by the mount's full hash when a new process admits the branch.
-    let (object, _) = mounted_objects(&path)
+    let (object, _) = mounted
         .into_iter()
         .max_by_key(|(_, length)| *length)
         .unwrap();

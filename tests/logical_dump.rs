@@ -528,6 +528,89 @@ fn round_trip_preserves_relational_and_graph_data_exactly() {
     assert_eq!(manifest(&first)["counts"], manifest(&second)["counts"]);
 }
 
+/// Legacy full-row relational checkpoint files (`relational.N.hawdb`) below
+/// `root`. Checkpoints no longer write them (#1737).
+fn legacy_relational_files(root: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(&directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.strip_prefix("relational."))
+                .and_then(|rest| rest.strip_suffix(".hawdb"))
+                .is_some_and(|generation| generation.parse::<u64>().is_ok())
+            {
+                found.push(path);
+            }
+        }
+    }
+    found
+}
+
+/// A database whose relational rows live only in incremental row-page and
+/// overflow roots exports, reopens and round-trips exactly (#1737).
+#[test]
+fn round_trip_from_incremental_relational_checkpoints_after_reopen() {
+    let temp = TempDir::new("incremental-checkpoints");
+    let source_path = temp.path().join("source");
+    let mut source = HawDBEmbedded::open(&source_path).unwrap();
+    populate(&mut source);
+    source.database_mut().checkpoint().unwrap();
+    sql_params(
+        &mut source,
+        "INSERT INTO notes (k, v) VALUES ($1, $2)",
+        vec![Value::String("late".into()), Value::Int(-7)],
+    );
+    sql(
+        &mut source,
+        "UPDATE tree SET label = 'relabelled' WHERE id = 9",
+    );
+    source.database_mut().checkpoint().unwrap();
+    // A WAL tail after the last checkpoint replays over the row root.
+    sql(&mut source, "DELETE FROM notes WHERE v = -7");
+    drop(source);
+    assert!(
+        legacy_relational_files(&source_path).is_empty(),
+        "{:?}",
+        legacy_relational_files(&source_path)
+    );
+
+    let mut source = HawDBEmbedded::open(&source_path).unwrap();
+    let first = temp.path().join("dump-1");
+    let report = source
+        .export_logical_dump_with_options(&first, &small_pages())
+        .unwrap();
+    assert_eq!(report.table_row_count, 81);
+    assert_eq!(
+        rows(&mut source, "SELECT label FROM tree WHERE id = 9"),
+        vec![vec![Value::String("relabelled".into())]]
+    );
+
+    // The import checkpoints every 16 records, a growing import.
+    let imported_path = temp.path().join("imported");
+    Database::import_logical_dump_with_options(&first, &imported_path, &small_pages()).unwrap();
+    assert!(legacy_relational_files(&imported_path).is_empty());
+    let mut imported = HawDBEmbedded::open(&imported_path).unwrap();
+    for query in COMPARED_QUERIES {
+        let before = rows(&mut source, query);
+        let after = rows(&mut imported, query);
+        assert!(
+            same(&before, &after),
+            "{query}\nbefore: {before:?}\nafter:  {after:?}"
+        );
+    }
+    let second = temp.path().join("dump-2");
+    imported
+        .export_logical_dump_with_options(&second, &small_pages())
+        .unwrap();
+    assert_eq!(dump_content(&first), dump_content(&second));
+}
+
 #[test]
 fn export_is_one_consistent_snapshot_while_writers_commit() {
     let temp = TempDir::new("snapshot");

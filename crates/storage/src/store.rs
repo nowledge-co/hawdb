@@ -291,12 +291,13 @@ use hawdb_storage::{
     property_projection::PersistentPropertyProjectionDefinitionAdmission,
     relational::{
         decode_relational_checkpoint_file_with_index_load,
-        decode_relational_checkpoint_with_index_load, decode_relational_wal_batch,
-        encode_relational_checkpoint, RelationalCheckpointIndexLoad, RelationalDecodeLimits,
-        RelationalMutationLimits, RelationalOverflowConfig, RelationalOverflowPublicationConfig,
-        RelationalOverflowPublisher, RelationalRecoverySourceBuilder,
-        RelationalRowPageGenerationRequest, RelationalRowPagePublisher, RelationalSparseLiveStage,
-        RelationalState, RelationalTransaction,
+        decode_relational_checkpoint_from_row_root, decode_relational_checkpoint_with_index_load,
+        decode_relational_wal_batch, encode_relational_checkpoint, RelationalCheckpointIndexLoad,
+        RelationalDecodeLimits, RelationalMutationLimits, RelationalOverflowConfig,
+        RelationalOverflowPublicationConfig, RelationalOverflowPublisher,
+        RelationalRecoverySourceBuilder, RelationalRowPageGenerationRequest,
+        RelationalRowPagePublisher, RelationalSparseLiveStage, RelationalState,
+        RelationalTransaction,
     },
 };
 pub use hawdb_storage::{
@@ -1044,6 +1045,8 @@ pub struct GraphStore {
     append_generation_reader: Option<AppendGenerationReader>,
     relational_mutation_limits: RelationalMutationLimits,
     relational_overflow_config: RelationalOverflowConfig,
+    /// Also write the legacy full-row relational checkpoint file (#1737).
+    legacy_relational_checkpoint_file: bool,
     columnar_shadow: ColumnarShadowState,
     relational_index_shadow: RelationalIndexShadowState,
     relational_row_pages: RelationalRowPageState,
@@ -2072,6 +2075,7 @@ impl GraphStore {
             append_generation_reader: None,
             relational_mutation_limits: RelationalMutationLimits::default(),
             relational_overflow_config: RelationalOverflowConfig::default(),
+            legacy_relational_checkpoint_file: false,
             columnar_shadow: ColumnarShadowState::default(),
             relational_index_shadow: RelationalIndexShadowState::new(
                 replay_config.relational_index_mode,
@@ -2605,6 +2609,7 @@ impl GraphStore {
             append_generation_reader: self.append_generation_reader.clone(),
             relational_mutation_limits: self.relational_mutation_limits,
             relational_overflow_config: self.relational_overflow_config,
+            legacy_relational_checkpoint_file: self.legacy_relational_checkpoint_file,
             columnar_shadow: self.columnar_shadow.clone(),
             relational_index_shadow: self
                 .relational_index_shadow

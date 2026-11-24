@@ -90,21 +90,21 @@ impl<'a> DocumentLookup<'a> {
             bytes: &self.bytes,
             offset: self.cursor,
         };
-        loop {
-            if let Some(task) = self.task {
-                super::query_context::checkpoint(task)?;
-            }
-            let id = cursor.borrowed_string(1024 * 1024)?;
-            let length = cursor.u32()?;
-            let current = self.next_ordinal;
-            self.next_ordinal = self.next_ordinal.checked_add(1).ok_or_else(|| {
-                HawDBError::Storage("lexical document ordinal overflow".to_string())
-            })?;
-            self.cursor = cursor.offset;
-            if current == ordinal {
-                return Ok((id, length));
-            }
+        // Skip earlier entries by their length prefixes. The block's IDs were
+        // UTF-8 validated when it was loaded, and only the requested entry is
+        // decoded. The walk stays within this one admitted mapping block,
+        // which bounds the work between the checkpoints above and at load.
+        for _ in self.next_ordinal..ordinal {
+            cursor.skip_string(1024 * 1024)?;
+            cursor.u32()?;
         }
+        let id = cursor.borrowed_string(1024 * 1024)?;
+        let length = cursor.u32()?;
+        self.next_ordinal = ordinal
+            .checked_add(1)
+            .ok_or_else(|| HawDBError::Storage("lexical document ordinal overflow".to_string()))?;
+        self.cursor = cursor.offset;
+        Ok((id, length))
     }
 }
 

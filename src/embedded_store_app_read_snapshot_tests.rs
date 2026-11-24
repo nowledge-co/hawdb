@@ -724,7 +724,7 @@ fn typed_snapshot_candidates_use_the_snapshot_task_context_and_require_a_project
         )
         .unwrap_err();
     assert!(
-        matches!(missing_error, crate::HawDBError::Storage(ref message)
+        matches!(missing_error, crate::HawDBError::Semantic(ref message)
         if message == "nowledge mem search projection is not configured")
     );
 }
@@ -917,7 +917,7 @@ fn graph_only_snapshot_refuses_text_seeds_without_a_pinned_projection() {
                         1,
                     )
                     .unwrap_err();
-                assert!(matches!(error, crate::HawDBError::Storage(ref message)
+                assert!(matches!(error, crate::HawDBError::Semantic(ref message)
                     if message == "nowledge mem search projection is not configured"));
                 Ok(())
             },
@@ -1341,7 +1341,7 @@ fn user_cannot_read_an_unpinned_projection_from_a_graph_snapshot() {
     handle
         .with_bounded_graph_read_snapshot(budget, |snapshot| {
             let error = snapshot.query_cypher(query, &parameters, 1).unwrap_err();
-            assert!(matches!(error, crate::HawDBError::Storage(ref message)
+            assert!(matches!(error, crate::HawDBError::Semantic(ref message)
             if message == "nowledge mem search projection is not configured"));
             assert_eq!(
                 snapshot

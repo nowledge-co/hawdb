@@ -1321,6 +1321,29 @@ mod lifecycle_tests {
     }
 
     #[test]
+    fn search_production_qualification_refusals_report_their_kinds() {
+        let error = HawDBError::SearchProductionQualificationGraphEpochMismatch {
+            expected_canonical_graph_commit_epoch: 3,
+            opened_graph_commit_epoch: 4,
+        };
+        let expected = (
+            "search_production_qualification_graph_epoch_mismatch".to_owned(),
+            "storage error: qualified out-of-core search expected canonical graph commit epoch 3, opened graph is at 4".to_owned(),
+        );
+        assert_eq!(engine_error(&error), expected);
+        assert_eq!(query_error(&EmbeddedQueryError::Database(error)), expected);
+        let error = HawDBError::SearchProductionQualificationRefused {
+            blocker_codes: vec!["projection_identity_mismatch".to_owned()],
+        };
+        let expected = (
+            "search_production_qualification_refused".to_owned(),
+            "storage error: segmented lexical projection is not qualified for the current production release: projection_identity_mismatch".to_owned(),
+        );
+        assert_eq!(engine_error(&error), expected);
+        assert_eq!(query_error(&EmbeddedQueryError::Database(error)), expected);
+    }
+
+    #[test]
     fn streamed_results_keep_the_tagged_transport() {
         let mut engine = HawDBEmbedded::open_in_memory();
         let output = execute_statement(

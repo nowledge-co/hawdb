@@ -308,6 +308,34 @@ pub enum HawDBError {
         required_operations: usize,
         limit: usize,
     },
+    /// A qualified out-of-core search open found the graph at
+    /// `opened_graph_commit_epoch`, not at the
+    /// `expected_canonical_graph_commit_epoch` its production qualification
+    /// was taken at, typically because the graph was written after
+    /// qualification (#1932). The qualification is stale; nothing is damaged.
+    /// The open was refused before the projection was opened, and nothing was
+    /// read from or written to it. Not a storage failure and never poisoning:
+    /// catch the projection up, qualify it again at the current epoch and
+    /// reopen. Displays as the `storage error` it was reported as before.
+    SearchProductionQualificationGraphEpochMismatch {
+        expected_canonical_graph_commit_epoch: u64,
+        opened_graph_commit_epoch: u64,
+    },
+    /// A qualified out-of-core search open was refused because the supplied
+    /// lexical production qualification does not qualify the opened
+    /// projection for the expected release (#1932). `blocker_codes` are the
+    /// sorted blockers recomputed at open: identity blockers such as
+    /// `projection_identity_mismatch`, `current_release_identity_mismatch` or
+    /// `source_graph_epoch_current_release_mismatch` mean the report
+    /// describes another projection generation, epoch or release; the others
+    /// mean the report itself is not ready. The projection's files passed
+    /// their open-time checks; damaged files are still `StorageIntegrity` or
+    /// `Storage`. Not a storage failure and never poisoning: qualify the
+    /// projection again and reopen. Displays as the `storage error` it was
+    /// reported as before.
+    SearchProductionQualificationRefused {
+        blocker_codes: Vec<String>,
+    },
     /// The externally owned search projection kinds requested at open differ
     /// from the set recorded with the projection (#1814). The open is refused
     /// and nothing is changed. Kinds are their lowercase projection names,
@@ -480,6 +508,18 @@ impl Display for HawDBError {
                     "storage error: incremental projection update operation count {required_operations} exceeded configured limit {limit}"
                 ),
             },
+            HawDBError::SearchProductionQualificationGraphEpochMismatch {
+                expected_canonical_graph_commit_epoch,
+                opened_graph_commit_epoch,
+            } => write!(
+                f,
+                "storage error: qualified out-of-core search expected canonical graph commit epoch {expected_canonical_graph_commit_epoch}, opened graph is at {opened_graph_commit_epoch}"
+            ),
+            HawDBError::SearchProductionQualificationRefused { blocker_codes } => write!(
+                f,
+                "storage error: segmented lexical projection is not qualified for the current production release: {}",
+                blocker_codes.join(",")
+            ),
             HawDBError::SearchProjectionOwnershipMismatch {
                 projection,
                 recorded,

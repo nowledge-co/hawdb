@@ -41,8 +41,9 @@ use crate::predicate::{
 };
 use crate::store::{AdjacencyReadMemory, GraphExecutionRead, ScanControl};
 use crate::traversal::{
-    visit_bounded_expand_targets, visit_one_hop_relationships_with_context,
-    visit_zero_hop_expand_target, BoundedExpandSpec, OneHopRelationshipSpec,
+    projected_node_with_allocation, visit_bounded_expand_targets,
+    visit_one_hop_relationships_with_context, visit_zero_hop_expand_target, BoundedExpandSpec,
+    OneHopRelationshipSpec,
 };
 use crate::{ExecutionLimit, QueryMemoryAccount};
 use hawdb_core::{
@@ -731,9 +732,6 @@ pub fn stream_node_projection_scan_batches(
         .iter()
         .cloned()
         .collect::<BTreeSet<_>>();
-    let property_filter = spec
-        .predicate
-        .and_then(|predicate| property_filter_from_predicate(predicate).ok());
     let mut resident_scan = if !context
         .task_context
         .is_some_and(RuntimeTaskContext::has_work_limit)
@@ -746,6 +744,9 @@ pub fn stream_node_projection_scan_batches(
             .saturating_mul(std::mem::size_of::<&NodeRecord>())
             <= context.memory_account.budget_bytes().get()
     {
+        let property_filter = spec
+            .predicate
+            .and_then(|predicate| property_filter_from_predicate(predicate).ok());
         Some(context.pruned_scan(label_id, property_filter.as_ref())?)
     } else {
         None
@@ -922,6 +923,32 @@ pub fn stream_node_projection_scan_batches(
             )
         };
     let control = match (exact_label_id, spec.access) {
+        (_, NodeProjectionAccess::IdSeek) => {
+            let value = spec
+                .predicate
+                .and_then(|predicate| predicate.required_identity_equality(spec.variable))
+                .ok_or_else(|| {
+                    HawDBError::Execution("missing identity equality for node seek".into())
+                })?;
+            if let Value::Int(id) = value
+                && let Some((node, _allocation)) = projected_node_with_allocation(
+                    context.store,
+                    NodeId(*id as u64),
+                    label_ids.as_deref(),
+                    &required_properties,
+                    &mut admit,
+                    context.task_context,
+                )?
+            {
+                visit(ProjectedNodeRecord {
+                    id: node.id,
+                    labels: node.labels,
+                    properties: node.properties,
+                })?
+            } else {
+                ScanControl::Continue
+            }
+        }
         (_, NodeProjectionAccess::LabelScan) => context.store.visit_projected_nodes_admitted(
             exact_label_id,
             &required_properties,
@@ -1099,6 +1126,7 @@ fn stream_simple_node_projection_scan(
 fn node_projection_access_strategy(access: &NodeProjectionAccess) -> ScanPruningStrategy {
     match access {
         NodeProjectionAccess::LabelScan => ScanPruningStrategy::FullLabelScan,
+        NodeProjectionAccess::IdSeek => ScanPruningStrategy::IdEq,
         NodeProjectionAccess::PropertyValues { property, values } if values.len() == 1 => {
             ScanPruningStrategy::PropertyEq {
                 property: property.clone(),

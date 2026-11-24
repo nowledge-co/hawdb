@@ -2190,7 +2190,9 @@ fn error_class(error: &HawDBError) -> &'static str {
         | HawDBError::SearchProjectionOwnershipMismatch { .. }
         | HawDBError::SearchProjectionEpochAdvanceRefused { .. }
         | HawDBError::SearchProjectionPrefixBehindSource { .. }
-        | HawDBError::SearchProjectionBatchBudgetExceeded { .. } => "execution",
+        | HawDBError::SearchProjectionBatchBudgetExceeded { .. }
+        | HawDBError::SearchProductionQualificationGraphEpochMismatch { .. }
+        | HawDBError::SearchProductionQualificationRefused { .. } => "execution",
         HawDBError::Storage(_)
         | HawDBError::Constraint {
             surface: RelationalErrorSurface::Storage,

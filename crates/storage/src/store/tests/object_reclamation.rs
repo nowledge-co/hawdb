@@ -24,6 +24,30 @@ fn checkpoint(branch: &mut AdmittedBranchStore) -> Result<()> {
     store.checkpoint(catalog)
 }
 
+#[test]
+#[cfg(unix)]
+fn checkpoint_producer_artifacts_share_immutable_object_inodes() {
+    let fixture = BranchFixture::new();
+    let mut main = fixture.admit(fixture.main, DurabilityPolicy::SyncOnCheckpoint);
+    write_schema_and_graph(&mut main);
+    write_row(&mut main, &"overflow-body".repeat(4096));
+    checkpoint(&mut main).unwrap();
+    let durable = main.store().durable.as_ref().unwrap();
+    let runtime = durable.branch_runtime.as_ref().unwrap();
+    let objects = ImmutableObjectStore::open(&fixture.objects).unwrap();
+    assert!(!runtime.root.checkpoint_bindings.is_empty());
+    for binding in &runtime.root.checkpoint_bindings {
+        let alias = durable.root_path.join(&binding.relative_path);
+        let object = objects.object_path(binding.reference);
+        assert_eq!(
+            crate::native_file_identity::of_metadata(&std::fs::metadata(&alias).unwrap()),
+            crate::native_file_identity::of_metadata(&std::fs::metadata(&object).unwrap()),
+            "{} must share its immutable object",
+            alias.display()
+        );
+    }
+}
+
 fn message_rows(store: &GraphStore) -> usize {
     store.relational_state().row_count("messages")
 }
