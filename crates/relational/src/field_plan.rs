@@ -16,7 +16,7 @@
 //!
 //! This internal ownership seam does not open stores, read rows, or hydrate values.
 
-use crate::subquery_scope::{CteScope, RelationColumns};
+use crate::subquery_scope::{join_on_scope, CteScope, RelationColumns};
 use hawdb_core::{HawDBError, Result};
 use hawdb_sql::{
     Expr, ExprKind, SelectProjection, SelectStatement, SqlColumnRef, SqlCommonTableExpressionBody,
@@ -613,7 +613,7 @@ fn collect_query_correlation_columns(
     }
     let mut local = scope.clone();
     for cte in &query.with {
-        local.seed_recursive(query.recursive, cte);
+        local.seed_recursive(query.recursive, cte, state)?;
         if let SqlCommonTableExpressionBody::Query(child) = &cte.body {
             collect_query_correlation_columns(child, outer, state, &local, ancestors, output)?;
         }
@@ -658,29 +658,31 @@ fn collect_select_correlation_columns(
     ancestors: &[LocalFieldBinding<'_>],
     output: &mut Vec<SqlColumnRef>,
 ) -> Result<()> {
+    let current = select
+        .from
+        .iter()
+        .map(|table| LocalFieldBinding {
+            table: table.name.as_str(),
+            qualifier: select.from_alias.as_deref().unwrap_or(&table.name),
+            columns: scope.columns(state, &table.name),
+        })
+        .chain(select.joins.iter().map(|join| LocalFieldBinding {
+            table: join.table.name.as_str(),
+            qualifier: join.alias.as_deref().unwrap_or(&join.table.name),
+            columns: scope.columns(state, &join.table.name),
+        }))
+        .collect::<Vec<_>>();
     let mut local = ancestors.to_vec();
-    local.extend(
-        select
-            .from
-            .iter()
-            .map(|table| LocalFieldBinding {
-                table: table.name.as_str(),
-                qualifier: select.from_alias.as_deref().unwrap_or(&table.name),
-                columns: scope.columns(state, &table.name),
-            })
-            .chain(select.joins.iter().map(|join| LocalFieldBinding {
-                table: join.table.name.as_str(),
-                qualifier: join.alias.as_deref().unwrap_or(&join.table.name),
-                columns: scope.columns(state, &join.table.name),
-            })),
-    );
+    for (ordinal, join) in select.joins.iter().enumerate() {
+        local.extend_from_slice(join_on_scope(&current, join.on_scope_start, ordinal)?);
+        collect_expression_correlation_columns(&join.on, &local, outer, output)?;
+        local.truncate(ancestors.len());
+    }
+    local.extend(current);
     for projection in &select.projection {
         if let SelectProjection::Expression { expression, .. } = projection {
             collect_expression_correlation_columns(expression, &local, outer, output)?;
         }
-    }
-    for join in &select.joins {
-        collect_expression_correlation_columns(&join.on, &local, outer, output)?;
     }
     if let Some(selection) = &select.selection {
         collect_expression_correlation_columns(selection, &local, outer, output)?;

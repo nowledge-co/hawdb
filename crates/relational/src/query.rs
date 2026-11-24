@@ -93,6 +93,7 @@ mod aggregate;
 use aggregate::execute_aggregate_select;
 
 mod compound;
+pub(crate) use compound::recursive_cte_parts;
 
 use crate::aggregate as having;
 use crate::aggregate::{

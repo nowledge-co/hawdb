@@ -799,7 +799,7 @@ fn cte_is_recursive(with_recursive: bool, cte: &SqlCommonTableExpression) -> boo
     }
 }
 
-fn recursive_cte_parts(
+pub(crate) fn recursive_cte_parts(
     with_recursive: bool,
     cte: &SqlCommonTableExpression,
 ) -> Result<Option<(&SqlQueryBody, &SqlQueryBody, bool)>> {

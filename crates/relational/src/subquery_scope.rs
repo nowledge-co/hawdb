@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::query::recursive_cte_parts;
 use crate::query_value::expression_name;
 use hawdb_core::{HawDBError, Result};
 use hawdb_sql::{
@@ -42,11 +43,21 @@ impl CteScope {
         }
     }
 
-    pub(crate) fn seed_recursive(&mut self, recursive: bool, cte: &SqlCommonTableExpression) {
-        if recursive {
-            let names = (!cte.columns.is_empty()).then(|| Arc::from(cte.columns.as_slice()));
+    pub(crate) fn seed_recursive(
+        &mut self,
+        recursive: bool,
+        cte: &SqlCommonTableExpression,
+        state: &RelationalState,
+    ) -> Result<()> {
+        if let Some((seed, _, _)) = recursive_cte_parts(recursive, cte)? {
+            let names = if cte.columns.is_empty() {
+                self.body_columns(seed, state)?.map(Arc::from)
+            } else {
+                Some(Arc::from(cte.columns.as_slice()))
+            };
             self.0.insert(cte.name.clone(), names);
         }
+        Ok(())
     }
 
     pub(crate) fn define(
@@ -88,13 +99,13 @@ impl CteScope {
         }
         let mut local = self.clone();
         for cte in &query.with {
-            local.seed_recursive(query.recursive, cte);
+            local.seed_recursive(query.recursive, cte, state)?;
             local.define(cte, state)?;
         }
         local.body_columns(&query.body, state)
     }
 
-    fn body_columns(
+    pub(crate) fn body_columns(
         &self,
         body: &SqlQueryBody,
         state: &RelationalState,
@@ -187,6 +198,12 @@ impl RelationColumns<'_> {
             Self::Unknown => true,
         }
     }
+}
+
+pub(crate) fn join_on_scope<T>(relations: &[T], start: usize, ordinal: usize) -> Result<&[T]> {
+    relations
+        .get(start..=ordinal + 1)
+        .ok_or_else(|| HawDBError::Semantic("invalid relational ON scope boundary".into()))
 }
 
 pub(crate) fn cte_display_name(name: &str) -> String {

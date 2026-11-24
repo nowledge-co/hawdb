@@ -21,7 +21,7 @@ use super::{
     SelectProjection, SelectStatement, SqlBound, SqlCommonTableExpressionBody, SqlQueryBody,
     SqlQueryStatement, SqlSubqueryPredicate, SqlValue, TypedOutput, Value,
 };
-use crate::subquery_scope::{CteScope, RelationColumns};
+use crate::subquery_scope::{join_on_scope, CteScope, RelationColumns};
 use std::collections::{HashMap, HashSet};
 
 mod names;
@@ -602,7 +602,7 @@ fn validate_nested_subquery_shapes(
 ) -> Result<()> {
     let mut local = scope.clone();
     for cte in &query.with {
-        local.seed_recursive(query.recursive, cte);
+        local.seed_recursive(query.recursive, cte, state)?;
         if let SqlCommonTableExpressionBody::Query(child) = &cte.body {
             validate_nested_subquery_shapes(child, parameters, state, &local)?;
         }
@@ -733,7 +733,7 @@ fn bind_outer_query_references_scoped(
     }
     let mut local = scope.clone();
     for cte in &mut query.with {
-        local.seed_recursive(query.recursive, cte);
+        local.seed_recursive(query.recursive, cte, state)?;
         if let SqlCommonTableExpressionBody::Query(child) = &mut cte.body {
             bind_outer_query_references_scoped(child, row, state, &local, shadowing)?;
         }
@@ -800,6 +800,11 @@ fn bind_outer_select_references(
         }))
         .collect::<Vec<_>>();
     let mut local = shadowing.to_vec();
+    for (ordinal, join) in select.joins.iter_mut().enumerate() {
+        local.extend_from_slice(join_on_scope(&current, join.on_scope_start, ordinal)?);
+        bind_outer_expression(&mut join.on, &local, row)?;
+        local.truncate(shadowing.len());
+    }
     local.extend(current);
     for projection in &mut select.projection {
         if let SelectProjection::Expression { expression, alias } = projection {
@@ -809,9 +814,6 @@ fn bind_outer_select_references(
                 *alias = column_name;
             }
         }
-    }
-    for join in &mut select.joins {
-        bind_outer_expression(&mut join.on, &local, row)?;
     }
     if let Some(selection) = &mut select.selection {
         bind_outer_expression(selection, &local, row)?;

@@ -111,6 +111,9 @@ Plain EXPLAIN describes the bounded subquery strategies. EXPLAIN ANALYZE reports
 identifies hash membership when used. Root `relational_sql::compound_queries`
 checks name binding before empty outer scans and AND/OR short-circuiting,
 including correlated, nested and CTE references with lazy unused targets.
+Paired evaluated and short-circuited EXISTS cases cover comma JOIN visibility
+and outer column capture, recursively inferred seed columns, and WITH query
+ORDER BY resolution against output names.
 Its persistent cases checkpoint, reopen and re-run derived/VALUES/subquery reads in
 Materialized/Materialized and OutOfCore/DemandPaged modes. Derived tables and
 subquery results are statement-scoped only and never enter WAL, catalog, or

@@ -16,20 +16,21 @@
 //! This pass never evaluates expressions, including unused EXISTS targets.
 
 use super::*;
-use hawdb_sql::SqlColumnRef;
+use crate::subquery_scope::join_on_scope;
+use hawdb_sql::{SqlColumnRef, SqlOrderItem};
 
 type Binding = (String, String, Option<Vec<String>>);
-type Scope = Vec<Binding>;
+type Scope<'a> = &'a [Binding];
 
 pub(super) fn validate(select: &SelectStatement, state: &RelationalState) -> Result<()> {
-    validate_select(select, state, &CteScope::default(), &[])
+    validate_select(select, &select.order_by, state, &CteScope::default(), &[])
 }
 
-fn column(column: &SqlColumnRef, scopes: &[Scope]) -> Result<()> {
+fn column(column: &SqlColumnRef, scopes: &[Scope<'_>]) -> Result<()> {
     for scope in scopes.iter().rev() {
         let mut matches = 0;
         let mut qualified = false;
-        for (table, alias, columns) in scope {
+        for (table, alias, columns) in *scope {
             if let Some(qualifier) = &column.qualifier {
                 if qualifier != table && qualifier != alias {
                     continue;
@@ -64,7 +65,7 @@ fn column(column: &SqlColumnRef, scopes: &[Scope]) -> Result<()> {
     )))
 }
 
-fn expression(expr: &Expr, scopes: &[Scope]) -> Result<()> {
+fn expression(expr: &Expr, scopes: &[Scope<'_>]) -> Result<()> {
     let mut result = Ok(());
     expr.visit(&mut |expr| {
         if result.is_ok()
@@ -78,9 +79,10 @@ fn expression(expr: &Expr, scopes: &[Scope]) -> Result<()> {
 
 fn validate_select(
     select: &SelectStatement,
+    order_by: &[SqlOrderItem],
     state: &RelationalState,
     ctes: &CteScope,
-    outer: &[Scope],
+    outer: &[Scope<'_>],
 ) -> Result<()> {
     let mut local = Vec::new();
     for (table, alias) in select
@@ -118,7 +120,12 @@ fn validate_select(
         ));
     }
     let mut scopes = outer.to_vec();
-    scopes.push(local);
+    for (ordinal, join) in select.joins.iter().enumerate() {
+        scopes.push(join_on_scope(&local, join.on_scope_start, ordinal)?);
+        expression(&join.on, &scopes)?;
+        scopes.pop();
+    }
+    scopes.push(&local);
     for projection in &select.projection {
         if let SelectProjection::Expression {
             expression: expr, ..
@@ -127,18 +134,13 @@ fn validate_select(
             expression(expr, &scopes)?;
         }
     }
-    for expr in select
-        .selection
-        .iter()
-        .chain(select.having.iter())
-        .chain(select.joins.iter().map(|join| &join.on))
-    {
+    for expr in select.selection.iter().chain(&select.having) {
         expression(expr, &scopes)?;
     }
     for name in &select.group_by {
         column(name, &scopes)?;
     }
-    for item in &select.order_by {
+    for item in order_by {
         order(select, item, &scopes)?;
     }
     if let Some(predicate) = &select.subquery_predicate {
@@ -147,7 +149,7 @@ fn validate_select(
     Ok(())
 }
 
-fn order(select: &SelectStatement, item: &hawdb_sql::SqlOrderItem, scopes: &[Scope]) -> Result<()> {
+fn order(select: &SelectStatement, item: &SqlOrderItem, scopes: &[Scope<'_>]) -> Result<()> {
     use crate::field_plan::{resolve_relational_order_target, RelationalOrderTarget};
     match resolve_relational_order_target(select, item)? {
         RelationalOrderTarget::InputColumn(name)
@@ -160,7 +162,7 @@ fn validate_predicate(
     predicate: &SqlSubqueryPredicate,
     state: &RelationalState,
     ctes: &CteScope,
-    scopes: &[Scope],
+    scopes: &[Scope<'_>],
 ) -> Result<()> {
     match predicate {
         SqlSubqueryPredicate::Scalar(expr) => expression(expr, scopes),
@@ -183,24 +185,24 @@ fn validate_query(
     query: &SqlQueryStatement,
     state: &RelationalState,
     ctes: &CteScope,
-    scopes: &[Scope],
+    scopes: &[Scope<'_>],
 ) -> Result<()> {
+    if query.with.is_empty()
+        && let SqlQueryBody::Select(select) = &query.body
+    {
+        return validate_select(select, &query.order_by, state, ctes, scopes);
+    }
     let mut local = ctes.clone();
     for cte in &query.with {
-        local.seed_recursive(query.recursive, cte);
+        local.seed_recursive(query.recursive, cte, state)?;
         if let SqlCommonTableExpressionBody::Query(child) = &cte.body {
             validate_query(child, state, &local, scopes)?;
         }
         local.define(cte, state)?;
     }
-    if let SqlQueryBody::Select(select) = &query.body {
-        let mut select = select.as_ref().clone();
-        select.order_by.extend(query.order_by.iter().cloned());
-        return validate_select(&select, state, &local, scopes);
-    }
     validate_body(&query.body, state, &local, scopes)?;
     if !query.order_by.is_empty()
-        && let Some(columns) = ctes.query_columns(query, state)?
+        && let Some(columns) = local.body_columns(&query.body, state)?
     {
         let schema = hawdb_executor::QuerySchema::try_new(columns)?;
         for item in &query.order_by {
@@ -214,10 +216,12 @@ fn validate_body(
     body: &SqlQueryBody,
     state: &RelationalState,
     ctes: &CteScope,
-    scopes: &[Scope],
+    scopes: &[Scope<'_>],
 ) -> Result<()> {
     match body {
-        SqlQueryBody::Select(select) => validate_select(select, state, ctes, scopes),
+        SqlQueryBody::Select(select) => {
+            validate_select(select, &select.order_by, state, ctes, scopes)
+        }
         SqlQueryBody::Values(rows) => {
             for expr in rows.iter().flatten() {
                 expression(expr, scopes)?;
