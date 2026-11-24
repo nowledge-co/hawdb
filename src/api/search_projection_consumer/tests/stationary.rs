@@ -176,6 +176,83 @@ fn registered_stationary_completed_ledger_rows_allow_more_than_256_catch_ups() {
     );
 }
 
+/// Search artifact reads beside a paused immutable-object retirement of the
+/// same project (#1959).
+#[cfg(feature = "test-support")]
+#[test]
+fn search_artifact_reads_survive_a_paused_immutable_retirement() {
+    use crate::api::tests::immutable_retirement_reads::{evict, project, read_while_retiring};
+    use hawdb_core::RuntimeCancellationToken;
+    use std::time::Duration;
+    let fixture = Fixture::new();
+    let mut db = fixture.database();
+    let _suspension = db.runtime.suspend_automatic_checkpoint().unwrap();
+    append(&mut db, 1);
+    let path = fixture.0.join("database").join("projection");
+    let consumer = db
+        .create_search_projection_consumer(id("retirement"), &path, options(100), initialize)
+        .unwrap();
+    for value in 2..6 {
+        append(&mut db, value);
+        db.checkpoint().unwrap();
+    }
+    for (round, mode) in ["warm", "cold", "cancelled"].into_iter().enumerate() {
+        append(&mut db, 100 + round as u64);
+        let permit = query_permit(&mut db);
+        let pin = consumer.pin(&permit).unwrap();
+        let search = move |pin: &_, permit: &_, task| {
+            let pin: &hawdb_search::consumer::ConsumerReadPin = pin;
+            pin.search_with_options(
+                permit,
+                task,
+                "document",
+                None,
+                SearchMode::Text,
+                query_options(),
+            )
+            .map(|found| found.result().hits.len())
+            .map_err(|error| format!("{error:?}"))
+        };
+        let handles = project(&db);
+        if mode == "warm" {
+            assert_eq!(
+                search(&pin, &permit, RuntimeTaskContext::default()).unwrap(),
+                1
+            );
+        }
+        let cancelled = mode == "cancelled";
+        let ((result, permit), early, back) = read_while_retiring(db, move || {
+            if mode != "warm" {
+                evict(&handles);
+            }
+            let token = RuntimeCancellationToken::default();
+            let canceller = token.clone();
+            let stop = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(200));
+                if cancelled {
+                    canceller.cancel();
+                }
+            });
+            let result = search(&pin, &permit, RuntimeTaskContext::without_deadline(token));
+            stop.join().unwrap();
+            drop(pin);
+            (result, permit)
+        });
+        drop(permit);
+        db = back;
+        if cancelled {
+            let error = result.unwrap_err();
+            assert!(error.contains("RuntimeTaskStopped(Cancelled)"), "{error}");
+        } else {
+            assert_eq!(result.unwrap(), 1, "{mode}");
+        }
+        // A cold open waits for the retirement. Posting blocks are positioned
+        // reads without a control, so cancellation is reported right after.
+        assert_eq!(early, mode == "warm", "{mode}");
+        assert!(!db.storage_handle_poisoned().unwrap());
+    }
+}
+
 #[test]
 fn registered_stationary_unresolved_ledger_capacity_is_a_resource_refusal() {
     let fixture = Fixture::new();
