@@ -19,11 +19,11 @@ use super::lexical_projection::{
 use super::{
     checksum_bytes, decode_search_snapshot_text_bounded, decode_string, encode_metadata,
     encode_search_snapshot_text, encode_string, lexical_analyzer_digest, lexical_documents_digest,
-    matched_query_spans_bounded, matched_query_terms, rrf_child_score, search_empty_reasons,
-    top_ranked_candidates, top_ranked_ids, weighted_rrf_score, CompressedVectorSearchMode,
-    SearchAccessControlContext, SearchAnalyzerLexicon, SearchCandidateSetReport, SearchDocument,
-    SearchEmbeddingManifest, SearchFallbackReasonCode, SearchFieldPruningAccumulator, SearchHit,
-    SearchHitHydration, SearchIndex, SearchMode, SearchPageWindow, SearchPredicatePushdownReport,
+    rrf_child_score, search_empty_reasons, top_ranked_candidates, top_ranked_ids,
+    weighted_rrf_score, CompressedVectorSearchMode, SearchAccessControlContext,
+    SearchAnalyzerLexicon, SearchCandidateSetReport, SearchDocument, SearchEmbeddingManifest,
+    SearchFallbackReasonCode, SearchFieldPruningAccumulator, SearchHit, SearchHitHydration,
+    SearchIndex, SearchMode, SearchPageWindow, SearchPredicatePushdownReport,
     SearchProjectionFreshness, SearchQueryOptions, SearchResultSet, SearchRetrieverReport,
     SearchScoredCandidate, SearchSegmentDescriptor, SearchSegmentDescriptorEntry,
     SearchTruncationReasonCode, VectorRelevanceQuery, VectorSearchExecutionOptions,
@@ -72,6 +72,9 @@ use score_collector::{score_entries_refusal, BoundedScoreCollector};
 /// The reader option that bounds query score entries and windows.
 const MAX_SCORE_ENTRIES_OPTION: &str = "SearchOutOfCoreConfig.max_score_entries";
 
+/// Query terms of a hit hydrated without matched terms/spans.
+static NO_TERMS: BTreeSet<String> = BTreeSet::new();
+
 /// A search page, hydration-by-id or mutation-target request that would
 /// hydrate more documents than the reader admits.
 fn hydrated_documents_refusal(
@@ -103,6 +106,9 @@ enum DocumentTargetRequest {
     /// Hits produced by this reader's own index. A hit without a visible
     /// document route is index damage.
     SearchHits,
+    /// Hits of a text-only query, which never rescore a stored embedding:
+    /// their decimal-text vectors are left unparsed (#1917).
+    TextHits,
     /// Ids named by the caller of [`SearchOutOfCoreReader::hydrate_documents`].
     /// An id that is absent or deleted is the caller's mistake.
     ById,
@@ -116,10 +122,15 @@ enum DocumentTargetRequest {
 }
 
 impl DocumentTargetRequest {
+    /// Whether the loaded documents carry their stored embeddings.
+    fn embeddings(self) -> bool {
+        !matches!(self, Self::TextHits)
+    }
+
     /// The operation named in messages; the budget owner is `search {operation}`.
     fn operation(self) -> &'static str {
         match self {
-            Self::SearchHits => "hydration",
+            Self::SearchHits | Self::TextHits => "hydration",
             Self::ById => "hydration by id",
             Self::LookupById => "lookup by id",
             #[cfg(test)]
@@ -135,7 +146,7 @@ impl DocumentTargetRequest {
                 "search hydration by id requested document {id}, which the published search projection does not contain"
             ))),
             Self::LookupById => None,
-            Self::SearchHits => Some(HawDBError::Storage(format!(
+            Self::SearchHits | Self::TextHits => Some(HawDBError::Storage(format!(
                 "search document {id} is outside the published document ranges"
             ))),
             #[cfg(test)]
@@ -336,6 +347,8 @@ pub(crate) fn open_stationary_candidate(
 pub(crate) mod artifact_key;
 mod epoch_advance;
 pub use epoch_advance::SearchProjectionEpochAdvanceReport;
+mod content_blocks;
+pub use content_blocks::SearchContentVerificationReport;
 mod generation_writer;
 mod hydration;
 mod metadata_query;
@@ -394,6 +407,10 @@ const MAX_MARKER_BYTES: u64 = 64 * 1024;
 const CANDIDATE_FILE_HEADER: &[u8; 8] = b"SKNCAND1";
 static CANDIDATE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+/// Default [`SearchOutOfCoreConfig::content_cache_bytes`]: about a thousand
+/// 16 KiB content blocks.
+pub(crate) const DEFAULT_CONTENT_CACHE_BYTES: u64 = 16 * 1024 * 1024;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchOutOfCoreConfig {
     pub max_compressed_segment_bytes: NonZeroU64,
@@ -441,6 +458,11 @@ pub struct SearchOutOfCoreConfig {
     pub max_hydrated_bytes: NonZeroU64,
     pub max_matched_spans: NonZeroUsize,
     pub max_matched_span_bytes: NonZeroU64,
+    /// Capacity of the reader's cache of verified, decompressed content blocks
+    /// and segment indexes (#1917), shared by every query and refresh of one
+    /// reader. Zero disables it. Cached bytes are owned by the cache, not by
+    /// a query: a query charges only its transient read and decode buffers.
+    pub content_cache_bytes: u64,
     pub spill_directory: PathBuf,
 }
 
@@ -477,6 +499,7 @@ impl Default for SearchOutOfCoreConfig {
             max_hydrated_bytes: NonZeroU64::new(64 * 1024 * 1024).unwrap(),
             max_matched_spans: NonZeroUsize::new(4096).unwrap(),
             max_matched_span_bytes: NonZeroU64::new(8 * 1024 * 1024).unwrap(),
+            content_cache_bytes: DEFAULT_CONTENT_CACHE_BYTES,
             spill_directory: std::env::temp_dir().join("hawdb-search"),
         }
     }
@@ -508,6 +531,21 @@ pub struct SearchOutOfCoreMetrics {
     /// [`SearchOutOfCoreReader::search_with_options_admitted`]; zero for
     /// unaccounted ordinary reads.
     pub query_memory_peak_bytes: u64,
+    /// Block-framed content segments (#1917): segment indexes read from disk
+    /// and served from the reader's content cache.
+    pub content_index_reads: u64,
+    pub content_index_cache_hits: u64,
+    /// Content blocks read, verified and inflated, and those served verified
+    /// from the reader's content cache.
+    pub content_blocks_read: u64,
+    pub content_block_cache_hits: u64,
+    pub content_block_bytes_inflated: u64,
+}
+
+/// Batched routes, `(artifact_index, segment)` per requested id in order.
+struct DocumentRoutes<'a> {
+    routes: Vec<Option<(usize, &'a SearchSegmentDescriptorEntry)>>,
+    _memory: Option<hawdb_executor::QueryMemoryLease>,
 }
 
 struct SearchDocumentSegmentRoute<'a> {
@@ -583,6 +621,8 @@ pub struct SearchOutOfCoreReader {
     lexical_source_policy: SearchLexicalSourcePolicy,
     lexical_term_policy: SearchLexicalTermPolicy,
     runtime_capabilities: RuntimeCapabilities,
+    /// Verified content blocks and indexes, shared across refreshes (#1917).
+    content_cache: content_blocks::ContentCache,
 }
 
 /// One immutable group of search artifacts selected by an out-of-core manifest.
@@ -604,6 +644,11 @@ pub(super) struct SegmentReaderContents {
     descriptor: crate::document_encoding::DecodedDescriptor,
     payload: File,
     payload_length: u64,
+    /// Selector-declared framing of `payload` (#1917).
+    content_encoding: content_blocks::ContentEncoding,
+    /// The payload's SHA-256 and generation: its content-cache identity.
+    payload_sha256: [u8; 32],
+    payload_generation: u64,
     metadata_payload: File,
     metadata_payload_length: u64,
     vector_payload: File,
@@ -750,6 +795,13 @@ struct SearchOutOfCoreSegmentManifest<S = String> {
     document_count: usize,
     documents_digest: u64,
     source_graph_commit_epoch: Option<u64>,
+    /// How `payload_file` frames its descriptor segments. Absent means
+    /// `stream1`; `blocks1` requires selector version 3 (#1917).
+    #[serde(
+        default,
+        skip_serializing_if = "content_blocks::ContentEncoding::is_stream1"
+    )]
+    content_encoding: content_blocks::ContentEncoding,
 }
 
 /// One immutable mutation artifact selected by the active manifest.
@@ -935,7 +987,13 @@ impl SearchOutOfCoreManifestBody {
     /// field is present, so a selector without one stays readable by the
     /// base reader.
     fn required_reader_version(&self) -> u16 {
-        if self.content_source_graph_commit_epoch.is_some() {
+        if self
+            .segments
+            .iter()
+            .any(|segment| !segment.content_encoding.is_stream1())
+        {
+            manifest_version::CONTENT_BLOCKS_VERSION
+        } else if self.content_source_graph_commit_epoch.is_some() {
             manifest_version::CONTENT_EPOCH_VERSION
         } else {
             manifest_version::BASE_VERSION
@@ -2134,6 +2192,9 @@ impl SearchOutOfCoreSegmentReader {
                 descriptor,
                 payload,
                 payload_length: manifest.payload_len,
+                content_encoding: manifest.content_encoding,
+                payload_sha256: manifest.objects.payload.sha256(),
+                payload_generation: manifest.generation,
                 metadata_payload,
                 metadata_payload_length: manifest.metadata_payload_len,
                 vector_payload,
@@ -2298,6 +2359,12 @@ impl SearchOutOfCoreReader {
         &self.config
     }
 
+    /// Occupancy and hit counters of this reader's content cache (#1917),
+    /// or `None` when `content_cache_bytes` is zero.
+    pub fn content_cache_snapshot(&self) -> Option<hawdb_storage::cache::SegmentCacheSnapshot> {
+        self.content_cache.snapshot()
+    }
+
     pub fn generation(&self) -> u64 {
         self.manifest.generation
     }
@@ -2431,6 +2498,7 @@ impl SearchOutOfCoreReader {
                 lexical_source_policy: reader.lexical_source_policy,
                 lexical_term_policy: reader.lexical_term_policy,
                 runtime_capabilities: reader.runtime_capabilities,
+                content_cache: reader.content_cache.clone(),
             };
             *reader = Arc::new(next);
         }
@@ -3850,7 +3918,8 @@ impl SearchOutOfCoreReader {
         // Reported vector scores must equal the ranking scores' metric.
         let metric = self.vector_metric()?;
         // Matched spans are the only hit fields that need the stored body.
-        let mut hydrated = if context.mode == SearchMode::Vector && context.query_terms.is_empty() {
+        let matches = level == SearchHitHydration::Documents && !context.query_terms.is_empty();
+        let mut hydrated = if !matches {
             HydratedHits::Sidecars(hydration::sidecar::load(
                 self,
                 candidates,
@@ -3863,6 +3932,8 @@ impl SearchOutOfCoreReader {
                 candidates,
                 metrics,
                 context.query,
+                // Only vector and hybrid hits rescore the stored embedding.
+                context.mode != SearchMode::Text,
             )?)
         };
         let query_scorer = if context.mode != SearchMode::Text && !candidates.is_empty() {
@@ -3903,7 +3974,11 @@ impl SearchOutOfCoreReader {
                 0.0
             };
             let matched = context.output_memory.matches(
-                context.query_terms,
+                if matches {
+                    context.query_terms
+                } else {
+                    &NO_TERMS
+                },
                 document,
                 &self.analyzer_lexicon,
                 query_output::matches::Limits {
@@ -3999,9 +4074,18 @@ impl SearchOutOfCoreReader {
         &self,
         document_ids: &BTreeSet<String>,
         metrics: &mut SearchOutOfCoreMetrics,
+        embeddings: bool,
     ) -> Result<BTreeMap<String, SearchDocument>> {
         Ok(self
-            .load_document_targets(document_ids, metrics, DocumentTargetRequest::SearchHits)?
+            .load_document_targets(
+                document_ids,
+                metrics,
+                if embeddings {
+                    DocumentTargetRequest::SearchHits
+                } else {
+                    DocumentTargetRequest::TextHits
+                },
+            )?
             .into_iter()
             .map(|(id, target)| (id, target.document))
             .collect())
@@ -4029,26 +4113,22 @@ impl SearchOutOfCoreReader {
         let mut segment_documents = BTreeMap::<(usize, u64), BTreeSet<String>>::new();
         // Every id with a visible route must load, whoever asked for it.
         let mut routed_documents = 0usize;
-        for id in document_ids {
-            let Some(route) = self.segment_for_document(id)? else {
+        let ids = document_ids.iter().map(String::as_str).collect::<Vec<_>>();
+        let routes = self.segments_for_documents_with_context(&ids, None, metrics)?;
+        for (id, route) in document_ids.iter().zip(&routes.routes) {
+            let Some((artifact_index, segment)) = route else {
                 match request.unknown_document(id) {
                     Some(error) => return Err(error),
                     None => continue,
                 }
             };
             routed_documents += 1;
-            if route.lexical_document_bytes_read > 0 {
-                metrics.lexical_document_block_reads =
-                    metrics.lexical_document_block_reads.saturating_add(1);
-                metrics.lexical_document_bytes_read = metrics
-                    .lexical_document_bytes_read
-                    .saturating_add(route.lexical_document_bytes_read);
-            }
             segment_documents
-                .entry((route.artifact_index, route.segment.segment_id))
+                .entry((*artifact_index, segment.segment_id))
                 .or_default()
                 .insert(id.clone());
         }
+        drop(routes);
         let mut targets = BTreeMap::<String, SearchOutOfCoreMutationTarget>::new();
         let mut hydrated_bytes = 0u64;
         for ((layer, segment_id), ids) in segment_documents {
@@ -4070,26 +4150,35 @@ impl SearchOutOfCoreReader {
                         "search {operation} references unknown segment {segment_id}"
                     ))
                 })?;
-            for document in artifact.read_selected_hydration_segment(
+            let (documents, bytes) = artifact.read_selected_hydration_segment(
                 &self.config,
                 segment,
-                &ids,
+                hydration::Wanted {
+                    ids: &ids,
+                    embeddings: request.embeddings(),
+                },
                 hydrated_bytes,
                 metrics,
-            )? {
-                hydrated_bytes = hydrated_bytes
-                    .checked_add(search_document_bytes(&document))
-                    .ok_or_else(|| {
-                        HawDBError::Storage(format!("search {operation} byte count overflow"))
-                    })?;
-                // Selected decoding already enforces this cap; retain the
-                // aggregate check as a consistency guard for that accounting.
-                if hydrated_bytes > self.config.max_hydrated_bytes.get() {
-                    return Err(HawDBError::Storage(format!(
-                        "search {operation} requires {hydrated_bytes} bytes, exceeding {}",
-                        self.config.max_hydrated_bytes
-                    )));
-                }
+                &self.content_cache,
+            )?;
+            // One count, the selection's, carries the budget across segments
+            // and into the metric; it equals the selected documents' size.
+            debug_assert_eq!(
+                documents.iter().map(search_document_bytes).sum::<u64>(),
+                bytes
+            );
+            hydrated_bytes = hydrated_bytes.checked_add(bytes).ok_or_else(|| {
+                HawDBError::Storage(format!("search {operation} byte count overflow"))
+            })?;
+            // Selected decoding already enforces this cap; retain the
+            // aggregate check as a consistency guard for that accounting.
+            if hydrated_bytes > self.config.max_hydrated_bytes.get() {
+                return Err(HawDBError::Storage(format!(
+                    "search {operation} requires {hydrated_bytes} bytes, exceeding {}",
+                    self.config.max_hydrated_bytes
+                )));
+            }
+            for document in documents {
                 let id = document.id.clone();
                 if targets
                     .insert(
@@ -4115,6 +4204,76 @@ impl SearchOutOfCoreReader {
         }
         metrics.hydrated_bytes = hydrated_bytes;
         Ok(targets)
+    }
+
+    /// Routes `ids` (ascending and distinct) exactly like
+    /// [`Self::segment_for_document_with_context`] routes each one, but
+    /// probes each artifact's lexical document blocks with one ascending
+    /// prober, so a block holding several ids is read and verified once
+    /// instead of once per id (#1917). One block is held at a time. Block
+    /// reads and bytes are added to `metrics`.
+    fn segments_for_documents_with_context(
+        &self,
+        ids: &[&str],
+        context: Option<crate::lexical_projection::QueryContext<'_>>,
+        metrics: &mut SearchOutOfCoreMetrics,
+    ) -> Result<DocumentRoutes<'_>> {
+        debug_assert!(ids.is_sorted_by(|left, right| left < right));
+        let checkpoint = || context.map_or(Ok(()), |context| context.checkpoint());
+        checkpoint()?;
+        let route_bytes = size_of::<Option<(usize, &SearchSegmentDescriptorEntry)>>();
+        let _memory = context
+            .map(|context| {
+                context
+                    .memory
+                    .reserve(ids.len().saturating_mul(route_bytes))
+            })
+            .transpose()?;
+        let mut routes = vec![None; ids.len()];
+        for (artifact_index, artifact) in self.segments.iter().enumerate() {
+            checkpoint()?;
+            let mut prober = artifact.lexical_projection.document_id_prober(context);
+            for (id, route) in ids.iter().zip(routes.iter_mut()) {
+                checkpoint()?;
+                if !self.visibility.is_visible(artifact.content_segment_id, id) {
+                    continue;
+                }
+                let Ok(index) = artifact.descriptor.segments.binary_search_by(|segment| {
+                    if segment.last_document_id.as_str() < *id {
+                        CmpOrdering::Less
+                    } else if segment.first_document_id.as_str() > *id {
+                        CmpOrdering::Greater
+                    } else {
+                        CmpOrdering::Equal
+                    }
+                }) else {
+                    continue;
+                };
+                let segment = artifact
+                    .descriptor
+                    .segments
+                    .get(index)
+                    .expect("binary search returned an existing descriptor segment");
+                let probe = prober.probe(id)?;
+                if probe.bytes_read > 0 {
+                    metrics.lexical_document_block_reads =
+                        metrics.lexical_document_block_reads.saturating_add(1);
+                    metrics.lexical_document_bytes_read = metrics
+                        .lexical_document_bytes_read
+                        .saturating_add(probe.bytes_read);
+                }
+                if !probe.present {
+                    continue;
+                }
+                if route.replace((artifact_index, segment)).is_some() {
+                    return Err(HawDBError::Storage(format!(
+                        "search out-of-core segment set has duplicate document {id}"
+                    )));
+                }
+            }
+        }
+        checkpoint()?;
+        Ok(DocumentRoutes { routes, _memory })
     }
 
     fn segment_for_document(&self, id: &str) -> Result<Option<SearchDocumentSegmentRoute<'_>>> {
@@ -4213,25 +4372,39 @@ impl SearchOutOfCoreReader {
                 segment.segment_id
             ))
         })?;
-        let payload = read_out_of_core_payload_range(
-            &artifact.payload,
-            SearchOutOfCoreRange {
+        let documents = hydration::read_validated(
+            hydration::RangeReader {
+                file: &artifact.payload,
                 offset: range.offset,
-                length: range.length,
-                checksum: range.checksum,
-                entry_count: segment.document_count,
+                remaining: range.length,
             },
-            segment.segment_id,
-            "hydration",
-            metrics,
-        )?;
+            range.length,
+            range.checksum,
+            self.config.max_uncompressed_segment_bytes.get(),
+            None,
+            |text| {
+                let mut documents = Vec::new();
+                for line in std::io::BufRead::lines(text) {
+                    let line = line?;
+                    if line.starts_with("doc\t") {
+                        documents.push(crate::decode_search_document_line(&line)?);
+                    }
+                }
+                Ok(documents)
+            },
+        )
+        .map_err(|error| match error {
+            HawDBError::Storage(message) => HawDBError::Storage(format!(
+                "search segment {} hydration {message}",
+                segment.segment_id
+            )),
+            error => error,
+        })?;
+        metrics.segment_range_reads = metrics.segment_range_reads.saturating_add(1);
+        metrics.segment_bytes_read = metrics.segment_bytes_read.saturating_add(range.length);
         metrics.hydration_segment_bytes_read = metrics
             .hydration_segment_bytes_read
             .saturating_add(range.length);
-        let documents = decode_search_segment_documents_bounded(
-            &payload,
-            self.config.max_uncompressed_segment_bytes.get(),
-        )?;
         validate_search_segment_documents(segment, &documents)?;
         metrics.peak_segment_document_bytes = metrics
             .peak_segment_document_bytes
@@ -5553,6 +5726,8 @@ fn publish_out_of_core_projection(
             document_count: index.documents.len(),
             documents_digest: lexical_documents_digest(&index.documents),
             source_graph_commit_epoch: index.source_graph_commit_epoch,
+            // The resident snapshot writer frames segments as envelopes.
+            content_encoding: content_blocks::ContentEncoding::Stream1,
         }],
         mutation_runs: Vec::new(),
         document_count: index.documents.len(),

@@ -203,7 +203,7 @@ impl<W: Write> Write for DigestWriter<'_, W> {
 mod tests;
 
 mod file;
-pub(super) use file::append_segment;
+pub(super) use file::append_block_segment;
 
 #[cfg(test)]
 pub(crate) mod evidence {

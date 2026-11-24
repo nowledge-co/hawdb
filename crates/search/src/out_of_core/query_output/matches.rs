@@ -5,9 +5,8 @@
 
 use super::*;
 use crate::analyzer_memory::Memory as AnalyzerMemory;
-use crate::analyzer_stream::{visit_admitted_token_list, Control};
+use crate::analyzer_stream::Control;
 use crate::build_memory::SET_ENTRY_BYTES;
-use crate::build_term::Term;
 use crate::SearchMatchedSpan;
 
 pub(in crate::out_of_core) struct Limits {
@@ -19,25 +18,6 @@ pub(in crate::out_of_core) struct Matches {
     pub(in crate::out_of_core) terms: Vec<String>,
     pub(in crate::out_of_core) spans: Vec<SearchMatchedSpan>,
 }
-struct Tokens {
-    values: BTreeSet<Term>,
-    _nodes: QueryMemoryLease,
-}
-impl Tokens {
-    fn new(query: QueryContext<'_>) -> Result<Self> {
-        Ok(Self {
-            values: BTreeSet::new(),
-            _nodes: query.memory.reserve(0)?,
-        })
-    }
-    fn retain(&mut self, term: Term, terms: &BTreeSet<String>) -> Result<()> {
-        if terms.contains(term.as_str()) && !self.values.contains(term.as_str()) {
-            self._nodes.grow(SET_ENTRY_BYTES)?;
-            self.values.insert(term);
-        }
-        Ok(())
-    }
-}
 impl Memory<'_> {
     pub(in crate::out_of_core) fn matches(
         self,
@@ -47,17 +27,15 @@ impl Memory<'_> {
         limits: Limits,
     ) -> Result<Matches> {
         let Some(frame) = self.0 else {
-            return Ok(Matches {
-                spans: matched_query_spans_bounded(
-                    terms,
-                    document,
-                    analyzer,
-                    limits.count,
-                    limits.bytes,
-                    limits.used,
-                )?,
-                terms: matched_query_terms(terms, document, analyzer),
-            });
+            let (terms, spans) = crate::query_matches_bounded(
+                terms,
+                document,
+                analyzer,
+                limits.count,
+                limits.bytes,
+                limits.used,
+            )?;
+            return Ok(Matches { terms, spans });
         };
         frame.query.checkpoint()?;
         if terms.is_empty() {
@@ -88,87 +66,75 @@ impl Memory<'_> {
                 workspace,
                 ..Default::default()
             };
-            let mut matched = Tokens::new(frame.query)?;
-            for (text, _) in crate::analyzer_stream::document_token_fields(document) {
-                visit_admitted_token_list(text, analyzer, control, |term, _| {
-                    matched.retain(term, terms)
-                })?;
-            }
-            let mut output = Matches {
-                terms: self.vec(matched.values.len())?,
-                spans: Vec::new(),
-            };
-            for term in &matched.values {
-                output.terms.push(self.text(term.as_str())?);
-            }
-            drop(matched);
+            let mut matched = BTreeSet::<&str>::new();
+            let mut matched_memory = frame.query.memory.reserve(0)?;
+            // A word's distinct span terms, funded like a term set.
+            let mut word_memory = frame.query.memory.reserve(0)?;
+            let mut spans = Vec::new();
             let mut bytes = 0u64;
-            for (field, text) in [
-                ("title", document.title.as_str()),
-                ("content", document.content.as_str()),
-            ] {
-                let mut start = None;
-                let mut push = |start: usize, end: usize| -> Result<()> {
-                    let raw = &text[start..end];
-                    let mut matches = Tokens::new(frame.query)?;
-                    visit_admitted_token_list(raw, analyzer, control, |term, _| {
-                        matches.retain(term, terms)
-                    })?;
-                    for term in &matches.values {
-                        if output.spans.len() >= limits.count {
-                            return Err(HawDBError::Storage(format!(
-                                "search matched-span hydration exceeded {} spans",
-                                limits.count
-                            )));
-                        }
-                        let required = add(
-                            size_of::<SearchMatchedSpan>(),
-                            add(field.len(), add(raw.len(), term.len())?)?,
-                        )? as u64;
-                        let previous = bytes;
-                        bytes = bytes.checked_add(required).ok_or_else(|| {
-                            HawDBError::Execution("matched-span byte count overflow".into())
-                        })?;
-                        if bytes > limits.bytes.saturating_sub(limits.used) {
-                            return Err(ResourceBudgetError {
-                                resource: ResourceBudgetKind::MemoryBytes,
-                                scope: ResourceBudgetScope::Operator,
-                                owner: "search matched-span hydration".into(),
-                                memory_class: None,
-                                requested: required,
-                                used: limits.used.saturating_add(previous),
-                                budget: limits.bytes,
-                                budget_option: "SearchOutOfCoreConfig.max_matched_span_bytes",
-                                message: "search matched-span hydration exceeds its byte budget"
-                                    .into(),
-                            }
-                            .into());
-                        }
-                        let span = SearchMatchedSpan {
-                            field: self.text(field)?,
-                            start_byte: start,
-                            end_byte: end,
-                            text: self.text(raw)?,
-                            term: self.text(term.as_str())?,
-                        };
-                        self.push(&mut output.spans, span)?;
+            crate::query_matches::visit(
+                terms,
+                document,
+                analyzer,
+                control,
+                |term| {
+                    if !matched.contains(term) {
+                        matched_memory.grow(SET_ENTRY_BYTES)?;
+                        matched.insert(term);
                     }
                     Ok(())
-                };
-                for (ordinal, (index, ch)) in text.char_indices().enumerate() {
-                    if ordinal.is_multiple_of(1024) {
-                        frame.query.checkpoint()?;
+                },
+                || {
+                    word_memory.grow(SET_ENTRY_BYTES)?;
+                    Ok(())
+                },
+                |span| {
+                    if spans.len() >= limits.count {
+                        return Err(HawDBError::Storage(format!(
+                            "search matched-span hydration exceeded {} spans",
+                            limits.count
+                        )));
                     }
-                    if ch.is_alphanumeric() || ch == '_' {
-                        start.get_or_insert(index);
-                    } else if let Some(begin) = start.take() {
-                        push(begin, index)?;
+                    let required = add(
+                        size_of::<SearchMatchedSpan>(),
+                        add(span.field.len(), add(span.text.len(), span.term.len())?)?,
+                    )? as u64;
+                    let previous = bytes;
+                    bytes = bytes.checked_add(required).ok_or_else(|| {
+                        HawDBError::Execution("matched-span byte count overflow".into())
+                    })?;
+                    if bytes > limits.bytes.saturating_sub(limits.used) {
+                        return Err(ResourceBudgetError {
+                            resource: ResourceBudgetKind::MemoryBytes,
+                            scope: ResourceBudgetScope::Operator,
+                            owner: "search matched-span hydration".into(),
+                            memory_class: None,
+                            requested: required,
+                            used: limits.used.saturating_add(previous),
+                            budget: limits.bytes,
+                            budget_option: "SearchOutOfCoreConfig.max_matched_span_bytes",
+                            message: "search matched-span hydration exceeds its byte budget".into(),
+                        }
+                        .into());
                     }
-                }
-                if let Some(begin) = start {
-                    push(begin, text.len())?;
-                }
+                    let span = SearchMatchedSpan {
+                        field: self.text(span.field)?,
+                        start_byte: span.start,
+                        end_byte: span.end,
+                        text: self.text(span.text)?,
+                        term: self.text(span.term)?,
+                    };
+                    self.push(&mut spans, span)
+                },
+            )?;
+            let mut output = Matches {
+                terms: self.vec(matched.len())?,
+                spans,
+            };
+            for term in matched {
+                output.terms.push(self.text(term)?);
             }
+            drop((matched_memory, word_memory));
             frame.query.checkpoint()?;
             Ok(output)
         };

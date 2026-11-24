@@ -818,3 +818,87 @@ fn mini_delta_budget_rejection_is_atomic_for_insert_replace_and_delete() {
         .unwrap());
     assert!(!fixture.scores(&delta).contains_key("a"));
 }
+
+#[test]
+fn ascending_document_prober_reads_each_mapping_block_once() {
+    let root = projection_root("document-prober");
+    fs::create_dir(&root).unwrap();
+    let documents = (0..60)
+        .map(|number| {
+            let id = format!("doc-{number:03}");
+            (id.clone(), document(&id, "graph", "storage"))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let analyzer = SearchAnalyzerLexicon::default();
+    let reader = LexicalProjectionWriter::new(LexicalProjectionConfig {
+        target_block_bytes: NonZeroU64::new(64).unwrap(),
+        ..LexicalProjectionConfig::default()
+    })
+    .write(&root, 1, Some(7), 11, 13, documents.values(), &analyzer)
+    .unwrap();
+    let blocks = reader
+        .manifest
+        .blocks
+        .iter()
+        .filter(|block| block.kind == BlockKind::Documents)
+        .collect::<Vec<_>>();
+    assert!(blocks.len() > 3, "{}", blocks.len());
+    let grant = NonZeroUsize::new(1024 * 1024).unwrap();
+    let ledger = hawdb_executor::QueryMemoryLedger::new(grant);
+    let account = ledger.account(
+        hawdb_executor::QueryMemoryClass::ExternalRead,
+        "document prober",
+        grant,
+    );
+    let task = RuntimeTaskContext::default();
+    let query = QueryContext {
+        memory: &account,
+        task: &task,
+        execution: None,
+        io_scope: None,
+    };
+    // Ascending present, absent and out-of-range ids, then a restart below
+    // the last probe and a repeat: every answer equals the single probe.
+    let mut ids = documents.keys().cloned().collect::<Vec<_>>();
+    ids.extend(["doc-000a", "doc-0305", "a", "zzz"].map(String::from));
+    ids.sort();
+    ids.extend(["doc-010", "doc-010", "doc-009", "doc-059", "doc-000"].map(String::from));
+    for context in [None, Some(query)] {
+        let mut prober = reader.document_id_prober(context);
+        let mut reads = 0;
+        let mut bytes = 0;
+        for id in &ids {
+            let probe = prober.probe(id).unwrap();
+            let single = reader.probe_document_id(id).unwrap();
+            assert_eq!(probe.present, single.present, "{id}");
+            if probe.bytes_read > 0 {
+                assert_eq!(probe.bytes_read, single.bytes_read, "{id}");
+                reads += 1;
+                bytes += probe.bytes_read;
+            }
+            if context.is_some() {
+                // One admitted block at most, never one per probe.
+                assert!(
+                    ledger.snapshot().used_bytes <= reader.document_id_page_memory_bytes().unwrap()
+                );
+            }
+        }
+        // The ascending pass reads each block once; the five unordered
+        // probes revisit at most five blocks.
+        assert!(
+            reads >= blocks.len() && reads <= blocks.len() + 5,
+            "{reads}"
+        );
+        assert!(bytes >= blocks.iter().map(|block| block.length).sum::<u64>());
+        drop(prober);
+        assert_eq!(ledger.snapshot().used_bytes, 0);
+    }
+    let mut prober = reader.document_id_prober(None);
+    let ascending = documents.keys().map(|id| prober.probe(id).unwrap());
+    assert_eq!(
+        ascending.filter(|probe| probe.bytes_read > 0).count(),
+        blocks.len()
+    );
+    drop(reader);
+    fs::remove_dir_all(root).unwrap();
+}

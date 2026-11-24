@@ -2211,16 +2211,26 @@ are not touched until final-page hydration. `SearchOutOfCoreReader::hydrate_docu
 provides the same row and payload budgets for projection-owned source chunks or
 other payloads.
 
-Final-page hit hydration has two levels (`SearchHitHydration`). The default
+Final-page hit hydration has three levels (`SearchHitHydration`). The default
 `Documents` level returns metadata fields, matched terms/spans and the vector
-score recomputed from the stored embedding. Vector-only requests without query
-terms have no matched spans, so they read only the hit's metadata sidecar
-segment and its own binary vector row instead of the full document payload;
-the hits are identical. This covers Knowledge Retrieval and Cypher vector seeds
-in vector mode. `SearchOutOfCoreReader::search_with_hydration(..,
-SearchHitHydration::ScoresOnly)` skips hydration entirely for callers that only
-consume IDs and scores; its hits carry the ranking scores and no metadata or
-matched terms.
+score recomputed from the stored embedding. Requests without query terms have
+no matched spans, so they read only the hit's metadata sidecar segment and its
+own binary vector row instead of the full document payload; the hits are
+identical. This covers Knowledge Retrieval and Cypher vector seeds in vector
+mode. `SearchOutOfCoreReader::search_with_hydration(..,
+SearchHitHydration::Metadata)` takes that sidecar path for every mode: its hits
+equal `Documents` hits with empty `matched_terms` and `matched_spans`, and no
+document payload is read or decoded. `SearchHitHydration::ScoresOnly` skips
+hydration entirely for callers that only consume IDs and scores; its hits carry
+the ranking scores and no metadata or matched terms. `Documents` stays the
+default of `search_with_options`, so existing callers keep their matched
+terms/spans; callers that do not display them opt out explicitly.
+
+Matched terms and spans come from one analyzer pass over each hit's title and
+content (plus its tokenized metadata fields for terms): the analyzer already
+emits each word's identifier tokens together, so a span's terms need no second
+analysis of the word. The result equals the earlier whole-document plus
+per-word analysis, which tests keep as a reference.
 
 The read report separates metadata-sidecar, vector-sidecar, and hydration
 payload bytes, and also exposes range reads, peak decoded sidecar and full

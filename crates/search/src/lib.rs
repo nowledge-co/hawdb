@@ -109,6 +109,7 @@ pub mod projection_evidence;
 pub mod projection_evidence_cli;
 pub mod projection_ownership;
 mod query_control;
+mod query_matches;
 mod resident_bm25;
 #[cfg(feature = "vector-search")]
 mod resident_diskann;
@@ -239,11 +240,11 @@ pub use out_of_core::{
     GovernedSearchGenerationUpdate, GovernedSearchGenerationWriter, PreparedSearchPublication,
     ScheduledSearchOutOfCoreSegmentCompactionReport, SearchAdmittedConsumerDocuments,
     SearchBaselineComparisonLimits, SearchBaselineComparisonReport, SearchBodyReadOptions,
-    SearchComparedConsumerDocuments, SearchGenerationAdmission, SearchMatchedBaseline,
-    SearchMutationInspectionInput, SearchMutationInspectionStep, SearchMutationSortStep,
-    SearchMutationSortStepLimits, SearchMutationSortStepUsage, SearchOutOfCoreBaselineComparison,
-    SearchOutOfCoreCandidate, SearchOutOfCoreConfig, SearchOutOfCoreDeltaComparison,
-    SearchOutOfCoreDocumentLookup, SearchOutOfCoreExecutionContext,
+    SearchComparedConsumerDocuments, SearchContentVerificationReport, SearchGenerationAdmission,
+    SearchMatchedBaseline, SearchMutationInspectionInput, SearchMutationInspectionStep,
+    SearchMutationSortStep, SearchMutationSortStepLimits, SearchMutationSortStepUsage,
+    SearchOutOfCoreBaselineComparison, SearchOutOfCoreCandidate, SearchOutOfCoreConfig,
+    SearchOutOfCoreDeltaComparison, SearchOutOfCoreDocumentLookup, SearchOutOfCoreExecutionContext,
     SearchOutOfCoreGenerationBuildOptions, SearchOutOfCoreGenerationBuildReport,
     SearchOutOfCoreGenerationUpdate, SearchOutOfCoreGenerationWriter,
     SearchOutOfCoreHydrationOutput, SearchOutOfCoreMetrics, SearchOutOfCoreMutationWriter,
@@ -825,6 +826,12 @@ pub enum SearchHitHydration {
     /// sidecars instead of the full document payload; the hits are identical.
     #[default]
     Documents,
+    /// Hydrate the metadata fields and the vector score recomputed from the
+    /// stored embedding, without matched terms/spans. Hits read only their
+    /// metadata sidecar segments and their own binary vector rows, never the
+    /// document payload, for every search mode. The hits equal `Documents`
+    /// hits except that `matched_terms` and `matched_spans` are empty.
+    Metadata,
     /// Return identifiers and ranking scores without reading any document,
     /// metadata or vector payload. `kind`, `external_id` and `source_id` are
     /// `None`, matched terms/spans are empty, and `vector_score` is the vector
@@ -4705,6 +4712,15 @@ impl SearchIndex {
                         candidate.id
                     ))
                 })?;
+            let (matched_terms, matched_spans) = query_matches_bounded(
+                &query_terms,
+                document,
+                &self.analyzer_lexicon,
+                usize::MAX,
+                u64::MAX,
+                0,
+            )
+            .expect("unbounded matched-span collection cannot exhaust its admission limit");
             hits.push(SearchHit {
                 id: candidate.id,
                 score: if mode == SearchMode::Vector {
@@ -4722,8 +4738,8 @@ impl SearchIndex {
                 kind: document.metadata.get("kind").cloned(),
                 external_id: document.metadata.get("external_id").cloned(),
                 source_id: document.metadata.get("source_id").cloned(),
-                matched_terms: matched_query_terms(&query_terms, document, &self.analyzer_lexicon),
-                matched_spans: matched_query_spans(&query_terms, document, &self.analyzer_lexicon),
+                matched_terms,
+                matched_spans,
                 fallback_reason_codes: fallback_reason_codes.clone(),
                 fallback_reasons: fallback_reasons.clone(),
                 projection_freshness: projection_freshness.clone(),
@@ -7744,6 +7760,8 @@ fn bm25_score(
     score
 }
 
+/// Reference: query terms among the whole document's tokens.
+#[cfg(test)]
 fn matched_query_terms(
     query_terms: &BTreeSet<String>,
     document: &SearchDocument,
@@ -7762,6 +7780,7 @@ fn matched_query_terms(
         .collect()
 }
 
+#[cfg(test)]
 fn matched_query_spans(
     query_terms: &BTreeSet<String>,
     document: &SearchDocument,
@@ -7778,6 +7797,73 @@ fn matched_query_spans(
     .expect("unbounded matched-span collection cannot exhaust its admission limit")
 }
 
+/// Matched terms and spans of one hit without query memory accounting. The
+/// span count and byte limits behave like the reference collector's.
+fn query_matches_bounded(
+    query_terms: &BTreeSet<String>,
+    document: &SearchDocument,
+    analyzer_lexicon: &SearchAnalyzerLexicon,
+    max_spans: usize,
+    max_bytes: u64,
+    used_bytes: u64,
+) -> Result<(Vec<String>, Vec<SearchMatchedSpan>)> {
+    let mut terms = BTreeSet::new();
+    let mut spans = Vec::new();
+    let mut span_bytes = 0u64;
+    query_matches::visit(
+        query_terms,
+        document,
+        analyzer_lexicon,
+        analyzer_stream::Control::default(),
+        |term| {
+            terms.insert(term);
+            Ok(())
+        },
+        || Ok(()),
+        |span| {
+            if spans.len() >= max_spans {
+                return Err(HawDBError::Storage(format!(
+                    "search matched-span hydration exceeded {max_spans} spans"
+                )));
+            }
+            let required = (span.field.len() as u64)
+                .saturating_add(span.text.len() as u64)
+                .saturating_add(span.term.len() as u64)
+                .saturating_add(std::mem::size_of::<SearchMatchedSpan>() as u64);
+            let previous_bytes = span_bytes;
+            span_bytes = span_bytes.saturating_add(required);
+            let remaining_bytes = max_bytes.saturating_sub(used_bytes);
+            if span_bytes > remaining_bytes {
+                return Err(ResourceBudgetError {
+                    resource: ResourceBudgetKind::MemoryBytes,
+                    scope: ResourceBudgetScope::Operator,
+                    owner: "search matched-span hydration".to_string(),
+                    memory_class: None,
+                    requested: required,
+                    used: used_bytes.saturating_add(previous_bytes),
+                    budget: max_bytes,
+                    budget_option: "SearchOutOfCoreConfig.max_matched_span_bytes",
+                    message: format!(
+                        "search matched-span hydration requires {span_bytes} bytes, exceeding {remaining_bytes}"
+                    ),
+                }
+                .into());
+            }
+            spans.push(SearchMatchedSpan {
+                field: span.field.to_string(),
+                start_byte: span.start,
+                end_byte: span.end,
+                text: span.text.to_string(),
+                term: span.term.to_string(),
+            });
+            Ok(())
+        },
+    )?;
+    Ok((terms.into_iter().map(str::to_string).collect(), spans))
+}
+
+/// Reference: every word of title and content analyzed on its own.
+#[cfg(test)]
 fn matched_query_spans_bounded(
     query_terms: &BTreeSet<String>,
     document: &SearchDocument,
@@ -7803,6 +7889,7 @@ fn matched_query_spans_bounded(
     Ok(collector.spans)
 }
 
+#[cfg(test)]
 struct MatchedSpanCollector<'a> {
     query_terms: &'a BTreeSet<String>,
     analyzer_lexicon: &'a SearchAnalyzerLexicon,
@@ -7813,6 +7900,7 @@ struct MatchedSpanCollector<'a> {
     used_bytes: u64,
 }
 
+#[cfg(test)]
 impl MatchedSpanCollector<'_> {
     fn collect(&mut self, field: &str, text: &str) -> Result<()> {
         let mut run_start = None::<usize>;
@@ -7878,6 +7966,7 @@ impl MatchedSpanCollector<'_> {
     }
 }
 
+#[cfg(test)]
 fn document_tokens(
     document: &SearchDocument,
     analyzer_lexicon: &SearchAnalyzerLexicon,
@@ -7940,6 +8029,7 @@ fn normalized_stopword_terms(text: &str) -> Vec<String> {
     tokenize_list(text, &SearchAnalyzerLexicon::empty())
 }
 
+#[cfg(test)]
 fn identifier_tokens(raw: &str, analyzer_lexicon: &SearchAnalyzerLexicon) -> Vec<String> {
     analyzer_stream::identifier_tokens(raw, analyzer_lexicon)
 }
@@ -8012,6 +8102,7 @@ struct TokenSequence {
 }
 
 impl TokenSequence {
+    #[cfg(test)]
     fn push_unique(&mut self, token: String) {
         let next_id = self.token_ids.len();
         if let std::collections::hash_map::Entry::Vacant(entry) = self.token_ids.entry(token) {
@@ -8446,6 +8537,12 @@ fn decode_metadata(input: &str) -> Result<BTreeMap<String, String>> {
 }
 
 fn decode_search_document_line(line: &str) -> Result<SearchDocument> {
+    decode_search_document_line_with(line, true)
+}
+
+/// Decodes one document line; without `embeddings` its decimal-text vector
+/// is left unparsed and the document carries none (#1917 text-only hits).
+fn decode_search_document_line_with(line: &str, embeddings: bool) -> Result<SearchDocument> {
     let line = line.strip_suffix('\n').unwrap_or(line);
     let fields = line.split('\t').collect::<Vec<_>>();
     match fields.as_slice() {
@@ -8454,7 +8551,11 @@ fn decode_search_document_line(line: &str) -> Result<SearchDocument> {
                 id: decode_string(raw_id)?,
                 title: decode_string(raw_title)?,
                 content: decode_string(raw_content)?,
-                embedding: decode_embedding(raw_embedding)?,
+                embedding: if embeddings {
+                    decode_embedding(raw_embedding)?
+                } else {
+                    None
+                },
                 metadata: decode_metadata(raw_metadata)?,
             })
         }

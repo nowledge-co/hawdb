@@ -227,10 +227,13 @@ with `cargo test --locked -p hawdb --lib exact_candidate_tests` or
 Embedded out-of-core candidate working memory (`nowledge-co/hawdb#1722`) lives
 in `embedded_store::out_of_core_working_memory_tests` (same
 `//:hawdb_unit_general_tests` owner), reusing the #1692 fixture. At the
-smallest admission serving text, exact vector-only and windowed exact hybrid
-snapshot reads (measured at 256 MiB), those reads and default vector-only
-succeed within the charge while an unwindowed exact hybrid read is refused with
-a typed `MemoryBytes` budget error; at 256 MiB every mode succeeds with a
+smallest admission serving text and windowed exact hybrid snapshot reads
+(measured at 256 MiB), those reads succeed within the charge while an
+unwindowed exact hybrid read is refused with a typed `MemoryBytes` budget
+error; exact and default vector-only reads, whose blocking vector state
+(~2.8 MiB here) exceeds both, succeed within the exact read's measured
+admission. (Before #1917 `stream1` hydration charged a ~2.5 MiB decoder window
+to every text and hybrid page, so one admission covered all three.) At 256 MiB every mode succeeds with a
 nonzero `query_memory_peak_bytes` within admission, through both snapshot and
 handle. `out_of_core::tests::admitted_working`
 (`//crates/search:hawdb_search_tests` and the FTS+vector profiles) asserts with
@@ -743,7 +746,63 @@ byte-identical. Each refusal asserts `format() == SEARCH_PROJECTION_MANIFEST_FOR
 `hawdb-core` `storage_format` tests pin the exported format constants. `bindings/ffi/src/error_tests.rs` and `bindings/python/src/errors.rs`
 pin the binding kind. No lane, profile or timeout is added. Local replay:
 `cargo test --locked -p hawdb-search --lib manifest_version`. See
-[the policy](SEARCH_PROJECTION_MANIFEST_VERSION.md).
+[the policy](SEARCH_PROJECTION_MANIFEST_VERSION.md). These cases write
+pre-#1917 envelope content artifacts so that versions 1 and 2 stay pinned.
+
+Search-crate owner `out_of_core::content_blocks::tests` (`nowledge-co/hawdb#1917`),
+in the same `hawdb-search` unit lane, covers block-framed content segments
+([format](SEARCH_CONTENT_BLOCKS.md)). New generations write `blocks1` behind a
+version-3 selector that a version-2 reader refuses with the typed error; every
+document round-trips with one record per block and with several. Hydrating one
+id reads the index and exactly one block (inflated bytes counted by a test
+hook), three ids read three blocks, and text hits read at most one block each.
+A damaged block fails only requests that read it, deep verification
+(`verify_content_segments`) and whole-segment projection scans; a damaged index
+fails every request in its segment. Reserved header fields, codecs,
+dictionaries and newer layouts are typed refusals only behind a matching
+digest; the unreleased text-record layout 1 and truncated, garbled and
+non-tiling indexes are `Storage`. Binary records
+(`content_blocks::records::tests`) decode to exactly the documents their text
+lines decode to (tabs, newlines, `;`/`=` and non-ASCII in every string field,
+empty fields, no/empty vectors, signed zero, subnormal and extreme
+components), account `search_document_bytes` without decoding, and re-encode
+as the canonical text lines byte for byte across 1-, 3-, 7-byte and 8-KiB
+reads; the streaming record walk and in-place scan refuse wrong counts,
+bounds, order, oversized ids and every truncation, and accept exactly the same
+blocks for shuffled, duplicated, non-UTF-8 and prefix ids (the walk refuses
+ids above the admitted header bytes and charges the ids it holds). Checksum-
+valid blocks above 1 MiB holding several records with shuffled, duplicated or
+non-UTF-8 middle ids are `Storage` through deep verification, a whole-segment
+read that stops after its first line and hydration, while the intact block
+passes all three
+(`content_blocks::tests::streamed_blocks_validate_every_record_id_like_sparse_reads`).
+A record above the
+1-MiB buffered-block limit hydrates and deep-verifies through the streaming
+re-encoder. An index whose boundary between two frames is moved (spans still
+tiling the range, CRCs and inflated lengths recomputed) is refused by both a
+streamed run and every single-block read. Deep verification of a ~4 MiB
+document succeeds under a 3.5 MiB task reservation with a live-allocation peak
+below it (15 MiB before the block-wise verifier) and is a typed `MemoryBytes`
+refusal at 64 KiB. A task or query account that admits the streaming
+decoder's context but not a large block's frame window is the typed
+`MemoryBytes` refusal of that window, not `Storage`, through hit hydration, a
+whole-segment read and deep verification
+(`hydration::query::tests::a_refused_frame_window_after_an_admitted_decoder_stays_typed`).
+Text-only hits are charged the bytes they hold (no stored
+vector) through one count from selection to the cross-segment check and
+`hydrated_bytes`: two hits sharing a segment and two hits split over two
+segments are both refused between one and two hits' bytes and both served at
+two, through `search_with_options` and `search_with_options_admitted`
+(`hydration::tests::budgets::text_hit_budget_is_the_same_within_and_across_segments`).
+Envelope
+artifacts written as before #1917 still read and verify. The content cache
+serves repeated reads without I/O, releases its pins, refuses admission above
+its capacity without changing results, and never admits a damaged block.
+Existing hydration, delta and budget cases assert block reads instead of
+whole-segment reads. Power-loss and publication ordering are unchanged and stay
+owned by the existing search segment qualification. No lane, profile or timeout
+is added. Local replay:
+`cargo test --locked -p hawdb-search --all-features --lib content_blocks`.
 
 The experimental [Windows directory-custody first packet](../scripts/windows-directory-custody-probe.ps1)
 is owned by the narrowly path-filtered, same-repository
@@ -2640,7 +2699,9 @@ vector_only, background_only, text_vector, text_background and vector_background
 | --- | --- | --- |
 | `//crates/search:hawdb_search_tests` and `hawdb_search_<profile>_tests` | Search unit, persistence/recovery and feature capability behavior | Large lifecycle fixtures include 128-MiB sources. The three admitted-root heap-reclamation probes run in exact-case child processes because staging-registry nodes are shared across operations; all peak and final-zero assertions remain. The `io_waves` family runs through the isolated owners below, using these same executables. Repository test profile; the full matrix still runs. Existing deadlines remain unchanged. |
 | Binary vector sidecars (`out_of_core::vector_segment::tests`, `out_of_core::vector_query::tests`, `out_of_core::tests::vector_segments`) | Layout V2 round trip of exact `f32` bits for every row subset, multi-byte IDs and empty segments; head/row CRC detection of every corrupt head byte and of corrupt selected rows (unselected corrupt rows are never read); count/dimension/length/bounds/order mismatches; refusal of superseded V1 text payloads and layouts with a rebuild message; encoder rejection of non-finite, ragged and unordered rows; query-account admission refunds, bounded run reads and cancellation; exact, filtered, DiskANN, RaBitQ and hybrid serving equal to brute-force cosine bits; Required rerank checksum/budget/cancellation guards; ID-only head mapping | Existing Search unit feature-matrix owners and repository checked profile. Graph/compressed/hybrid serving cases require `vector-search` (hybrid also `full-text-search`); format cases run in every profile. No CI scheduling or timeout changes. Replay: `cargo test --locked -p hawdb-search --lib vector_segment` and `cargo test --locked -p hawdb-search --lib vector_query`. Ref [#1469](https://github.com/nowledge-co/hawdb/issues/1469). The text-decimal selected-decode family (`out_of_core::vector_selection_tests::`) and the selected-vector arm of `out_of_core::vector_query::layout_probe::` were retired with the V1 text sidecar; their recorded results remain in [VECTOR_SELECTED_DECODE_BENCHMARK.md](VECTOR_SELECTED_DECODE_BENCHMARK.md) and [the layout investigation](benchmarks/vector_adjacency_layout_2026_10_29/README.md). |
-| Out-of-core hit hydration levels (`out_of_core::hydration::tests::hit_hydration_levels`) | Default document hydration versus sidecar hydration for vector-only requests (identical hits, no document payload reads) and `SearchHitHydration::ScoresOnly` (identical IDs and ranking scores, no hydration reads) across exact, filtered and graph vector modes, plus text/hybrid requests that keep full hydration | Existing Search unit feature-matrix owners and repository checked profile; graph cases require `vector-search`, text/hybrid cases `full-text-search`. Replay: `cargo test --locked -p hawdb-search --lib hit_hydration_levels`. |
+| Out-of-core hit hydration levels (`out_of_core::hydration::tests::hit_hydration_levels`) | Default document hydration versus sidecar hydration for vector-only requests (identical hits, no document payload reads), `SearchHitHydration::Metadata` (hits equal to `Documents` without matched terms/spans, no payload reads or content cache hits, in every mode; one lexical document block read per page, not per hit) and `SearchHitHydration::ScoresOnly` (identical IDs and ranking scores, no hydration reads) across exact, filtered and graph vector modes, plus text/hybrid requests that keep full hydration | Existing Search unit feature-matrix owners and repository checked profile; graph cases require `vector-search`, text/hybrid cases `full-text-search`. Replay: `cargo test --locked -p hawdb-search --lib hit_hydration_levels`. |
+| One-pass matched terms and spans (`query_matches::tests`) | The single analyzer pass per field equals the reference whole-document term analysis plus per-word span analysis for default, empty, Nowledge-memory and alias/stopword lexicons: phrase aliases, identifier parts, repeated words, CJK, Unicode, digits, metadata-only matches and empty queries; span count and byte refusals equal the reference collector's; a field-long unpunctuated CJK word holds and funds only its distinct query terms, not one entry per occurrence | Existing Search unit feature-matrix owners and repository checked profile; no fixtures. The out-of-core query-funded path is compared with the same reference by `out_of_core::query_output::tests`. Replay: `cargo test --locked -p hawdb-search --lib query_matches`. |
+| Ascending document-id prober (`lexical_projection::tests::robustness::ascending_document_prober_reads_each_mapping_block_once`) | Batched hit routing: over a multi-block mapping, ascending present/absent/out-of-range probes plus unordered restarts and repeats answer exactly like single probes, read each block once in an ascending pass, report bytes only for reads, and hold at most one query-funded block (released on drop) | Existing Search unit feature-matrix owners and repository checked profile; small temporary projection. Replay: `cargo test --locked -p hawdb-search --lib ascending_document_prober`. |
 | Adjacency layout investigation (`out_of_core::vector_query::layout_probe::adjacency_layout_measurement`) | Manual persistent-component A/B measurement of IDs-only/property adjacency scans with disabled/bounded engine caches | One ignored probe requires the repository-wide release profile and stays out of CI/fuzz scheduling: `cargo test --locked --release -p hawdb-search --lib layout_probe:: -- --ignored --nocapture --test-threads=1`. [Methods, results and limits](benchmarks/vector_adjacency_layout_2026_10_29/README.md). Payload-visit counters are not physical I/O; an engine cache disabled run is not an OS-cold run. The selected-vector arm was retired with the V1 text sidecar (#1469). Ref [#1326](https://github.com/nowledge-co/hawdb/issues/1326). |
 | `hawdb_search_io_wave_tests` and `hawdb_search_<profile>_io_wave_tests` | Complete standalone writer Task/Wave admission, idle release, cancellation and cleanup contracts | All nine unit feature profiles reuse their existing executable. Required crate presubmits run this family with one libtest thread and Bazel `exclusive`; no additional Rust executable or compilation profile. The runner rejects empty discovery and overlapping skips and preserves caller arguments and failures. The existing 20-second task deadlines and enclosing target timeouts are unchanged. Replay: `bazel test //crates/search:hawdb_search_text_background_io_wave_tests`; the runner itself is covered by `//crates/search:search_unit_family_script_test`. |
 | Search BM25 decode and filter reuse (`lexical_projection::`, `text_seed`) | Reusable posting buffers, corrupt-frame rollback, stable internal predicates, arbitrary callback semantics, exact metadata routing and memory ownership | Existing Search unit feature-matrix owners and repository checked profile; public text-seed cases require `full-text-search`. Allocation probes serialize through the existing measurement gate and cover 8/128/4096 postings; filter cases cover false results, cancellation, complete/window counts and sparse overlapping layers. Local replay: `bazel test //crates/search:hawdb_search_tests --test_arg=lexical_projection:: --test_arg=text_seed --test_arg=--nocapture`. Existing ignored differential campaigns remain local-only. Ref [#1206](https://github.com/nowledge-co/hawdb/issues/1206). |
