@@ -530,7 +530,7 @@ Out-of-core generations that omit an over-bound field value set
 `HAWDB_SEARCH_SEGMENTS_V4` segment descriptors and minimum reader version 4.
 HawDB 0.33.0 through 0.37.x support selector version 2 and refuse such a
 selector with `UnsupportedStorageFormat` (`format() ==
-SEARCH_PROJECTION_MANIFEST_FORMAT`, `found: 3`, `supported: 2`); 0.31.0 and
+SEARCH_PROJECTION_MANIFEST_FORMAT`, `found: 4`, `supported: 2`); 0.31.0 and
 0.32.0 predate the gate and report `Storage`. Generations whose descriptors
 keep every value set are written unchanged as V3 descriptors.
 

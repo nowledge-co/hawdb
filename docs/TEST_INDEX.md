@@ -815,7 +815,10 @@ sets and ranges still skip segments. A V4 generation requires selector reader ve
 4; readers of versions 1-3 refuse it with the typed error. The manifest-version
 owner also covers all four stream1/blocks1 and complete/omitted-summary
 combinations through epoch advance, short-field append and delete-only
-publication, plus legacy version-2 and version-3 selector reopen. A V3 descriptor with
+publication, plus legacy version-2 and version-3 selector reopen. `value_summary_bounds`
+covers the selector version of closures mixing `stream1` and `blocks1` segments,
+compaction with a carried segment, and partitioned initial and delta
+publication (`nowledge-co/hawdb#1958`). A V3 descriptor with
 full bodies reopens with bounded summaries, and reader-retained value bytes and
 admitted reader memory do not grow with the body length. No lane, profile or
 timeout is added. Local replay:
