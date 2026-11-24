@@ -1,0 +1,12 @@
+[
+  {
+    "arm": "baseline",
+    "elapsed_s": 322.49178437499995,
+    "exit_code": 0
+  },
+  {
+    "arm": "repo",
+    "elapsed_s": 295.79725016600014,
+    "exit_code": 0
+  }
+]

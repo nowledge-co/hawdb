@@ -36,7 +36,9 @@ fn build(root: &Path, documents: usize, segment_rows: usize) -> Result<(), Box<d
             content.push_str(&format!("sparse{bucket:03} "));
         }
         if id % 17 == 0 {
-            content.push_str("database database storage recovery 中文数据库 ");
+            content.push_str(
+                "database database storage recovery \u{4e2d}\u{6587}\u{6570}\u{636e}\u{5e93} ",
+            );
         }
         writer.push(SearchDocument {
             id: format!("memory:{id:08}"),

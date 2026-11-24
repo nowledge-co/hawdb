@@ -78,10 +78,13 @@ fn batch_closes_directory_barriers_once_per_namespace() {
 
 #[test]
 fn sealed_batches_bound_retained_aliases_and_close_the_final_tail() {
-    for files in [64, 65, 129] {
+    for files in [8, 9, 17, 64, 65, 129] {
         for reuse in [false, true] {
             let (_, syncs) = sample(true, reuse, files, files);
-            assert_eq!(syncs, files.div_ceil(64) * if reuse { 1 } else { 2 });
+            assert_eq!(
+                syncs,
+                files.div_ceil(sealed::MAX_BATCH_FILES) * if reuse { 1 } else { 2 }
+            );
         }
     }
 }

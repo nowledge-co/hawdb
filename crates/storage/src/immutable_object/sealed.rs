@@ -21,6 +21,8 @@ fn link_source(source: &Path, destination: &Path) -> io::Result<()> {
     fs::hard_link(source, destination)
 }
 
+pub(super) const MAX_BATCH_FILES: usize = 8;
+
 /// Private to one closed producer generation; completion precedes its head.
 /// Bound retained paths and verified stamps independently of closure size.
 #[derive(Default)]
@@ -64,7 +66,7 @@ impl ImmutableObjectStore {
         batch: &mut SealedPublicationBatch,
     ) -> Result<PublishOutcome, ImmutableObjectError> {
         let remaining = batch.remaining;
-        if batch.mounts.len() == 64 {
+        if batch.mounts.len() == MAX_BATCH_FILES {
             self.finish_sealed_publication(std::mem::take(batch), work)?;
             batch.remaining = remaining;
         }

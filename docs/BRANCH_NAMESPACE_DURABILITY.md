@@ -54,7 +54,7 @@ directory barrier because an earlier publisher may have failed after
 installing the bytes.
 
 GraphStore's private, closed checkpoint producers batch final-name barriers
-for at most 64 files at a time (#1942). Each file is still hashed and synchronized
+for at most eight files at a time (#1942). Each file is still hashed and synchronized
 before installation. The batch retains every destination and staging directory,
 then synchronizes each directory once before recording process-local publication
 proofs and physically mounting producer aliases. Producer aliases are bound for

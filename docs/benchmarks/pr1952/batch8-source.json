@@ -1,0 +1,61 @@
+{
+  "baseline_revision": "d9268486009171e9576768ac2bbfbe7eb875fb95",
+  "candidate_revision": "b49f12018b805da45bdb1ad7ced9dd75e0d8e72e",
+  "platform": "macOS-27.2.1-arm64-arm-64bit-Mach-O",
+  "machine": "arm64",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "profile": "# Repository-wide profiles, including independent developer tools and bindings.\n# Run Cargo from within this repository so its hierarchical config is loaded.\n# Keep every profile unstripped: Rust 1.97.1 stripping can corrupt Mach-O\n# LINKEDIT string pools, rejected by macOS 27 (rust-lang/rust#157750).\n\n[profile.dev]\nopt-level = 1\ndebug = 0\nstrip = \"none\"\ncodegen-units = 256\nlto = \"off\"\nincremental = true\npanic = \"unwind\"\ndebug-assertions = true\noverflow-checks = true\nrpath = false\n\n[profile.release]\nopt-level = 3\ndebug = false\nstrip = \"none\"\ncodegen-units = 1\nlto = \"thin\"\nincremental = false\npanic = \"unwind\"\ndebug-assertions = false\noverflow-checks = false\nrpath = false\n\n[profile.test]\nopt-level = 1\ndebug = 0\nstrip = \"none\"\ncodegen-units = 16\nlto = \"off\"\nincremental = true\ndebug-assertions = true\noverflow-checks = true\nrpath = false\n\n[profile.bench]\nopt-level = 3\ndebug = false\nstrip = \"none\"\ncodegen-units = 1\nlto = \"thin\"\nincremental = false\ndebug-assertions = false\noverflow-checks = false\nrpath = false\n",
+  "build_jobs": 1,
+  "source_files": {
+    "crates/search/examples/bm25_query_profile.rs": "144c538f1e8fb435705f93ad5a314a585cce37009e9fd8ec2c1c9f548e92a263",
+    "crates/search/src/lexical_projection.rs": "1dd967e5c162e3640bd9f0c5215e0d0248ba92be6e0f95b4075641f03a28c07d",
+    "crates/search/src/lexical_projection/corpus_query.rs": "9250cbeec4736dfa325d4cb1b19a8564889f8eaf004bcfaab8ed094a421ee2d9",
+    "crates/search/src/lexical_projection/posting_cache.rs": "195626c9626cd61995390d475226957c465c700befe04140bcf4cbe7c1573f72",
+    "crates/search/src/lexical_projection/posting_merge.rs": "c925aa247645654554dfd907b2f69218a28a12bdb9dd55b20cd9b1c595d81f09",
+    "crates/search/src/lexical_projection/query_context.rs": "9c4cb7d30b8a1c497c1eff245ca047aadcc5309bdab6fe12ae0cf0fe3195f58e",
+    "crates/search/src/lexical_projection/term_policy_tests.rs": "d3475b0c6c4e3c91a386173f34d6e2d711e4fbc14f4c4510d37e4e2e0da77afc",
+    "crates/search/src/lexical_projection/tests/block_ranges.rs": "ba97bda5163bbd438a29a1424953cc35e3504721d4ff869dfaa94563bfaa3346",
+    "crates/search/src/lexical_projection/tests/posting_cache.rs": "f5ae9be0066e5d022829b8f3dfd506cfe7efd24481a0847304fa178e93b4883f",
+    "crates/search/src/lexical_projection/tests/posting_merge.rs": "423cff8b2dec15382f5ad95de727e6827482d1d27b41c4d9a0198ff1f65a41f0",
+    "crates/search/src/lexical_projection/tests/pruning.rs": "67ea4c0c710e19f8bd931018130bb707ce81df949d3801a7b85f52974ddaf418",
+    "crates/search/src/lexical_projection/tests/query_context.rs": "9ad16ff4b58ca585863199cd64b7b5193e110db8582c7438e8c7f04a8ac9e2a0",
+    "crates/search/src/out_of_core/query_memory.rs": "32cd8612a3f1872efd8354390250668e781654a8dac5621d607d72074ca9a7a8",
+    "crates/search/src/out_of_core/score_collector.rs": "f25fda7f5899a8aa7e05ea033362bc5b3d6ddaf1942470d6321e82e001550b05",
+    "crates/search/src/out_of_core/text_seed.rs": "c5408eefc582962b8f894b9929cd62779eee12ea1af18868a0fbc454fb6db10b",
+    "crates/search/src/resident_text_seed.rs": "077e99a3c7688d8f38729372031d322d86426f5f399537748e9c7194010134ea",
+    "crates/storage/examples/checkpoint_namespace_profile.rs": "261f05f288509346c7b830b3216ab4c77fd10d3e70465cadb82b8937aea5c67c",
+    "crates/storage/src/checkpoint_closure.rs": "bfee35750f2f496fcb8804da548856d3fc581666c7607a798aa23369b6b33a46",
+    "crates/storage/src/immutable_object.rs": "8fe373597b590f2f53134fdfbffce772ec4092b09aff264854c28853478280e7",
+    "crates/storage/src/immutable_object/publication.rs": "43409863c70cfdb26d861815d7621916ece04e23dade77cb67fb82b0071a35c7",
+    "crates/storage/src/immutable_object/publication_profile.rs": "6509e1e2ae701957ec880636f2acddc2f614ebf937d86da3f280af14c90e9dca",
+    "crates/storage/src/immutable_object/sealed.rs": "d67aced5814536ff9f3fd06e434271c94f4d5f381a66fdfe36b16a6dd054522a",
+    "crates/storage/src/immutable_object/work_tests.rs": "35ad711b1b6db49dd9b076bef4492e7d4d670335f2994ae16442b5c78cda86ee",
+    "crates/storage/src/power_loss/tests.rs": "6031eb09d7b7f64f8d2a1e20912c1d364dbed18d3abca8b7494d141cd98b4eed",
+    "docs/BRANCH_NAMESPACE_DURABILITY.md": "daf5d84d5de49da4905f33840feb9de0bf0d1a2156c78d51580ffbfc348e94fd",
+    "docs/TEST_INDEX.md": "09256b84728fb675a1d37db5324e7ce42106a2789f764e9b09e48aceaf5b6a62"
+  },
+  "hardware": {
+    "cpu": "Apple M5 Max",
+    "logical_cpus": 18,
+    "memory_bytes": 38654705664
+  },
+  "execution": "sequential builds with one Cargo job, followed by sequential paired benchmark phases; shared host, no other task processes changed",
+  "dataset_sources": [
+    "https://huggingface.co/datasets/BeIR/scifact",
+    "https://huggingface.co/datasets/BeIR/scifact-qrels"
+  ],
+  "compiler_environment": {
+    "RUSTFLAGS": null,
+    "CARGO_ENCODED_RUSTFLAGS": null,
+    "CARGO_BUILD_JOBS": null,
+    "CARGO_TARGET_DIR": null,
+    "RUSTC_WRAPPER": null
+  },
+  "input_hashes": {
+    "Cargo.lock": "0fe1285d5afc5fe06d26566fe5fdcbe33075455aee037aa1dc2fdd8ed54ad51d",
+    "rust-toolchain.toml": "f715f440167e20fd8ea9afa0498c3d1ab80174cfcb8cbc895f106a34d907a1e1",
+    ".cargo/config.toml": "06c7ca26d39223bd90a6412acd8609c380ce2d1650a72b70c90171656ca89819"
+  },
+  "global_build_config": {},
+  "candidate_variant": "b49f12018 plus internal eight-file namespace window"
+}

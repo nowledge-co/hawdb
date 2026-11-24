@@ -4877,8 +4877,8 @@ not a CI performance gate; opening/building and serialization are outside timing
 The existing Storage unit owner (`//crates/storage:hawdb_storage_tests`) owns
 `immutable_object::publication_profile::batch_closes_directory_barriers_once_per_namespace`:
 eight new/reused artifacts retain byte and COW checks while publishing once per
-namespace rather than once per file. The 64/65/129-file boundary test covers the
-bounded publication windows and their final partial tails. Existing power-loss owners retain the new
+namespace rather than once per file. The 8/9/17/64/65/129-file boundary test covers the
+eight-file publication windows and their final partial tails. Existing power-loss owners retain the new
 `power_loss::tests::sealed_batch_*` cases: unsynchronized producer bytes and
 unacknowledged names before completion, complete names after the barrier,
 failed directory synchronization, publisher poisoning, deferred publication
@@ -4904,3 +4904,14 @@ run `checkpoint_namespace_profile NEW_PARENT_DIRECTORY` and compare interleaved
 fresh-reader processes. This is manual only; ordinary CI compiles the example
 but does not run latency campaigns. Graph-only fixtures do not qualify the full
 relational/DDL schema-registry workload or device power-loss behavior.
+
+
+The source-bound PR #1952 manual comparison is in
+[BM25 and namespace measurements](benchmarks/pr1952/README.md). The paired
+`compare.py` driver owns executable freezing/hashing, repeated full-response
+comparison, synchronized branch checkpoints, complete before/after/reopen node
+verification and raw latency samples. Synthetic Search uses 13 request shapes;
+SciFact uses every test query without sampling; branch controls cover 0/1/128/2000
+additional nodes with and without a prior checkpoint. This is a manual evidence
+campaign, not a new CI performance gate. Repository profiles, CI assertions,
+feature matrices, timeouts and test lanes remain unchanged.
