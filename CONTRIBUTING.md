@@ -171,6 +171,10 @@ Markdown has no built-in rule and is unsupported (not checked); Python and
 Shell are checked, including their shebangs. Go uses line-comment headers;
 keep a blank line before any build constraints. MoonBit `.mbt`, `.mbti`,
 `moon.mod` and `moon.pkg` files use the same line-comment header rules.
+Only files named `pkg.generated.mbti` are exempt from the MoonBit header check:
+`moon info` and `moon check` regenerate these public interface snapshots.
+Other `.mbti` files and `.mbt` sources still require headers, even if they carry
+a generated-file notice.
 TOML/YAML/JSON/lock/SQL/BUILD/bzl exclusions remain defined by `licenserc.toml`.
 Generated build output, downloaded MoonBit dependencies and historical
 `docs/benchmarks/` evidence are excluded. Historical evidence must retain its
