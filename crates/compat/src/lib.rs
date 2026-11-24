@@ -469,7 +469,9 @@ impl ExpectedErrorClass {
             | HawDBError::SearchProjectionOwnershipMismatch { .. }
             | HawDBError::SearchProjectionEpochAdvanceRefused { .. }
             | HawDBError::SearchProjectionPrefixBehindSource { .. }
-            | HawDBError::SearchProjectionBatchBudgetExceeded { .. } => Self::Execution,
+            | HawDBError::SearchProjectionBatchBudgetExceeded { .. }
+            | HawDBError::SearchProductionQualificationGraphEpochMismatch { .. }
+            | HawDBError::SearchProductionQualificationRefused { .. } => Self::Execution,
             HawDBError::CapabilityUnavailable { .. } => Self::CapabilityUnavailable,
         }
     }

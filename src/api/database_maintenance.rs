@@ -838,15 +838,8 @@ impl Database {
             return self.prepare_hawdb_lightning_bootstrap_export();
         }
         let request = WorkRequest::background(WorkClass::Import, estimated_operations);
-        match policy.admit(state, &request) {
-            QosAdmission::Admit => self.prepare_hawdb_lightning_bootstrap_export(),
-            QosAdmission::Defer { reason, .. } => Err(HawDBError::Storage(format!(
-                "background HawDB Lightning bootstrap export deferred: {reason}"
-            ))),
-            QosAdmission::Reject { reason, .. } => Err(HawDBError::Storage(format!(
-                "background HawDB Lightning bootstrap export rejected: {reason}"
-            ))),
-        }
+        policy.admit_or_refuse(state, &request)?;
+        self.prepare_hawdb_lightning_bootstrap_export()
     }
 
     pub fn prepare_scheduled_background_hawdb_lightning_bootstrap_export(
@@ -858,23 +851,10 @@ impl Database {
             return self.prepare_hawdb_lightning_bootstrap_export();
         }
         let scheduler = self.local_qos_scheduler_for_work();
-        let permit = match scheduler.try_start(WorkRequest::background(
+        let permit = scheduler.try_start_or_refuse(WorkRequest::background(
             WorkClass::Import,
             estimated_operations,
-        )) {
-            Ok(permit) => permit,
-            Err(QosAdmission::Defer { reason, .. }) => {
-                return Err(HawDBError::Storage(format!(
-                    "background HawDB Lightning bootstrap export deferred: {reason}"
-                )));
-            }
-            Err(QosAdmission::Reject { reason, .. }) => {
-                return Err(HawDBError::Storage(format!(
-                    "background HawDB Lightning bootstrap export rejected: {reason}"
-                )));
-            }
-            Err(QosAdmission::Admit) => unreachable!("admitted work returns a permit"),
-        };
+        ))?;
 
         let result = self.prepare_hawdb_lightning_bootstrap_export();
         permit.finish_with_outcome(result.is_ok());
@@ -997,17 +977,9 @@ impl Database {
         let Some(plan) = self.optimizer_statistics_refresh_background_work_plan(hint)? else {
             return Ok(None);
         };
-        match policy.admit(state, &plan.request) {
-            QosAdmission::Admit => self
-                .refresh_optimizer_statistics_external(options)
-                .map(Some),
-            QosAdmission::Defer { reason, .. } => Err(HawDBError::Storage(format!(
-                "background optimizer statistics refresh deferred: {reason}"
-            ))),
-            QosAdmission::Reject { reason, .. } => Err(HawDBError::Storage(format!(
-                "background optimizer statistics refresh rejected: {reason}"
-            ))),
-        }
+        policy.admit_or_refuse(state, &plan.request)?;
+        self.refresh_optimizer_statistics_external(options)
+            .map(Some)
     }
 
     pub fn refresh_scheduled_background_optimizer_statistics(
@@ -1020,20 +992,7 @@ impl Database {
             return Ok(None);
         };
         let scheduler = self.local_qos_scheduler_for_work();
-        let permit = match scheduler.try_start(plan.request) {
-            Ok(permit) => permit,
-            Err(QosAdmission::Defer { reason, .. }) => {
-                return Err(HawDBError::Storage(format!(
-                    "background optimizer statistics refresh deferred: {reason}"
-                )));
-            }
-            Err(QosAdmission::Reject { reason, .. }) => {
-                return Err(HawDBError::Storage(format!(
-                    "background optimizer statistics refresh rejected: {reason}"
-                )));
-            }
-            Err(QosAdmission::Admit) => unreachable!("admitted work returns a permit"),
-        };
+        let permit = scheduler.try_start_or_refuse(plan.request)?;
 
         let result = self
             .refresh_optimizer_statistics_external(options)
@@ -1105,15 +1064,8 @@ impl Database {
         let Some(plan) = self.storage_checkpoint_background_work_plan(hint)? else {
             return Ok(());
         };
-        match policy.admit(state, &plan.request) {
-            QosAdmission::Admit => self.checkpoint(),
-            QosAdmission::Defer { reason, .. } => Err(HawDBError::Storage(format!(
-                "background storage checkpoint deferred: {reason}"
-            ))),
-            QosAdmission::Reject { reason, .. } => Err(HawDBError::Storage(format!(
-                "background storage checkpoint rejected: {reason}"
-            ))),
-        }
+        policy.admit_or_refuse(state, &plan.request)?;
+        self.checkpoint()
     }
 
     /// Attempts pressure-triggered checkpoint work under the local background
@@ -1124,20 +1076,7 @@ impl Database {
             return Ok(());
         };
         let scheduler = self.local_qos_scheduler_for_work();
-        let permit = match scheduler.try_start(plan.request) {
-            Ok(permit) => permit,
-            Err(QosAdmission::Defer { reason, .. }) => {
-                return Err(HawDBError::Storage(format!(
-                    "background storage checkpoint deferred: {reason}"
-                )));
-            }
-            Err(QosAdmission::Reject { reason, .. }) => {
-                return Err(HawDBError::Storage(format!(
-                    "background storage checkpoint rejected: {reason}"
-                )));
-            }
-            Err(QosAdmission::Admit) => unreachable!("admitted work returns a permit"),
-        };
+        let permit = scheduler.try_start_or_refuse(plan.request)?;
         let result = self.checkpoint();
         permit.finish_with_outcome(result.is_ok());
         result
@@ -1187,20 +1126,11 @@ impl Database {
         if estimated_entries == 0 {
             return self.consolidate_bounded_adjacency_deltas(max_estimated_entries);
         }
-        match policy.admit(
+        policy.admit_or_refuse(
             state,
             &WorkRequest::background(WorkClass::Mutation, estimated_entries),
-        ) {
-            QosAdmission::Admit => {
-                Ok(self.consolidate_bounded_adjacency_deltas(max_estimated_entries)?)
-            }
-            QosAdmission::Defer { reason, .. } => Err(HawDBError::Storage(format!(
-                "background adjacency consolidation deferred: {reason}"
-            ))),
-            QosAdmission::Reject { reason, .. } => Err(HawDBError::Storage(format!(
-                "background adjacency consolidation rejected: {reason}"
-            ))),
-        }
+        )?;
+        self.consolidate_bounded_adjacency_deltas(max_estimated_entries)
     }
 
     pub fn consolidate_bounded_scheduled_background_adjacency_deltas(
@@ -1217,23 +1147,10 @@ impl Database {
             return self.consolidate_bounded_adjacency_deltas(max_estimated_entries);
         }
         let scheduler = self.local_qos_scheduler_for_work();
-        let permit = match scheduler.try_start(WorkRequest::background(
+        let permit = scheduler.try_start_or_refuse(WorkRequest::background(
             WorkClass::Mutation,
             estimated_entries,
-        )) {
-            Ok(permit) => permit,
-            Err(QosAdmission::Defer { reason, .. }) => {
-                return Err(HawDBError::Storage(format!(
-                    "background adjacency consolidation deferred: {reason}"
-                )));
-            }
-            Err(QosAdmission::Reject { reason, .. }) => {
-                return Err(HawDBError::Storage(format!(
-                    "background adjacency consolidation rejected: {reason}"
-                )));
-            }
-            Err(QosAdmission::Admit) => unreachable!("admitted work returns a permit"),
-        };
+        ))?;
 
         let result = Ok(self.consolidate_bounded_adjacency_deltas(max_estimated_entries)?);
         permit.finish_with_outcome(result.is_ok());
@@ -1355,17 +1272,8 @@ impl Database {
             return self.rebuild_bounded_property_index_projections(max_estimated_operations);
         }
         let request = WorkRequest::background(WorkClass::Projection, estimated_operations);
-        match policy.admit(state, &request) {
-            QosAdmission::Admit => {
-                Ok(self.rebuild_bounded_property_index_projections(max_estimated_operations)?)
-            }
-            QosAdmission::Defer { reason, .. } => Err(HawDBError::Storage(format!(
-                "background property index projection rebuild deferred: {reason}"
-            ))),
-            QosAdmission::Reject { reason, .. } => Err(HawDBError::Storage(format!(
-                "background property index projection rebuild rejected: {reason}"
-            ))),
-        }
+        policy.admit_or_refuse(state, &request)?;
+        self.rebuild_bounded_property_index_projections(max_estimated_operations)
     }
 
     pub fn rebuild_bounded_scheduled_background_property_index_projections(
@@ -1387,23 +1295,10 @@ impl Database {
             return self.rebuild_bounded_property_index_projections(max_estimated_operations);
         }
         let scheduler = self.local_qos_scheduler_for_work();
-        let permit = match scheduler.try_start(WorkRequest::background(
+        let permit = scheduler.try_start_or_refuse(WorkRequest::background(
             WorkClass::Projection,
             estimated_operations,
-        )) {
-            Ok(permit) => permit,
-            Err(QosAdmission::Defer { reason, .. }) => {
-                return Err(HawDBError::Storage(format!(
-                    "background property index projection rebuild deferred: {reason}"
-                )));
-            }
-            Err(QosAdmission::Reject { reason, .. }) => {
-                return Err(HawDBError::Storage(format!(
-                    "background property index projection rebuild rejected: {reason}"
-                )));
-            }
-            Err(QosAdmission::Admit) => unreachable!("admitted work returns a permit"),
-        };
+        ))?;
 
         let result = Ok(self.rebuild_bounded_property_index_projections(max_estimated_operations)?);
         permit.finish_with_outcome(result.is_ok());
@@ -1579,15 +1474,8 @@ impl Database {
     ) -> Result<QueryOutput> {
         self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
         let request = WorkRequest::background(WorkClass::Mutation, estimated_operations);
-        match policy.admit(state, &request) {
-            QosAdmission::Admit => self.run_schema_maintenance(),
-            QosAdmission::Defer { reason, .. } => Err(HawDBError::Storage(format!(
-                "background schema maintenance deferred: {reason}"
-            ))),
-            QosAdmission::Reject { reason, .. } => Err(HawDBError::Storage(format!(
-                "background schema maintenance rejected: {reason}"
-            ))),
-        }
+        policy.admit_or_refuse(state, &request)?;
+        self.run_schema_maintenance()
     }
 
     pub fn run_bounded_background_schema_maintenance(
@@ -1603,15 +1491,8 @@ impl Database {
             return self.run_bounded_schema_maintenance(max_estimated_operations);
         }
         let request = WorkRequest::background(WorkClass::Mutation, estimated_operations);
-        match policy.admit(state, &request) {
-            QosAdmission::Admit => self.run_bounded_schema_maintenance(max_estimated_operations),
-            QosAdmission::Defer { reason, .. } => Err(HawDBError::Storage(format!(
-                "background schema maintenance deferred: {reason}"
-            ))),
-            QosAdmission::Reject { reason, .. } => Err(HawDBError::Storage(format!(
-                "background schema maintenance rejected: {reason}"
-            ))),
-        }
+        policy.admit_or_refuse(state, &request)?;
+        self.run_bounded_schema_maintenance(max_estimated_operations)
     }
 
     pub fn run_planned_background_schema_maintenance(
@@ -1632,23 +1513,10 @@ impl Database {
     ) -> Result<QueryOutput> {
         self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
         let scheduler = self.local_qos_scheduler_for_work();
-        let permit = match scheduler.try_start(WorkRequest::background(
+        let permit = scheduler.try_start_or_refuse(WorkRequest::background(
             WorkClass::Mutation,
             estimated_operations,
-        )) {
-            Ok(permit) => permit,
-            Err(QosAdmission::Defer { reason, .. }) => {
-                return Err(HawDBError::Storage(format!(
-                    "background schema maintenance deferred: {reason}"
-                )));
-            }
-            Err(QosAdmission::Reject { reason, .. }) => {
-                return Err(HawDBError::Storage(format!(
-                    "background schema maintenance rejected: {reason}"
-                )));
-            }
-            Err(QosAdmission::Admit) => unreachable!("admitted work returns a permit"),
-        };
+        ))?;
 
         let result = self.run_schema_maintenance();
         permit.finish_with_outcome(result.is_ok());
@@ -1666,23 +1534,10 @@ impl Database {
             return self.run_bounded_schema_maintenance(max_estimated_operations);
         }
         let scheduler = self.local_qos_scheduler_for_work();
-        let permit = match scheduler.try_start(WorkRequest::background(
+        let permit = scheduler.try_start_or_refuse(WorkRequest::background(
             WorkClass::Mutation,
             estimated_operations,
-        )) {
-            Ok(permit) => permit,
-            Err(QosAdmission::Defer { reason, .. }) => {
-                return Err(HawDBError::Storage(format!(
-                    "background schema maintenance deferred: {reason}"
-                )));
-            }
-            Err(QosAdmission::Reject { reason, .. }) => {
-                return Err(HawDBError::Storage(format!(
-                    "background schema maintenance rejected: {reason}"
-                )));
-            }
-            Err(QosAdmission::Admit) => unreachable!("admitted work returns a permit"),
-        };
+        ))?;
 
         let result = self.run_bounded_schema_maintenance(max_estimated_operations);
         permit.finish_with_outcome(result.is_ok());

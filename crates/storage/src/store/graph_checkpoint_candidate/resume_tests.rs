@@ -202,7 +202,7 @@ impl Fixture {
             expected
         );
         self.store
-            .publish_checkpoint_candidate(&mut self.candidate, None, &BTreeSet::new())
+            .publish_checkpoint_candidate(&mut self.candidate, None, &Default::default())
             .unwrap();
         drop(self.candidate);
         drop(self.pinned);

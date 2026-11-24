@@ -14,7 +14,7 @@
 
 name = "nowledge-co/hawdb"
 
-version = "0.37.0"
+version = "0.38.0"
 
 preferred_target = "native"
 

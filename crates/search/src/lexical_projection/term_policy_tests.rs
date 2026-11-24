@@ -168,6 +168,7 @@ fn term_policy_query_and_delta_exact_memory_boundaries() {
             let result = reader.score_terms_accounted(
                 &query,
                 ScoringInputs {
+                    posting_cache: None,
                     complete_candidate_limit: None,
                     delta: &delta,
                     max_term_bytes: reader.config.max_term_bytes,

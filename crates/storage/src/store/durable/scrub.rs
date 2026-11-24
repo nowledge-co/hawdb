@@ -316,7 +316,7 @@ impl DurableStore {
             manifest.canonical_manifest_encoded_sha256,
         ) {
             let generation = manifest
-                .checkpoint_generation
+                .graph_generation()
                 .expect("validated canonical metadata has a checkpoint generation");
             let manifest_path = self
                 .root_path
@@ -331,7 +331,7 @@ impl DurableStore {
             let artifact = CanonicalSegmentManifest::decode(&fs::read_to_string(&manifest_path)?)
                 .map_err(HawDBError::from_storage_error)?;
             if artifact.generation != ManifestGeneration(generation)
-                || artifact.source_commit_epoch != manifest.checkpoint_commit_epoch
+                || artifact.source_commit_epoch != manifest.graph_source_commit_epoch()
             {
                 return Err(HawDBError::StorageIntegrity(
                     "canonical descriptor identity does not match its checkpoint during scrub"
@@ -478,7 +478,7 @@ impl DurableStore {
             manifest.property_spill_manifest_encoded_sha256,
         ) {
             let generation = manifest
-                .checkpoint_generation
+                .graph_generation()
                 .expect("validated property spill metadata has a checkpoint generation");
             let manifest_path = self
                 .root_path
@@ -493,7 +493,7 @@ impl DurableStore {
             let artifact = PropertySpillManifest::decode(&fs::read_to_string(&manifest_path)?)
                 .map_err(HawDBError::from_storage_error)?;
             if artifact.generation != ManifestGeneration(generation)
-                || artifact.source_commit_epoch != manifest.checkpoint_commit_epoch
+                || artifact.source_commit_epoch != manifest.graph_source_commit_epoch()
             {
                 return Err(HawDBError::StorageIntegrity(
                     "property spill identity does not match its checkpoint".to_string(),
@@ -565,7 +565,7 @@ impl DurableStore {
             manifest.property_projection_manifest_encoded_sha256,
         ) {
             let generation = manifest
-                .checkpoint_generation
+                .graph_generation()
                 .expect("validated property projection metadata has a checkpoint generation");
             let manifest_path = self
                 .root_path

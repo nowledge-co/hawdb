@@ -285,11 +285,12 @@ pub trait GraphExecutionRead {
         Ok(read)
     }
 
-    /// Selected-column point read. Implementations must call admission before
-    /// allocating the owned result, and propagate rejection without decoding.
+    /// Selected-column point read with an optional union of labels. Check
+    /// visibility and labels before admitting or decoding projected properties.
     fn projected_node_owned_admitted(
         &self,
         _id: NodeId,
+        _label_ids: Option<&[LabelId]>,
         _required_properties: &BTreeSet<String>,
         _admit: &mut dyn FnMut(usize) -> Result<()>,
     ) -> Result<Option<ProjectedNodeRecord>> {

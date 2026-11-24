@@ -20,6 +20,10 @@ struct Dir(PathBuf);
 
 impl Dir {
     fn new(name: &str) -> Self {
+        // These cases pin selector versions 1 and 2, which describe content
+        // artifacts written before #1917; `content_blocks::tests` covers the
+        // version-3 selector of block-framed artifacts.
+        crate::out_of_core::content_blocks::tests::WRITE_STREAM1.set(true);
         Self(
             std::env::var_os("TEST_TMPDIR")
                 .map_or_else(std::env::temp_dir, PathBuf::from)
@@ -126,9 +130,12 @@ fn future_selector(
     out
 }
 
-fn version_three(body: &mut serde_json::Map<String, serde_json::Value>) {
-    body.insert("format_version".into(), 3.into());
-    body.insert("min_reader_version".into(), 3.into());
+/// The first selector version this reader does not support.
+const FUTURE_VERSION: u16 = READER_VERSION + 1;
+
+fn future_version(body: &mut serde_json::Map<String, serde_json::Value>) {
+    body.insert("format_version".into(), FUTURE_VERSION.into());
+    body.insert("min_reader_version".into(), FUTURE_VERSION.into());
     body.insert("field_from_the_future".into(), true.into());
 }
 
@@ -158,25 +165,29 @@ fn newer_selector_is_refused_with_a_typed_error_before_field_decode() {
     let root = Dir::new("newer");
     let path = root.search();
     resident(&path);
-    let future = future_selector(&selector(&path), version_three);
+    let future = future_selector(&selector(&path), future_version);
     std::fs::write(path.join(OUT_OF_CORE_MANIFEST_FILE), &future).unwrap();
 
     // The unknown field would fail the strict decode as `Storage`; the
     // version gate refuses first, on every open path.
     assert_refused(
         read_as(&future, READER_VERSION).unwrap_err(),
-        3,
+        FUTURE_VERSION,
         READER_VERSION,
     );
     assert_refused(
         SearchOutOfCoreReader::open(&path).err().unwrap(),
-        3,
+        FUTURE_VERSION,
         READER_VERSION,
     );
-    assert_refused(SearchIndex::open(&path).err().unwrap(), 3, READER_VERSION);
+    assert_refused(
+        SearchIndex::open(&path).err().unwrap(),
+        FUTURE_VERSION,
+        READER_VERSION,
+    );
     assert_eq!(
         SearchIndex::open(&path).err().unwrap().to_string(),
-        "unsupported search projection manifest version 3; this reader supports version 2"
+        format!("unsupported search projection manifest version {FUTURE_VERSION}; this reader supports version {READER_VERSION}")
     );
     // A version that does not fit the error's field saturates.
     let huge = future_selector(&selector(&path), |body| {
@@ -194,7 +205,7 @@ fn damaged_or_inconsistent_selectors_stay_storage_failures() {
     let root = Dir::new("damaged");
     let path = root.search();
     out_of_core(&path);
-    let future = future_selector(&selector(&path), version_three);
+    let future = future_selector(&selector(&path), future_version);
     // A checksum mismatch is corruption, not a newer format.
     let mut damaged = future.clone();
     let digit = damaged.len() - 2;
@@ -220,7 +231,7 @@ fn damaged_or_inconsistent_selectors_stay_storage_failures() {
         let bytes =
             serde_json::to_vec(&super::super::SearchOutOfCoreManifestEnvelope { body, checksum })
                 .unwrap();
-        // Version 3 passes the gate of a version-3 reader and is still
+        // A version up to this reader's passes its gate and is still
         // inconsistent with the fields this reader knows.
         let supported = min_reader_version.max(READER_VERSION);
         let error = read_as(&bytes, supported).unwrap_err();
@@ -273,7 +284,9 @@ fn epoch_advanced_selector_requires_version_two_and_round_trips() {
     let bytes = selector(&path);
     let text = std::str::from_utf8(&bytes).unwrap();
     assert!(
-        text.contains("\"format_version\":2,\"min_reader_version\":2"),
+        text.contains(&format!(
+            "\"format_version\":{READER_VERSION},\"min_reader_version\":2"
+        )),
         "{text}"
     );
     let manifest = read_as(&bytes, READER_VERSION).unwrap();
@@ -355,9 +368,9 @@ fn writers_refuse_to_publish_over_a_newer_selector() {
     let resident_path = root.0.join("resident");
     resident(&resident_path);
     let mut index = SearchIndex::open(&resident_path).unwrap();
-    let future = future_selector(&selector(&path), version_three);
+    let future = future_selector(&selector(&path), future_version);
     std::fs::write(path.join(OUT_OF_CORE_MANIFEST_FILE), &future).unwrap();
-    let resident_future = future_selector(&selector(&resident_path), version_three);
+    let resident_future = future_selector(&selector(&resident_path), future_version);
     std::fs::write(
         resident_path.join(OUT_OF_CORE_MANIFEST_FILE),
         &resident_future,
@@ -385,7 +398,11 @@ fn writers_refuse_to_publish_over_a_newer_selector() {
     writer
         .push(row("n", "new generation").into_document())
         .unwrap();
-    assert_refused(writer.finish().err().unwrap(), 3, READER_VERSION);
+    assert_refused(
+        writer.finish().err().unwrap(),
+        FUTURE_VERSION,
+        READER_VERSION,
+    );
     assert_eq!(selector(&path), future);
 
     // An incremental update from the stale reader.
@@ -395,7 +412,7 @@ fn writers_refuse_to_publish_over_a_newer_selector() {
         Default::default(),
     )
     .and_then(|prepared| prepared.finish().map(|_| ()));
-    assert_refused(refused.unwrap_err(), 3, READER_VERSION);
+    assert_refused(refused.unwrap_err(), FUTURE_VERSION, READER_VERSION);
     assert_eq!(selector(&path), future);
     assert_eq!(files(&path), before);
 
@@ -403,6 +420,104 @@ fn writers_refuse_to_publish_over_a_newer_selector() {
     index
         .apply_projection_delta(delta(22, vec![row("r", "resident")]))
         .unwrap();
-    assert_refused(index.checkpoint().unwrap_err(), 3, READER_VERSION);
+    assert_refused(
+        index.checkpoint().unwrap_err(),
+        FUTURE_VERSION,
+        READER_VERSION,
+    );
     assert_eq!(selector(&resident_path), resident_future);
+}
+
+#[test]
+fn content_encoding_and_value_summary_versions_compose_across_publication() {
+    for stream1 in [true, false] {
+        for omitted in [false, true] {
+            let root = Dir::new("feature-versions");
+            let path = root.search();
+            crate::out_of_core::content_blocks::tests::WRITE_STREAM1.set(stream1);
+            let mut writer = SearchOutOfCoreGenerationWriter::create(
+                &path,
+                SearchOutOfCoreGenerationBuildOptions {
+                    source_graph_commit_epoch: Some(4),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let mut original = row("a", "version base");
+            if omitted {
+                original.metadata.insert("content".into(), "x".repeat(1024));
+            }
+            writer.push(original.into_document()).unwrap();
+            writer.finish().unwrap();
+            let required = if omitted {
+                4
+            } else if stream1 {
+                1
+            } else {
+                3
+            };
+            let check = |expected| {
+                let bytes = selector(&path);
+                let manifest = read_as(&bytes, READER_VERSION).unwrap();
+                assert_eq!(manifest.min_reader_version, expected);
+                assert_eq!(manifest.encode().unwrap(), bytes);
+                for supported in 1..expected {
+                    assert_refused(read_as(&bytes, supported).unwrap_err(), expected, supported);
+                }
+                assert!(manifest.segments.iter().any(|segment| {
+                    segment.content_encoding.is_stream1() == stream1
+                        && segment.descriptor_version == omitted.then_some(4)
+                }));
+            };
+            check(required);
+            // Old versioned selectors still read, including blocks1 written
+            // before value summaries acquired their own selector version.
+            if !omitted {
+                let reader = SearchOutOfCoreReader::open(&path).unwrap();
+                reader.advance_source_graph_commit_epoch(5).unwrap();
+                let legacy_version = if stream1 { 2 } else { 3 };
+                let mut body = read_as(&selector(&path), READER_VERSION).unwrap();
+                body.format_version = legacy_version;
+                let checksum = checksum_bytes(&serde_json::to_vec(&body).unwrap());
+                let legacy = serde_json::to_vec(&super::super::SearchOutOfCoreManifestEnvelope {
+                    body,
+                    checksum,
+                })
+                .unwrap();
+                std::fs::write(path.join(OUT_OF_CORE_MANIFEST_FILE), &legacy).unwrap();
+                let manifest = read_as(&legacy, READER_VERSION).unwrap();
+                assert_eq!(manifest.min_reader_version, legacy_version);
+                SearchOutOfCoreReader::open(&path).unwrap();
+            }
+            let reader = SearchOutOfCoreReader::open(&path).unwrap();
+            reader.advance_source_graph_commit_epoch(6).unwrap();
+            check(required.max(CONTENT_EPOCH_VERSION));
+            // A short-field append must retain an earlier V4 descriptor's
+            // requirement even though the new descriptor itself is V3.
+            let reader = SearchOutOfCoreReader::open(&path).unwrap();
+            SearchOutOfCoreGenerationWriter::prepare_delta(
+                &reader,
+                delta(7, vec![row("b", "short append")]),
+                Default::default(),
+            )
+            .unwrap()
+            .finish()
+            .unwrap();
+            check(required);
+            let reader = SearchOutOfCoreReader::open(&path).unwrap();
+            assert_eq!(reader.document_count(), 2);
+            let mut deletion = delta(8, Vec::new());
+            deletion.deletes.push("memory:b".into());
+            SearchOutOfCoreGenerationWriter::prepare_delta(&reader, deletion, Default::default())
+                .unwrap()
+                .finish()
+                .unwrap();
+            check(required);
+            assert_eq!(
+                SearchOutOfCoreReader::open(&path).unwrap().document_count(),
+                1
+            );
+            crate::out_of_core::content_blocks::tests::WRITE_STREAM1.set(false);
+        }
+    }
 }

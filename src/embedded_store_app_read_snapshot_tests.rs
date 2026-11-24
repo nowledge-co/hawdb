@@ -724,7 +724,7 @@ fn typed_snapshot_candidates_use_the_snapshot_task_context_and_require_a_project
         )
         .unwrap_err();
     assert!(
-        matches!(missing_error, crate::HawDBError::Storage(ref message)
+        matches!(missing_error, crate::HawDBError::Semantic(ref message)
         if message == "nowledge mem search projection is not configured")
     );
 }
@@ -917,7 +917,7 @@ fn graph_only_snapshot_refuses_text_seeds_without_a_pinned_projection() {
                         1,
                     )
                     .unwrap_err();
-                assert!(matches!(error, crate::HawDBError::Storage(ref message)
+                assert!(matches!(error, crate::HawDBError::Semantic(ref message)
                     if message == "nowledge mem search projection is not configured"));
                 Ok(())
             },
@@ -1341,7 +1341,7 @@ fn user_cannot_read_an_unpinned_projection_from_a_graph_snapshot() {
     handle
         .with_bounded_graph_read_snapshot(budget, |snapshot| {
             let error = snapshot.query_cypher(query, &parameters, 1).unwrap_err();
-            assert!(matches!(error, crate::HawDBError::Storage(ref message)
+            assert!(matches!(error, crate::HawDBError::Semantic(ref message)
             if message == "nowledge mem search projection is not configured"));
             assert_eq!(
                 snapshot
@@ -1873,7 +1873,8 @@ fn user_keeps_shared_snapshot_pins_across_same_epoch_checkpoints_until_last_fork
     let (permit_a, mut first) = handle.canonical_read_transaction(4096, None).unwrap();
     let (permit_b, mut second) = handle.canonical_read_transaction(4096, None).unwrap();
     let old_view = first.published_read_view();
-    let old_generation = old_view.physical_generation().unwrap().0;
+    let old_generation = old_view.graph_generation().unwrap().0;
+    let old_checkpoint = old_view.physical_generation().unwrap().0;
     let hawdb_storage::branch_project::ProjectManifest::Branch(selector) =
         hawdb_storage::branch_project::inspect_project_manifest(&root.0).unwrap()
     else {
@@ -1891,6 +1892,8 @@ fn user_keeps_shared_snapshot_pins_across_same_epoch_checkpoints_until_last_fork
         .with_read_transaction(4096, |tx| Ok(tx.published_read_view()))
         .unwrap();
     let first_new_generation = new_view.physical_generation().unwrap().0;
+    assert_eq!(new_view.graph_generation(), old_view.graph_generation());
+    assert_ne!(first_new_generation, old_generation);
     assert_eq!(
         new_view.visible_commit_epoch(),
         old_view.visible_commit_epoch()
@@ -1899,6 +1902,16 @@ fn user_keeps_shared_snapshot_pins_across_same_epoch_checkpoints_until_last_fork
         new_view.physical_generation(),
         old_view.physical_generation()
     );
+    // Same-epoch checkpoints carry G while advancing C. A later graph write
+    // supersedes G so only the shared reader pin keeps that bundle alive.
+    {
+        let mut store = handle.write_store().unwrap();
+        store
+            .graph_mut()
+            .database_mut()
+            .query("CREATE (:Record {id: 'later'})")
+            .unwrap();
+    }
     for _ in 0..3 {
         handle.checkpoint().unwrap();
     }
@@ -1906,7 +1919,7 @@ fn user_keeps_shared_snapshot_pins_across_same_epoch_checkpoints_until_last_fork
         .join(format!("canonical.{old_generation}.hawdb"))
         .exists());
     assert!(!data
-        .join(format!("canonical.{first_new_generation}.hawdb"))
+        .join(format!("checkpoint.{first_new_generation}.hawdb"))
         .exists());
     assert_eq!(
         first
@@ -1938,7 +1951,7 @@ fn user_keeps_shared_snapshot_pins_across_same_epoch_checkpoints_until_last_fork
         .join(format!("canonical.{old_generation}.hawdb"))
         .exists());
     assert!(!data
-        .join(format!("checkpoint.{old_generation}.hawdb"))
+        .join(format!("checkpoint.{old_checkpoint}.hawdb"))
         .exists());
 }
 

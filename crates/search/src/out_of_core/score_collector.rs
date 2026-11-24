@@ -174,6 +174,21 @@ impl BoundedScoreCollector {
         }
         Ok(())
     }
+    pub(super) fn push_cached(
+        &mut self,
+        id: String,
+        score: f64,
+        cache: &crate::lexical_projection::PostingBlockCache,
+    ) -> Result<()> {
+        if self.retain(&id, score)? {
+            crate::lexical_projection::PostingBlockCache::reclaim_on_refusal(Some(cache), || {
+                self.admit_id(id.capacity())
+            })?;
+            self.insert(id, score);
+        }
+        Ok(())
+    }
+
     pub(super) fn push_borrowed(&mut self, id: &str, score: f64) -> Result<()> {
         if self.retain(id, score)? {
             self.admit_id(id.len())?;

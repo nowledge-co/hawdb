@@ -125,6 +125,7 @@ KNOWN_POINT_FREE = {
     # Every CheckpointWorkError work_error helper now calls stop_reason() and
     # constructs its internal typed Stopped variant before handling admission.
     "work_error": "all checkpoint work-error mappings preserve the typed stop",
+    "block_work_error": "immutable_object::block_work_error maps stop_reason() to ImmutableObjectError::Stopped; non-stop admission errors retain their typed source",
     "RelationalRowDeltaError::from_work": "maps stop_reason() to RelationalRowDeltaError::Stopped",
     "RelationalError::from_work": "maps stop_reason() to RelationalError::Stopped",
     "super::RelationalError::from_work": "maps stop_reason() to RelationalError::Stopped",

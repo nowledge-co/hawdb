@@ -45,6 +45,7 @@ fn block_max_inherited_floor_prunes_before_the_local_window_fills() {
             .score_terms_with_stable_filter_and_floor(
                 &terms,
                 ScoringInputs {
+                    posting_cache: None,
                     delta: &LexicalMiniDelta::default(),
                     max_term_bytes: config.max_term_bytes,
                     retained_score_limit: Some(512),

@@ -87,7 +87,7 @@ fn database_facade_background_search_projection_delta_uses_qos_admission() {
         )
         .unwrap_err();
 
-    assert!(error.to_string().contains("deferred"));
+    assert_background_refusal(&error, 2, 1, false);
     assert!(search_index.document("memory:old").is_some());
     assert!(search_index.document("memory:new").is_none());
 }

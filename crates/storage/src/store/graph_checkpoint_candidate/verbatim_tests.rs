@@ -186,7 +186,7 @@ fn checkpoint_suffix_preserves_valid_noncanonical_payload_bytes() {
     ));
     fixture
         .store
-        .publish_checkpoint_candidate(&mut fixture.candidate, None, &BTreeSet::new())
+        .publish_checkpoint_candidate(&mut fixture.candidate, None, &Default::default())
         .unwrap();
     assert_eq!(fixture.pinned.scan_nodes(None).count(), 1);
     // Legacy read-only opens share the exclusive open lock. Reopen a complete

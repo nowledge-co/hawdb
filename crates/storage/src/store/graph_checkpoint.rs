@@ -20,6 +20,10 @@ use super::*;
 mod canonical_preparation;
 use canonical_preparation::CanonicalPreparationState;
 
+#[cfg(test)]
+#[path = "graph_checkpoint/graph_bundle_tests.rs"]
+mod graph_bundle_tests;
+
 /// An owned, immutable source and its completed preparation plans.
 ///
 /// A fresh execution context may continue planning after a work denial. The
@@ -136,11 +140,35 @@ impl CheckpointPreparation {
                 Err(HawDBError::from_storage_error(error))
             }
             Err(crate::background::CheckpointOperationError::Operation(error)) => {
+                self.check_source_after_bootstrap_failure(&error, work);
                 // A partial mount or physical error cannot reuse mutated roots.
                 // Discard private artifacts, then rebuild from the same source.
                 self.bootstrap = None;
                 self.finished = false;
                 Err(error)
+            }
+        }
+    }
+
+    fn check_source_after_bootstrap_failure(
+        &self,
+        error: &HawDBError,
+        work: &crate::background::CheckpointWorkContext,
+    ) {
+        if matches!(error, HawDBError::StorageIntegrity(_))
+            && let Some(durable) = &self.source.durable
+        {
+            // Bootstrap has detached poison flags. Preserve live readers only
+            // when the selected source is independently verified intact. If
+            // that diagnostic is interrupted, integrity is unresolved: fail
+            // closed rather than treating cancellation as proof of health.
+            if durable
+                .verify_selected_checkpoint_bindings(crate::immutable_object::BlockWork(Some(work)))
+                .is_err()
+            {
+                self.source
+                    .integrity_poisoned
+                    .store(true, AtomicOrdering::Release);
             }
         }
     }
@@ -739,6 +767,8 @@ impl GraphStore {
             return Ok(None);
         };
         work.checkpoint().map_err(HawDBError::from_storage_error)?;
+        let reused_graph =
+            durable.reusable_graph_bundle(catalog, self.graph_change_commit_epoch, build_config);
         let estimated_record_bytes = self.estimated_logical_record_bytes();
         let checkpoint_out_of_core = match self.residency_mode {
             StorageResidencyMode::Materialized => false,
@@ -788,7 +818,7 @@ impl GraphStore {
             .expect("completed projection plan")
             .0
             .is_some();
-        let property_projection_records = self.canonical_base.as_ref().map(|_| {
+        let property_projection_records = self.canonical_base.as_ref().filter(|_| reused_graph.is_none()).map(|_| {
             let nodes = self
                 .checkpoint_node_records_owned(work)?
                         .checkpoint_steps()
@@ -827,78 +857,51 @@ impl GraphStore {
         let mut property_projection_definitions = Vec::new();
         let mut property_projection_definition_admission =
             PersistentPropertyProjectionDefinitionAdmission::new(build_config.property_projection);
-        for index in catalog.property_indexes() {
-            let kind = match index.kind {
-                IndexKind::Equality => PersistentPropertyProjectionKind::Equality,
-                IndexKind::Range => PersistentPropertyProjectionKind::Range,
-                IndexKind::FullText => PersistentPropertyProjectionKind::FullText,
-            };
-            push_property_projection_definition(
-                &mut property_projection_definitions,
-                &mut property_projection_definition_admission,
-                PersistentPropertyProjectionDefinition {
-                    label_id: index.label_id,
-                    property: definition_memory.string(&index.property)?,
-                    kind,
-                    complete: false,
-                },
-                &definition_memory,
-            )?;
-        }
-        for index in catalog.composite_property_indexes() {
-            let property = crate::property_projection::persistent_composite_property_identity_with_work_context(
-                &index.properties,
-                &definition_memory,
-            ).map_err(HawDBError::from_storage_error)?;
-            push_property_projection_definition(
-                &mut property_projection_definitions,
-                &mut property_projection_definition_admission,
-                PersistentPropertyProjectionDefinition {
-                    label_id: index.label_id,
-                    property,
-                    kind: PersistentPropertyProjectionKind::CompositeEquality,
-                    complete: false,
-                },
-                &definition_memory,
-            )?;
-        }
-        let mut relationship_property_definitions = BTreeSet::new();
-        // MapMemory's String plus RelTypeId payload conservatively covers this
-        // borrowed (RelTypeId, &str) key without duplicating property strings.
-        let mut relationship_definition_memory =
-            crate::projection::predicate_checkpoint::decode::MapMemory::<RelTypeId>::default();
-        for (rel_type, property, _) in self.relationship_property_index.keys() {
-            let key = (*rel_type, property.as_str());
-            let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
-            let new = !relationship_property_definitions.contains(&key);
-            if new {
-                relationship_definition_memory
-                    .before_insert(relationship_property_definitions.len(), &definition_memory)?;
-                relationship_property_definitions.insert(key);
-            }
-            unit.finish();
-            if new {
-                push_relationship_property_projection_definitions(
+        if reused_graph.is_none() {
+            for index in catalog.property_indexes() {
+                let kind = match index.kind {
+                    IndexKind::Equality => PersistentPropertyProjectionKind::Equality,
+                    IndexKind::Range => PersistentPropertyProjectionKind::Range,
+                    IndexKind::FullText => PersistentPropertyProjectionKind::FullText,
+                };
+                push_property_projection_definition(
                     &mut property_projection_definitions,
                     &mut property_projection_definition_admission,
-                    *rel_type,
-                    property,
+                    PersistentPropertyProjectionDefinition {
+                        label_id: index.label_id,
+                        property: definition_memory.string(&index.property)?,
+                        kind,
+                        complete: false,
+                    },
                     &definition_memory,
                 )?;
             }
-        }
-        if let Some(projection) = &self.persistent_property_projection {
-            for definition in &projection.manifest().definitions {
-                let key = (
-                    RelTypeId(definition.label_id.0),
-                    definition.property.as_str(),
-                );
+            for index in catalog.composite_property_indexes() {
+                let property = crate::property_projection::persistent_composite_property_identity_with_work_context(
+                &index.properties,
+                &definition_memory,
+            ).map_err(HawDBError::from_storage_error)?;
+                push_property_projection_definition(
+                    &mut property_projection_definitions,
+                    &mut property_projection_definition_admission,
+                    PersistentPropertyProjectionDefinition {
+                        label_id: index.label_id,
+                        property,
+                        kind: PersistentPropertyProjectionKind::CompositeEquality,
+                        complete: false,
+                    },
+                    &definition_memory,
+                )?;
+            }
+            let mut relationship_property_definitions = BTreeSet::new();
+            // MapMemory's String plus RelTypeId payload conservatively covers this
+            // borrowed (RelTypeId, &str) key without duplicating property strings.
+            let mut relationship_definition_memory =
+                crate::projection::predicate_checkpoint::decode::MapMemory::<RelTypeId>::default();
+            for (rel_type, property, _) in self.relationship_property_index.keys() {
+                let key = (*rel_type, property.as_str());
                 let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
-                let new = matches!(
-                    definition.kind,
-                    PersistentPropertyProjectionKind::RelationshipEquality
-                        | PersistentPropertyProjectionKind::RelationshipRange
-                ) && !relationship_property_definitions.contains(&key);
+                let new = !relationship_property_definitions.contains(&key);
                 if new {
                     relationship_definition_memory.before_insert(
                         relationship_property_definitions.len(),
@@ -911,10 +914,41 @@ impl GraphStore {
                     push_relationship_property_projection_definitions(
                         &mut property_projection_definitions,
                         &mut property_projection_definition_admission,
-                        RelTypeId(definition.label_id.0),
-                        &definition.property,
+                        *rel_type,
+                        property,
                         &definition_memory,
                     )?;
+                }
+            }
+            if let Some(projection) = &self.persistent_property_projection {
+                for definition in &projection.manifest().definitions {
+                    let key = (
+                        RelTypeId(definition.label_id.0),
+                        definition.property.as_str(),
+                    );
+                    let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+                    let new = matches!(
+                        definition.kind,
+                        PersistentPropertyProjectionKind::RelationshipEquality
+                            | PersistentPropertyProjectionKind::RelationshipRange
+                    ) && !relationship_property_definitions.contains(&key);
+                    if new {
+                        relationship_definition_memory.before_insert(
+                            relationship_property_definitions.len(),
+                            &definition_memory,
+                        )?;
+                        relationship_property_definitions.insert(key);
+                    }
+                    unit.finish();
+                    if new {
+                        push_relationship_property_projection_definitions(
+                            &mut property_projection_definitions,
+                            &mut property_projection_definition_admission,
+                            RelTypeId(definition.label_id.0),
+                            &definition.property,
+                            &definition_memory,
+                        )?;
+                    }
                 }
             }
         }
@@ -922,6 +956,7 @@ impl GraphStore {
         let adjacency_relationships = self
             .canonical_base
             .as_ref()
+            .filter(|_| reused_graph.is_none())
             .map(|_| {
                 Ok::<_, HawDBError>(
                     self.checkpoint_relationship_records_owned(work)?
@@ -938,7 +973,15 @@ impl GraphStore {
             })
             .transpose()?;
         let commit_epoch = self.commit_epoch;
-        let checkpoint_statistics = if checkpoint_out_of_core && !self.canonical_base_out_of_core {
+        let checkpoint_statistics = if reused_graph.is_some() {
+            let basic = self
+                .basic_statistics
+                .materialize_with_work_context(self.commit_epoch, work)
+                .map_err(HawDBError::from_storage_error)?;
+            hawdb_storage::statistics::checkpoint::clone_retained_with_index_samples_and_work_context(
+                &self.checkpoint_statistics, self.checkpoint_statistics.index_samples.iter(), catalog, basic, work,
+            ).map_err(HawDBError::from_storage_error)?
+        } else if checkpoint_out_of_core && !self.canonical_base_out_of_core {
             let basic = self
                 .basic_statistics
                 .materialize_with_work_context(self.commit_epoch, work)
@@ -1029,12 +1072,16 @@ impl GraphStore {
             let source_scan_publication = plan.source_publication.expect("completed Source publication");
             #[cfg(test)]
             eprintln!("bounded-preparation-stage canonical-start");
-            let canonical = plan.canonical.get_or_insert_with(|| CanonicalPreparationState::new(self, durable, generation));
-            let (canonical_manifest_artifact, property_spill_manifest_artifact) = canonical.advance(durable, work)?;
+            let (canonical_manifest_artifact, property_spill_manifest_artifact) = if let Some(bundle) = reused_graph {
+                (bundle.canonical_manifest, bundle.property_spill_manifest)
+            } else {
+                let canonical = plan.canonical.get_or_insert_with(|| CanonicalPreparationState::new(self, durable, generation));
+                canonical.advance(durable, work)?
+            };
             #[cfg(test)]
             eprintln!("bounded-preparation-stage adjacency-start");
             if plan.adjacency.is_none() {
-                plan.adjacency = Some(match adjacency_relationships {
+                plan.adjacency = Some(if let Some(bundle) = reused_graph { bundle.adjacency } else { match adjacency_relationships {
                 Some(relationships) => durable.write_canonical_adjacency(
                     relationships,
                     generation,
@@ -1049,13 +1096,13 @@ impl GraphStore {
                     build_config.adjacency,
                     work,
                 )?,
-            });
+            }});
             }
             let canonical_adjacency_artifacts = plan.adjacency.expect("completed adjacency publication");
             #[cfg(test)]
             eprintln!("bounded-preparation-stage property-projection-start");
             if plan.property_projection.is_none() {
-                plan.property_projection = Some(match property_projection_records {
+                plan.property_projection = Some(if let Some(bundle) = reused_graph { bundle.property_projection_manifest } else { match property_projection_records {
                 Some(records) => durable.write_persistent_property_projection(
                     property_projection_definitions,
                     records,
@@ -1085,18 +1132,27 @@ impl GraphStore {
                     build_config.property_projection,
                     work,
                 )?,
-            });
+            }});
             }
             let property_projection_manifest_artifact = plan.property_projection.expect("completed property projection publication");
             #[cfg(test)]
             eprintln!("bounded-preparation-stage relational-start");
-            let relational_checkpoint_artifact = durable.write_relational_checkpoint(
-                &self.relational_state,
-                commit_epoch,
-                generation,
-                work,
-            )?;
-            let checkpoint_relational_state = relational_checkpoint_artifact
+            // The row-page and overflow roots published below carry the
+            // complete relational state, so this checkpoint writes only their
+            // changed generations instead of a legacy full-row file (#1737).
+            // A host that must keep a downgrade path may still request it.
+            let relational_checkpoint_artifact = if self.legacy_relational_checkpoint_file {
+                durable.write_relational_checkpoint(
+                    &self.relational_state,
+                    commit_epoch,
+                    generation,
+                    work,
+                )?
+            } else {
+                durable.remove_relational_checkpoint(generation, work)?;
+                None
+            };
+            let legacy_relational_state = relational_checkpoint_artifact
                 .map(|_| {
                     let index_load = self.relational_checkpoint_index_load();
                     decode_relational_checkpoint_file_with_work_context(
@@ -1277,6 +1333,25 @@ impl GraphStore {
                     overflow_publication_config,
                 )
                 .map_err(HawDBError::from_storage_error)?;
+            // Resident overflow values move to the published extents once this
+            // checkpoint is adopted, as they did when the state was decoded
+            // from a full-row file.
+            let checkpoint_relational_state = if legacy_relational_state.is_some() {
+                legacy_relational_state
+            } else if metadata_only_rows {
+                None
+            } else {
+                let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+                let state = self
+                    .relational_state
+                    .with_overflow_segments_bound_to_root(
+                        durable.root_path(),
+                        &relational_overflow_root,
+                    )
+                    .map_err(HawDBError::from_storage_error)?;
+                unit.finish();
+                state
+            };
 
             let row_request = RelationalRowPageGenerationRequest {
                 directory: durable.root_path(),
@@ -1384,6 +1459,7 @@ impl GraphStore {
             // step. A denied step must leave its earlier plans in this state.
             let artifacts = plan.projected.take().expect("completed projection plan").1;
             Ok(PreparedCheckpoint {
+                checkpoint_graph_catalog: catalog.clone(),
                 source_commit_epoch: commit_epoch,
                 source_checkpoint_epoch: durable.checkpoint_epoch,
                 source_next_lsn: durable.next_lsn,
@@ -1488,7 +1564,7 @@ impl GraphStore {
         &mut self,
         prepared: PreparedCheckpoint,
         oldest_reader_commit_epoch: Option<u64>,
-        pinned_reader_generations: &BTreeSet<u64>,
+        pinned_reader_generations: &crate::read_view::PhysicalGenerationPins,
         shadow_admission: Option<ColumnarShadowAdmission>,
     ) -> Result<()> {
         self.publish_prepared_checkpoint_with_reclamation(
@@ -1503,7 +1579,7 @@ impl GraphStore {
         &mut self,
         prepared: PreparedCheckpoint,
         oldest_reader_commit_epoch: Option<u64>,
-        pinned_reader_generations: Option<&BTreeSet<u64>>,
+        pinned_reader_generations: Option<&crate::read_view::PhysicalGenerationPins>,
         shadow_admission: Option<ColumnarShadowAdmission>,
     ) -> Result<()> {
         let _descriptor_operation = self.internal_descriptor_operation()?;
@@ -1532,7 +1608,7 @@ impl GraphStore {
         &mut self,
         mut prepared: PreparedCheckpoint,
         oldest_reader_commit_epoch: Option<u64>,
-        pinned_reader_generations: Option<&BTreeSet<u64>>,
+        pinned_reader_generations: Option<&crate::read_view::PhysicalGenerationPins>,
         shadow_admission: Option<ColumnarShadowAdmission>,
     ) -> Result<()> {
         let generation = prepared.generation;
@@ -1648,6 +1724,9 @@ impl GraphStore {
             self.relational_state = relational_state;
         }
         self.append_state = append;
+        if let Some(durable) = &mut self.durable {
+            durable.checkpoint_graph_catalog = Some(prepared.checkpoint_graph_catalog.clone());
+        }
         self.append_generation_reader = Some(prepared.checkpoint_append_reader.clone());
         if prepared.checkpoint_out_of_core {
             let durable = self.durable.as_ref().ok_or_else(|| {
@@ -1768,6 +1847,7 @@ impl GraphStore {
                 // Manifest admission metadata belongs to the captured roots.
                 Some(SnapshotResidencyObserver {
                     segment_cache: Arc::clone(&durable.segment_cache),
+                    checkpoint_commit_epoch: durable.checkpoint_commit_epoch,
                     graph_manifest_open_budget_bytes: durable.graph_manifest_open_budget_bytes(),
                     graph_manifest_encoded_bytes: durable.graph_manifest_encoded_bytes(),
                 })
@@ -1941,11 +2021,23 @@ impl GraphStore {
             self.persistent_property_projection
                 .as_ref()
                 .map_or(0, |reader| {
-                    usize::try_from(
-                        self.commit_epoch
-                            .saturating_sub(reader.manifest().source_commit_epoch),
-                    )
-                    .unwrap_or(usize::MAX)
+                    // A carried graph projection remains valid through its
+                    // latest checkpoint even though serialized E stays older.
+                    // Detached views retain that captured coverage, not a
+                    // live writer clock. Only later graph changes create debt.
+                    let valid_through = self
+                        .durable
+                        .as_ref()
+                        .map(|durable| durable.checkpoint_commit_epoch)
+                        .or_else(|| {
+                            self.snapshot_residency_observer
+                                .as_ref()
+                                .map(|observer| observer.checkpoint_commit_epoch)
+                        })
+                        .unwrap_or(reader.manifest().source_commit_epoch)
+                        .max(reader.manifest().source_commit_epoch);
+                    usize::try_from(self.graph_change_commit_epoch.saturating_sub(valid_through))
+                        .unwrap_or(usize::MAX)
                 });
 
         StoragePressureSignals {

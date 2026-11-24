@@ -510,7 +510,7 @@ pub(super) fn load_published_canonical_segments(
     ) else {
         return Ok(None);
     };
-    let generation = durable_manifest.checkpoint_generation.ok_or_else(|| {
+    let generation = durable_manifest.graph_generation().ok_or_else(|| {
         HawDBError::Storage(
             "canonical manifest metadata requires a checkpoint generation".to_string(),
         )
@@ -538,10 +538,11 @@ pub(super) fn load_published_canonical_segments(
             canonical_manifest.generation.0
         )));
     }
-    if canonical_manifest.source_commit_epoch != durable_manifest.checkpoint_commit_epoch {
+    if canonical_manifest.source_commit_epoch != durable_manifest.graph_source_commit_epoch() {
         return Err(HawDBError::Storage(format!(
             "canonical descriptor source epoch {} does not match durable checkpoint epoch {}",
-            canonical_manifest.source_commit_epoch, durable_manifest.checkpoint_commit_epoch
+            canonical_manifest.source_commit_epoch,
+            durable_manifest.graph_source_commit_epoch()
         )));
     }
     let config = CanonicalSegmentConfig::default();
@@ -594,7 +595,7 @@ fn load_published_property_spills(
     ) else {
         return Ok(None);
     };
-    let generation = durable_manifest.checkpoint_generation.ok_or_else(|| {
+    let generation = durable_manifest.graph_generation().ok_or_else(|| {
         HawDBError::Storage("property spill metadata requires a checkpoint generation".to_string())
     })?;
     let manifest_path = root.join(property_spill_manifest_generation_file(generation));
@@ -619,10 +620,11 @@ fn load_published_property_spills(
             manifest.generation.0
         )));
     }
-    if manifest.source_commit_epoch != durable_manifest.checkpoint_commit_epoch {
+    if manifest.source_commit_epoch != durable_manifest.graph_source_commit_epoch() {
         return Err(HawDBError::Storage(format!(
             "property spill source epoch {} does not match durable checkpoint epoch {}",
-            manifest.source_commit_epoch, durable_manifest.checkpoint_commit_epoch
+            manifest.source_commit_epoch,
+            durable_manifest.graph_source_commit_epoch()
         )));
     }
     let descriptor_tree = PersistentPropertySpillDescriptorTree::new(
@@ -670,7 +672,7 @@ pub(in crate::store) fn load_published_property_projection(
     ) else {
         return Ok(None);
     };
-    let generation = durable_manifest.checkpoint_generation.ok_or_else(|| {
+    let generation = durable_manifest.graph_generation().ok_or_else(|| {
         HawDBError::Storage(
             "property projection metadata requires a checkpoint generation".to_string(),
         )
@@ -695,7 +697,7 @@ pub(in crate::store) fn load_published_property_projection(
     let manifest = PersistentPropertyProjectionManifest::decode(text)
         .map_err(HawDBError::from_storage_error)?;
     if manifest.generation != ManifestGeneration(generation)
-        || manifest.source_commit_epoch != durable_manifest.checkpoint_commit_epoch
+        || manifest.source_commit_epoch != durable_manifest.graph_source_commit_epoch()
     {
         return Err(HawDBError::Storage(
             "property projection generation or source epoch does not match the durable checkpoint"
@@ -746,7 +748,7 @@ pub(in crate::store) fn load_published_canonical_adjacency(
     let Some(binding) = durable_manifest.canonical_adjacency_generation_artifacts else {
         return Ok(None);
     };
-    let generation = durable_manifest.checkpoint_generation.ok_or_else(|| {
+    let generation = durable_manifest.graph_generation().ok_or_else(|| {
         HawDBError::Storage(
             "canonical adjacency metadata requires a checkpoint generation".to_string(),
         )

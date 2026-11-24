@@ -31,6 +31,7 @@ mod read_profile;
 #[doc(hidden)]
 pub mod row_access;
 mod statement;
+mod subquery_scope;
 #[doc(hidden)]
 pub mod system_schema;
 

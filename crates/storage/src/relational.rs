@@ -73,7 +73,7 @@ pub(crate) use row_page::CheckpointSnapshotPointRequest;
 
 pub use codec::{
     decode_relational_checkpoint, decode_relational_checkpoint_file,
-    decode_relational_checkpoint_file_with_index_load,
+    decode_relational_checkpoint_file_with_index_load, decode_relational_checkpoint_from_row_root,
     decode_relational_checkpoint_with_index_load, decode_relational_wal_batch,
     encode_relational_checkpoint, encode_relational_checkpoint_to_writer,
     encode_relational_wal_batch, encode_relational_wal_batch_with_captures,
@@ -6252,6 +6252,36 @@ impl RelationalState {
                 }
             })
             .collect()
+    }
+
+    /// Returns a copy whose overflow segments read the extents published in
+    /// `overflow`, or `None` when every segment already does.
+    ///
+    /// A checkpoint whose rows are carried by row-page and overflow roots no
+    /// longer writes the legacy full-row file whose ranges used to back
+    /// checkpointed overflow values (#1737). Inline values and ranges into a
+    /// legacy full-row file are rebound to the published root so resident
+    /// memory and reclamation behave as they did when the state was decoded
+    /// from that file. Root-backed segments keep their physical extents across
+    /// later checkpoints, which reuse them.
+    pub fn with_overflow_segments_bound_to_root(
+        &self,
+        directory: &std::path::Path,
+        overflow: &RelationalOverflowRootReader,
+    ) -> Result<Option<Self>, RelationalError> {
+        let pending = self
+            .overflow_segments
+            .iter()
+            .filter(|(_, segment)| !codec::overflow_segment_is_root_backed(segment))
+            .map(|(digest, _)| *digest)
+            .collect::<BTreeSet<_>>();
+        if pending.is_empty() {
+            return Ok(None);
+        }
+        let rebound = codec::overflow_segments_by_digest_from_root(directory, overflow, &pending)?;
+        let mut next = self.clone();
+        next.overflow_segments.extend(rebound);
+        Ok(Some(next))
     }
 
     #[doc(hidden)]

@@ -62,6 +62,11 @@ pub enum RepresentationKind {
     PropertyProjectionOrderedBlock,
     PropertySpillDescriptorPage,
     CanonicalSegmentPointDirectory,
+    /// Verified header and block index of one block-framed search content
+    /// segment (#1917).
+    SearchContentIndex,
+    /// One verified, decompressed search content block (#1917).
+    SearchContentBlock,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -336,7 +341,7 @@ impl SegmentCache {
     /// physical source extent. Callers must bind the immutable physical digest
     /// through `verification_tag` and must use the same tag for lookup and
     /// insertion.
-    pub(crate) fn get_verified(
+    pub fn get_verified(
         &self,
         key: &SegmentCacheKey,
         verification_tag: [u8; 32],
@@ -423,7 +428,7 @@ impl SegmentCache {
 
     /// Admits compact bytes after the caller has validated their immutable
     /// physical source against a strong digest.
-    pub(crate) fn insert_verified(
+    pub fn insert_verified(
         &self,
         key: SegmentCacheKey,
         verification_tag: [u8; 32],

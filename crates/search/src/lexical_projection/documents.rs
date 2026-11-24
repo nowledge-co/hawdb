@@ -90,21 +90,21 @@ impl<'a> DocumentLookup<'a> {
             bytes: &self.bytes,
             offset: self.cursor,
         };
-        loop {
-            if let Some(task) = self.task {
-                super::query_context::checkpoint(task)?;
-            }
-            let id = cursor.borrowed_string(1024 * 1024)?;
-            let length = cursor.u32()?;
-            let current = self.next_ordinal;
-            self.next_ordinal = self.next_ordinal.checked_add(1).ok_or_else(|| {
-                HawDBError::Storage("lexical document ordinal overflow".to_string())
-            })?;
-            self.cursor = cursor.offset;
-            if current == ordinal {
-                return Ok((id, length));
-            }
+        // Skip earlier entries by their length prefixes. The block's IDs were
+        // UTF-8 validated when it was loaded, and only the requested entry is
+        // decoded. The walk stays within this one admitted mapping block,
+        // which bounds the work between the checkpoints above and at load.
+        for _ in self.next_ordinal..ordinal {
+            cursor.skip_string(1024 * 1024)?;
+            cursor.u32()?;
         }
+        let id = cursor.borrowed_string(1024 * 1024)?;
+        let length = cursor.u32()?;
+        self.next_ordinal = ordinal
+            .checked_add(1)
+            .ok_or_else(|| HawDBError::Storage("lexical document ordinal overflow".to_string()))?;
+        self.cursor = cursor.offset;
+        Ok((id, length))
     }
 }
 
@@ -262,6 +262,24 @@ impl LexicalProjectionReader {
                 bytes_read: 0,
             });
         };
+        let (bytes, _memory) = self.read_probe_block_with_query(block, context)?;
+        let result = probe_document_bytes(
+            &bytes,
+            self.manifest.generation,
+            block,
+            document_id,
+            Some(context),
+        )?;
+        context.checkpoint()?;
+        Ok(result)
+    }
+
+    /// Reads and checksums one query-funded document mapping block.
+    fn read_probe_block_with_query(
+        &self,
+        block: &BlockDescriptor,
+        context: super::QueryContext<'_>,
+    ) -> Result<(Vec<u8>, hawdb_executor::QueryMemoryLease)> {
         if block.length > self.config.max_block_bytes.get()
             || block
                 .offset
@@ -274,7 +292,7 @@ impl LexicalProjectionReader {
         }
         let length = usize::try_from(block.length)
             .map_err(|_| HawDBError::Execution("document ID probe exceeds address space".into()))?;
-        let _memory = context.memory.reserve(length)?;
+        let memory = context.memory.reserve(length)?;
         let mut bytes = vec![0; length];
         let mut input = crate::build_memory::read::QueryFileRange {
             file: &self.file,
@@ -291,15 +309,21 @@ impl LexicalProjectionReader {
                 "lexical document block checksum mismatch".into(),
             ));
         }
-        let result = probe_document_bytes(
-            &bytes,
-            self.manifest.generation,
-            block,
-            document_id,
-            Some(context),
-        )?;
-        context.checkpoint()?;
-        Ok(result)
+        Ok((bytes, memory))
+    }
+
+    /// A prober for ascending document IDs that reads, verifies and validates
+    /// each document mapping block once, however many probed IDs it holds
+    /// (#1917). It holds at most one block, query-funded under `context`.
+    pub(crate) fn document_id_prober<'a>(
+        &'a self,
+        context: Option<super::QueryContext<'a>>,
+    ) -> DocumentIdProber<'a> {
+        DocumentIdProber {
+            projection: self,
+            context,
+            current: None,
+        }
     }
 
     fn document_id_probe_block(&self, document_id: &str) -> Option<&BlockDescriptor> {
@@ -309,6 +333,130 @@ impl LexicalProjectionReader {
         });
         blocks.get(index).filter(|block| {
             block.kind == BlockKind::Documents && block.min_key.as_str() <= document_id
+        })
+    }
+}
+
+/// The verified block a [`DocumentIdProber`] scans forward.
+struct ProbedBlock<'a> {
+    descriptor: &'a BlockDescriptor,
+    bytes: Vec<u8>,
+    _memory: Option<hawdb_executor::QueryMemoryLease>,
+    /// Offset of the first entry not yet passed, and the entries from it on.
+    offset: usize,
+    remaining: usize,
+    /// The last passed entry; a probe at or below its ID rescans the block.
+    passed: Option<usize>,
+    first_entry: usize,
+    count: usize,
+}
+
+pub(crate) struct DocumentIdProber<'a> {
+    projection: &'a LexicalProjectionReader,
+    context: Option<super::QueryContext<'a>>,
+    current: Option<ProbedBlock<'a>>,
+}
+
+impl DocumentIdProber<'_> {
+    /// Equals [`LexicalProjectionReader::probe_document_id_with_query`] (or
+    /// `probe_document_id` without a query), except that `bytes_read` is
+    /// zero when the block was already read for an earlier probe.
+    pub(crate) fn probe(&mut self, document_id: &str) -> Result<DocumentIdProbe> {
+        if let Some(context) = self.context {
+            context.checkpoint()?;
+        }
+        let projection = self.projection;
+        let Some(descriptor) = projection.document_id_probe_block(document_id) else {
+            return Ok(DocumentIdProbe {
+                present: false,
+                bytes_read: 0,
+            });
+        };
+        let mut bytes_read = 0;
+        if self
+            .current
+            .as_ref()
+            .is_none_or(|current| !std::ptr::eq(current.descriptor, descriptor))
+        {
+            // Release the previous block before admitting the next one.
+            self.current = None;
+            let (bytes, memory) = match self.context {
+                Some(context) => {
+                    let (bytes, memory) =
+                        projection.read_probe_block_with_query(descriptor, context)?;
+                    (bytes, Some(memory))
+                }
+                None => {
+                    if descriptor.length > projection.config.max_block_bytes.get() {
+                        return Err(HawDBError::Storage(
+                            "lexical document block exceeds read budget".into(),
+                        ));
+                    }
+                    (projection.read_block(descriptor)?, None)
+                }
+            };
+            validate_document_block_with_context(
+                &bytes,
+                projection.manifest.generation,
+                descriptor,
+                self.context,
+            )?;
+            let mut cursor = SliceCursor::new(&bytes);
+            let count = decode_block_header(
+                &mut cursor,
+                projection.manifest.generation,
+                descriptor,
+                BlockKind::Documents,
+            )? as usize;
+            bytes_read = bytes.len() as u64;
+            let first_entry = cursor.offset;
+            self.current = Some(ProbedBlock {
+                descriptor,
+                bytes,
+                _memory: memory,
+                offset: first_entry,
+                remaining: count,
+                passed: None,
+                first_entry,
+                count,
+            });
+        }
+        let block = self.current.as_mut().expect("a probed block was loaded");
+        if let Some(passed) = block.passed {
+            let mut cursor = SliceCursor {
+                bytes: &block.bytes,
+                offset: passed,
+            };
+            if cursor.borrowed_string(1024 * 1024)? >= document_id {
+                block.offset = block.first_entry;
+                block.remaining = block.count;
+                block.passed = None;
+            }
+        }
+        let mut cursor = SliceCursor {
+            bytes: &block.bytes,
+            offset: block.offset,
+        };
+        let mut present = false;
+        while block.remaining > 0 {
+            super::query_context::check(self.context)?;
+            let entry = cursor.offset;
+            let id = cursor.borrowed_string(1024 * 1024)?;
+            let ordering = id.cmp(document_id);
+            if ordering.is_ge() {
+                // Later probes start at this entry again.
+                present = ordering.is_eq();
+                cursor.offset = entry;
+                break;
+            }
+            let _length = cursor.u32()?;
+            block.remaining -= 1;
+            block.passed = Some(entry);
+        }
+        block.offset = cursor.offset;
+        Ok(DocumentIdProbe {
+            present,
+            bytes_read,
         })
     }
 }

@@ -24,6 +24,7 @@ use crate::error::{HawDBError, Result};
 use crate::file_io as fs;
 use crate::immutable_object::BlockWork;
 use crate::immutable_object::ObjectKind;
+use crate::store::immutable_root::checkpoint_artifact_relative_path;
 use crate::store::{
     canonical_adjacency_artifact_generation_file, canonical_artifact_generation_file,
     canonical_manifest_generation_file, checkpoint_generation_file, copy_backup_file,
@@ -45,6 +46,32 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 impl DurableStore {
+    /// Recheck authoritative files after a private candidate integrity failure.
+    /// Candidate-only damage must not invalidate readers of the selected root.
+    pub(in crate::store) fn verify_selected_checkpoint_bindings(
+        &self,
+        work: BlockWork<'_>,
+    ) -> Result<()> {
+        let Some(branch) = &self.branch_runtime else {
+            return Ok(());
+        };
+        for binding in &branch.root().checkpoint_bindings {
+            let digest = digest_closure_artifact(
+                &self.root_path.join(&binding.relative_path),
+                binding.reference.kind,
+                "verify selected checkpoint artifact",
+                work,
+            )?;
+            if digest.reference != binding.reference {
+                return Err(HawDBError::StorageIntegrity(format!(
+                    "previously published artifact {} changed its content reference",
+                    binding.relative_path
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// Builds the complete validated checkpoint closure through bound family
     /// readers; it never scans the storage directory.
     pub(in crate::store) fn checkpoint_closure_plan(
@@ -64,6 +91,9 @@ impl DurableStore {
         let generation = manifest.checkpoint_generation.ok_or_else(|| {
             HawDBError::Storage("checkpoint closure requires a checkpoint generation".into())
         })?;
+        let graph_generation = manifest
+            .graph_generation()
+            .expect("checkpoint has graph identity");
         let input = |path: PathBuf| -> Result<CheckpointArtifactInput> {
             let digest = digest_closure_artifact(
                 &path,
@@ -71,6 +101,21 @@ impl DurableStore {
                 "read checkpoint closure artifact",
                 work,
             )?;
+            if let Some(branch) = &self.branch_runtime {
+                let relative_path = checkpoint_artifact_relative_path(&self.root_path, &path)?;
+                // A carried generation is already authenticated by the selected
+                // sealed root. Rehashing changed bytes must not mint a new
+                // identity for that same immutable artifact path.
+                let bindings = &branch.root().checkpoint_bindings;
+                if let Ok(index) = bindings
+                    .binary_search_by(|binding| binding.relative_path.as_str().cmp(relative_path))
+                    && bindings[index].reference != digest.reference
+                {
+                    return Err(HawDBError::StorageIntegrity(format!(
+                        "previously published artifact {relative_path} changed its content reference"
+                    )));
+                }
+            }
             Ok(CheckpointArtifactInput {
                 path,
                 reference: digest.reference,
@@ -98,7 +143,7 @@ impl DurableStore {
                     || u64::from(digest.content.crc32c.get()) != encoded_checksum
                     || digest.content.sha256 != encoded_sha256
                 {
-                    return Err(HawDBError::Storage(format!(
+                    return Err(HawDBError::StorageIntegrity(format!(
                         "relational checkpoint closure artifact {} differs from its checkpoint binding",
                         relational_checkpoint.display()
                     )));
@@ -131,9 +176,13 @@ impl DurableStore {
                 &mut plan,
                 CheckpointArtifactFamily::Canonical,
                 map_paths(vec![
-                    canonical_artifact_generation_file(generation),
-                    hawdb_storage::canonical::canonical_segment_descriptor_page_file(generation),
-                    hawdb_storage::canonical::canonical_segment_descriptor_root_file(generation),
+                    canonical_artifact_generation_file(graph_generation),
+                    hawdb_storage::canonical::canonical_segment_descriptor_page_file(
+                        graph_generation,
+                    ),
+                    hawdb_storage::canonical::canonical_segment_descriptor_root_file(
+                        graph_generation,
+                    ),
                 ])?,
             )?;
         } else {
@@ -146,7 +195,7 @@ impl DurableStore {
                 CheckpointArtifactFamily::Adjacency,
                 map_paths(vec![
                     hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_page_file(
-                        generation,
+                        graph_generation,
                     ),
                 ])?,
             )?;
@@ -159,9 +208,13 @@ impl DurableStore {
                 &mut plan,
                 CheckpointArtifactFamily::PropertySpill,
                 map_paths(vec![
-                    property_spill_artifact_generation_file(generation),
-                    hawdb_storage::property_spill::property_spill_descriptor_page_file(generation),
-                    hawdb_storage::property_spill::property_spill_descriptor_root_file(generation),
+                    property_spill_artifact_generation_file(graph_generation),
+                    hawdb_storage::property_spill::property_spill_descriptor_page_file(
+                        graph_generation,
+                    ),
+                    hawdb_storage::property_spill::property_spill_descriptor_root_file(
+                        graph_generation,
+                    ),
                 ])?,
             )?;
         } else {
@@ -173,12 +226,12 @@ impl DurableStore {
                 &mut plan,
                 CheckpointArtifactFamily::PropertyProjection,
                 map_paths(vec![
-                    property_projection_artifact_generation_file(generation),
+                    property_projection_artifact_generation_file(graph_generation),
                     hawdb_storage::property_projection::property_projection_descriptor_page_file(
-                        generation,
+                        graph_generation,
                     ),
                     hawdb_storage::property_projection::property_projection_descriptor_root_file(
-                        generation,
+                        graph_generation,
                     ),
                 ])?,
             )?;
@@ -298,6 +351,7 @@ impl DurableStore {
 
     pub(in crate::store) fn backup_to(&self, destination: &Path) -> Result<StorageBackupReport> {
         let generation = self.checkpoint_epoch;
+        let graph_generation = self.graph_generation();
         if self.checkpoint_encoded_len.is_none() {
             return Err(HawDBError::Storage(
                 "storage must have a published checkpoint before backup".to_string(),
@@ -412,34 +466,40 @@ impl DurableStore {
             }
             if self.canonical_manifest_encoded_len.is_some() {
                 sources.insert(
-                    canonical_artifact_generation_file(generation),
+                    canonical_artifact_generation_file(graph_generation),
                     self.root_path
-                        .join(canonical_artifact_generation_file(generation)),
+                        .join(canonical_artifact_generation_file(graph_generation)),
                 );
                 sources.insert(
-                    canonical_manifest_generation_file(generation),
+                    canonical_manifest_generation_file(graph_generation),
                     self.root_path
-                        .join(canonical_manifest_generation_file(generation)),
+                        .join(canonical_manifest_generation_file(graph_generation)),
                 );
                 for name in [
-                    hawdb_storage::canonical::canonical_segment_descriptor_page_file(generation),
-                    hawdb_storage::canonical::canonical_segment_descriptor_root_file(generation),
+                    hawdb_storage::canonical::canonical_segment_descriptor_page_file(
+                        graph_generation,
+                    ),
+                    hawdb_storage::canonical::canonical_segment_descriptor_root_file(
+                        graph_generation,
+                    ),
                 ] {
                     sources.insert(name.clone(), self.root_path.join(name));
                 }
             }
             if self.canonical_adjacency_generation_artifacts.is_some() {
                 sources.insert(
-                    canonical_adjacency_artifact_generation_file(generation),
+                    canonical_adjacency_artifact_generation_file(graph_generation),
                     self.root_path
-                        .join(canonical_adjacency_artifact_generation_file(generation)),
+                        .join(canonical_adjacency_artifact_generation_file(
+                            graph_generation,
+                        )),
                 );
                 for name in [
                     hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_page_file(
-                        generation,
+                        graph_generation,
                     ),
                     hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_root_file(
-                        generation,
+                        graph_generation,
                     ),
                 ] {
                     sources.insert(name.clone(), self.root_path.join(name));
@@ -447,39 +507,47 @@ impl DurableStore {
             }
             if self.property_spill_manifest_encoded_len.is_some() {
                 sources.insert(
-                    property_spill_artifact_generation_file(generation),
+                    property_spill_artifact_generation_file(graph_generation),
                     self.root_path
-                        .join(property_spill_artifact_generation_file(generation)),
+                        .join(property_spill_artifact_generation_file(graph_generation)),
                 );
                 sources.insert(
-                    property_spill_manifest_generation_file(generation),
+                    property_spill_manifest_generation_file(graph_generation),
                     self.root_path
-                        .join(property_spill_manifest_generation_file(generation)),
+                        .join(property_spill_manifest_generation_file(graph_generation)),
                 );
                 for name in [
-                    hawdb_storage::property_spill::property_spill_descriptor_page_file(generation),
-                    hawdb_storage::property_spill::property_spill_descriptor_root_file(generation),
+                    hawdb_storage::property_spill::property_spill_descriptor_page_file(
+                        graph_generation,
+                    ),
+                    hawdb_storage::property_spill::property_spill_descriptor_root_file(
+                        graph_generation,
+                    ),
                 ] {
                     sources.insert(name.clone(), self.root_path.join(name));
                 }
             }
             if self.property_projection_manifest_encoded_len.is_some() {
                 sources.insert(
-                    property_projection_artifact_generation_file(generation),
+                    property_projection_artifact_generation_file(graph_generation),
                     self.root_path
-                        .join(property_projection_artifact_generation_file(generation)),
+                        .join(property_projection_artifact_generation_file(
+                            graph_generation,
+                        )),
                 );
                 sources.insert(
-                    property_projection_manifest_generation_file(generation),
+                    property_projection_manifest_generation_file(graph_generation),
                     self.root_path
-                        .join(property_projection_manifest_generation_file(generation)),
+                        .join(property_projection_manifest_generation_file(
+                            graph_generation,
+                        )),
                 );
                 for name in [
                     hawdb_storage::property_projection::property_projection_descriptor_page_file(
-                        generation,
+                        graph_generation,
                     ),
                     hawdb_storage::property_projection::property_projection_descriptor_root_file(
-                        generation,
+                        graph_generation,
                     ),
                 ] {
                     sources.insert(name.clone(), self.root_path.join(name));

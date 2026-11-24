@@ -411,11 +411,10 @@ fn background_admission_covers_staging_and_publication() {
             None,
         )
         .unwrap();
-    assert!(db
+    let error = db
         .publish_graph_analytics(&prepared, "rank", None)
-        .unwrap_err()
-        .to_string()
-        .contains("publication not admitted"));
+        .unwrap_err();
+    assert_background_refusal(&error, 11, 5, false);
     assert_eq!(ranks(&mut db), before);
     assert_eq!(db.commit_epoch().unwrap(), epoch);
     for id in 3..=5 {
@@ -426,15 +425,92 @@ fn background_admission_covers_staging_and_publication() {
         .unwrap();
     }
     let epoch = db.commit_epoch().unwrap();
-    assert!(db
+    let error = db
         .prepare_graph_analytics(
             request(GraphAnalyticsAlgorithm::PageRank(PageRankOptions::default())),
             None,
         )
-        .unwrap_err()
-        .to_string()
-        .contains("graph analytics not admitted"));
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            HawDBError::RuntimeAdmissionRefused(crate::RuntimeAdmissionRefusal {
+                code: "background_task_saturated",
+                available: 5,
+                retryable: false,
+                ..
+            })
+        ),
+        "{error}"
+    );
     assert_eq!(db.commit_epoch().unwrap(), epoch);
+}
+
+#[test]
+fn deferred_background_admission_is_typed_and_retryable() {
+    let mut db = Database::new_with_config(DatabaseConfig {
+        local_qos_policy: crate::LocalQosPolicy {
+            max_background_operations: None,
+            max_total_background_operations: Some(64),
+            ..crate::LocalQosPolicy::default()
+        },
+        ..DatabaseConfig::default()
+    });
+    fixture(&mut db);
+    let before = ranks(&mut db);
+    let epoch = db.commit_epoch().unwrap();
+    let scheduler = db.local_qos_scheduler();
+    let hold = || {
+        scheduler
+            .try_start(crate::WorkRequest::background(
+                crate::WorkClass::Analytics,
+                64,
+            ))
+            .unwrap()
+    };
+    let deferred = |error: HawDBError| {
+        assert!(
+            matches!(
+                error,
+                HawDBError::RuntimeAdmissionRefused(crate::RuntimeAdmissionRefusal {
+                    code: "background_task_saturated",
+                    available: 0,
+                    retryable: true,
+                    ..
+                })
+            ),
+            "{error}"
+        );
+    };
+
+    let held = hold();
+    deferred(
+        db.prepare_graph_analytics(
+            request(GraphAnalyticsAlgorithm::PageRank(PageRankOptions::default())),
+            None,
+        )
+        .unwrap_err(),
+    );
+    held.finish();
+    let prepared = db
+        .prepare_graph_analytics(
+            request(GraphAnalyticsAlgorithm::PageRank(PageRankOptions::default())),
+            None,
+        )
+        .unwrap();
+
+    let held = hold();
+    deferred(
+        db.publish_graph_analytics(&prepared, "rank", None)
+            .unwrap_err(),
+    );
+    assert!(!db.storage_handle_poisoned().unwrap());
+    assert_eq!(ranks(&mut db), before);
+    assert_eq!(db.commit_epoch().unwrap(), epoch);
+    held.finish();
+    db.publish_graph_analytics(&prepared, "rank", None).unwrap();
+    assert_ne!(ranks(&mut db), before);
+    assert_eq!(scheduler.state(), crate::LocalQosState::default());
 }
 
 #[test]
@@ -886,7 +962,21 @@ fn runtime_admission_busy_publication_preserves_values_epochs_and_wal_in_both_re
         let held = governor
             .try_admit(hawdb_qos::RuntimeWorkRequest::background_maintenance(1024))
             .unwrap();
-        assert!(db.publish_graph_analytics(&prepared, "rank", None).is_err());
+        let error = db
+            .publish_graph_analytics(&prepared, "rank", None)
+            .unwrap_err();
+        // A governor refusal stays typed and never poisons the handle (#1926).
+        assert!(
+            matches!(
+                error,
+                HawDBError::RuntimeAdmissionRefused(crate::RuntimeAdmissionRefusal {
+                    retryable: true,
+                    ..
+                })
+            ),
+            "{error}"
+        );
+        assert!(!db.storage_handle_poisoned().unwrap());
         assert_eq!(ranks(&mut db), before);
         assert_eq!(db.commit_epoch().unwrap(), epoch);
         assert_eq!(std::fs::read(active_wal_path(&path)).unwrap(), wal);

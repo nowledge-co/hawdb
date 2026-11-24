@@ -264,7 +264,7 @@ fn cancelled_bootstrap_keeps_completed_base_and_recovers_with_a_fresh_context() 
         .catch_up_with_work_context(&store, &fresh)
         .unwrap();
     catalog = store
-        .publish_checkpoint_candidate(&mut candidate, None, &BTreeSet::new())
+        .publish_checkpoint_candidate(&mut candidate, None, &Default::default())
         .unwrap();
     resumed.assert_released(&local);
     assert!(
@@ -555,7 +555,7 @@ fn append_bootstrap_resumes_the_same_base_and_keeps_leases_through_the_last_snap
     );
     assert!(admission.memory_report().live_accounted_bytes >= 512 * 1024);
     let mut catalog = store
-        .publish_checkpoint_candidate(&mut candidate, None, &BTreeSet::new())
+        .publish_checkpoint_candidate(&mut candidate, None, &Default::default())
         .unwrap();
     let bytes = admission.memory_report().live_accounted_bytes;
     let observer = crate::test_allocator::AllocationObservation::start();
@@ -784,4 +784,51 @@ fn safe_io_denial_keeps_staging_identity_until_preparation_finishes() {
 #[test]
 fn abandoning_denied_preparation_cleans_its_owned_staging_and_preserves_source() {
     retained_stage_survives_denial_then_finishes_or_is_abandoned(false);
+}
+
+#[test]
+fn private_bootstrap_integrity_failure_preserves_verified_source_readers() {
+    let fixture = crate::store::immutable_root::tests::BranchFixture::new();
+    let (mut store, mut catalog) = fixture
+        .admit(fixture.main, DurabilityPolicy::default())
+        .into_parts();
+    store.checkpoint(&catalog).unwrap();
+    let reader = store.snapshot_for_read();
+    store
+        .create_node(&mut catalog, "Later", BTreeMap::new())
+        .unwrap();
+    let mut frame = store
+        .begin_checkpoint_preparation(&catalog)
+        .unwrap()
+        .unwrap();
+    let work = crate::background::CheckpointWorkContext::default();
+    let prepared = frame.prepare_with_work_context(&work).unwrap().unwrap();
+    let artifact = store
+        .durable_root_path()
+        .unwrap()
+        .join(canonical_manifest_generation_file(prepared.generation));
+    let mut bytes = fs::read(&artifact).unwrap();
+    *bytes.last_mut().unwrap() ^= 1;
+    fs::write(&artifact, bytes).unwrap();
+    frame.bootstrap = Some(frame.source.checkpoint_candidate_from_prepared(
+        &frame.catalog,
+        prepared,
+        &work,
+    ));
+    let error = frame
+        .prepare_candidate_with_work_context(&work)
+        .unwrap_err();
+    assert!(matches!(error, HawDBError::StorageIntegrity(_)), "{error}");
+    assert!(!store.storage_handle_poisoned());
+    assert!(!reader.storage_handle_poisoned());
+    assert_eq!(reader.scan_nodes(None).count(), 2);
+
+    // The same known candidate failure with an interrupted source diagnostic
+    // cannot certify the selected source healthy. This must fail closed.
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    let stopped = probe.context(scheduler());
+    probe.cancellation.cancel();
+    frame.check_source_after_bootstrap_failure(&error, &stopped);
+    assert!(store.storage_handle_poisoned());
+    assert!(reader.storage_handle_poisoned());
 }

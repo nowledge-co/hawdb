@@ -1,0 +1,7 @@
+{
+  "phase": "scifact",
+  "pairs": 2700,
+  "warmup_pairs": 900,
+  "elapsed_s": 75.03125286102295,
+  "all_results_equal": true
+}

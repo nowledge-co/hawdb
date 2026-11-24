@@ -50,7 +50,7 @@ impl CheckpointCandidate {
     pub fn reclaim_published_generations_with_context(
         &self,
         context: &mut CheckpointReclamationContext,
-        pinned_reader_generations: &BTreeSet<u64>,
+        pinned_reader_generations: &crate::read_view::PhysicalGenerationPins,
     ) -> Result<()> {
         let (durable, generation, previous) =
             self.reclamation_durable_runtime(&mut context.durable)?;
@@ -106,7 +106,7 @@ mod tests {
         candidate.catch_up(&store).unwrap();
         candidate.finish_catch_up().unwrap();
         store
-            .publish_checkpoint_candidate(&mut candidate, None, &BTreeSet::new())
+            .publish_checkpoint_candidate(&mut candidate, None, &Default::default())
             .unwrap();
         assert!(candidate
             .defer_published_generation_reclamation_with_context(&mut stale)
@@ -116,7 +116,7 @@ mod tests {
             .defer_published_generation_reclamation_with_context(&mut selected)
             .unwrap();
         candidate
-            .reclaim_published_generations_with_context(&mut selected, &BTreeSet::new())
+            .reclaim_published_generations_with_context(&mut selected, &Default::default())
             .unwrap();
         drop(selected);
         drop(stale);

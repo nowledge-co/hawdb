@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use super::opening::OpeningGuard;
 use super::*;
 use crate::background::{CheckpointBytes, CheckpointWorkContext, CheckpointWorkError};
 
@@ -42,14 +43,11 @@ impl ImmutableFileHandles {
     fn try_checkpoint_opening(
         &self,
         work: &CheckpointWorkContext,
-    ) -> Result<std::sync::MutexGuard<'_, ()>, CheckpointImmutableFileError> {
-        match self.opening.try_lock() {
-            Ok(opening) => Ok(opening),
-            Err(std::sync::TryLockError::Poisoned(error)) => Ok(error.into_inner()),
-            Err(std::sync::TryLockError::WouldBlock) => Err(work
-                .record_failure(CheckpointWorkError::Contended("immutable file validation"))
-                .into()),
-        }
+    ) -> Result<OpeningGuard<'_>, CheckpointImmutableFileError> {
+        self.opening.try_lock().ok_or_else(|| {
+            work.record_failure(CheckpointWorkError::Contended("immutable file validation"))
+                .into()
+        })
     }
 
     /// A cold captured read validates the entire object in bounded waves. A

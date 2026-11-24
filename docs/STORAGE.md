@@ -107,17 +107,20 @@ magic as corruption; 0.36.x therefore reports a database checkpointed by 0.37
 as corrupt rather than unsupported. Do not downgrade to 0.36.x after a 0.37
 checkpoint; carry data across with a logical dump instead.
 
-`RELATIONAL_CHECKPOINT_LAYOUT_FORMAT` refuses intact checkpoints this reader
+`RELATIONAL_CHECKPOINT_LAYOUT_FORMAT` refuses intact checkpoints a reader
 cannot serve in the requested configuration, with `UnsupportedFeature` whose
 tag is the checkpoint generation:
 
-- relational rows stored only in the canonical row-page root, without a
-  full-row `relational.<generation>.hawdb` file, opened in any mode other than
-  `OutOfCore` residency with `Authoritative` relational indexes. Releases with
-  [#1737](https://github.com/nowledge-co/hawdb/issues/1737) write that layout,
-  as does any `OutOfCore` + `Authoritative` checkpoint;
 - `Authoritative` relational indexes on a checkpoint that never published a
-  persistent relational index generation.
+  persistent relational index generation;
+- in HawDB 0.33 through 0.37 only: relational rows stored only in the
+  canonical row-page root, without a full-row `relational.<generation>.hawdb`
+  file, opened in any mode other than `OutOfCore` residency with
+  `Authoritative` relational indexes. Persistent format 6
+  ([#1737](https://github.com/nowledge-co/hawdb/issues/1737)) writes that
+  layout by default, as does any `OutOfCore` + `Authoritative` checkpoint.
+  Format 6 readers rebuild resident rows from the row root instead of
+  refusing (see [Persistent format version](#persistent-format-version)).
 
 Both are configuration or layout mismatches, not corruption; the open
 changes no database file (each branch's disposable `runtime/` mount is
@@ -141,9 +144,29 @@ capabilities, including when resuming an interrupted repair. An unsupported
 record followed by a torn tail never authorizes truncation or quarantine.
 
 The storage manifest and checkpoint `version` line (`hawdb-storage-v<N>`)
-follows the same rule: an intact version of that family other than the
-supported one returns `StorageFormatError::UnsupportedVersion { format:
+follows the same rule: an intact version of that family outside the reader's
+supported revisions returns `StorageFormatError::UnsupportedVersion { format:
 "storage manifest", found: N, supported }`; any other text is malformed.
+
+The outer manifest writer now emits `hawdb-storage-v2`, with the version line
+before the new graph binding fields. This reader accepts v1 and v2; a v1
+reader explicitly refuses v2. Checkpoint and graph payload codecs remain v1.
+`GraphStore::storage_version()` and `Database::storage_version()` report the
+outer writer revision (v2), rather than a common revision for every payload.
+The engine-wide persistent format version advances from 6 to 7 because an
+older binary cannot open newly written manifests. Logical dumps remain the
+portable transfer mechanism; no automatic database recreation occurs.
+
+V2 separates checkpoint generation C and its logical commit from graph bundle
+generation G and source commit E. A relational-only checkpoint can carry all
+four graph families at their original G/E, with their original hashes and
+descriptor bindings, while writing the new catalog/relational checkpoint at C.
+Graph WAL changes, direct graph Catalog changes, missing admitted artifacts or
+non-default graph build configurations force a new bundle. No graph family is
+independently mixed with another generation. Current, previous, candidate and
+reader graph roots protect G during reclamation without retaining unrelated
+old relational checkpoint files. See [graph bundle carry](GRAPH_BUNDLE_CARRY.md)
+for invariants, recovery boundaries and qualification limits.
 
 Upgrade the reader to a release that supports the writer's codecs and features;
 do not downgrade a database containing features that the older reader lacks.
@@ -167,6 +190,24 @@ Format` workflow fails while they disagree and states in each release's notes
 whether it changed. Development formats still break without migrations;
 embedding hosts carry data across a change with a logical dump (export with
 the old release, import with the new one). See [LOGICAL_DUMP.md](LOGICAL_DUMP.md).
+
+Version 6 ([#1737](https://github.com/nowledge-co/hawdb/issues/1737)) stops
+writing the legacy full-row `relational.<generation>.hawdb` file at checkpoint.
+The checkpoint-bound relational row-page and overflow roots, which every
+version 5 checkpoint already published, carry the relational state, and a
+checkpoint writes only their changed generations. No codec, magic or version
+constant changes. Version 6 opens every database version 5 opens, including
+full-row files and WAL tails. A version 5 release (HawDB 0.37) opens a version
+6 database only with `OutOfCore` residency and `Authoritative` relational
+indexes; in every other configuration it refuses the open with
+`UnsupportedStorageFormat` / `RELATIONAL_CHECKPOINT_LAYOUT_FORMAT` (see
+[Reader compatibility refusals](#reader-compatibility-refusals)) and changes
+nothing. Releases before 0.37 already cannot read the row-page v5 manifests
+that version 5 writes. A host that must keep a downgrade path to 0.37 may set
+`DatabaseConfig::legacy_relational_checkpoint_file`, which also writes the
+full-row file at the cost of a full relational rewrite per checkpoint;
+otherwise carry data back with a logical dump. See
+[Checkpoints without the full-row file](specs/ROW_PAGE_AND_DEMAND_PAGED_INDEX_SPEC.md#checkpoints-without-the-full-row-file).
 
 ### PostgreSQL partial indexes
 
@@ -484,6 +525,15 @@ publish over such a selector. Version-1 selectors omit the version fields
 and keep their earlier bytes. The bump policy is in
 [`SEARCH_PROJECTION_MANIFEST_VERSION.md`](SEARCH_PROJECTION_MANIFEST_VERSION.md).
 
+Out-of-core generations that omit an over-bound field value set
+([#1746](https://github.com/nowledge-co/hawdb/issues/1746)) write
+`HAWDB_SEARCH_SEGMENTS_V4` segment descriptors and minimum reader version 4.
+HawDB 0.33.0 through 0.37.x support selector version 2 and refuse such a
+selector with `UnsupportedStorageFormat` (`format() ==
+SEARCH_PROJECTION_MANIFEST_FORMAT`, `found: 4`, `supported: 2`); 0.31.0 and
+0.32.0 predate the gate and report `Storage`. Generations whose descriptors
+keep every value set are written unchanged as V3 descriptors.
+
 ### WAL recovery
 
 WAL entries can represent either a single mutation or a batch commit record.
@@ -699,8 +749,9 @@ checkpoint after recovery removes. Each WAL directory therefore holds at most
 the current and previous generation after a checkpoint.
 
 Every checkpoint of an admitted branch also publishes its closure (durable
-manifest, relational checkpoint, canonical/adjacency/property artifacts, row
-pages, index shadow, append segments) and a sealed root into the project's
+manifest, the legacy relational checkpoint when one is written,
+canonical/adjacency/property artifacts, row pages, index shadow, append
+segments) and a sealed root into the project's
 content-addressed object store (`branches/objects/objects/<kind>/<digest>`).
 A sealed root has no parent link, so a closure no longer referenced by any
 retained root is garbage. The same post-publication pass (foreground
@@ -950,6 +1001,38 @@ WAL replay entry bound.
 `DatabaseConfig::storage_residency_mode` selects materialized, out-of-core, or
 automatic checkpoint loading. Automatic mode materializes small canonical
 artifacts and retains larger artifacts behind a bounded `SegmentCache`.
+Hosts can set `auto_materialize_checkpoint_bytes` (default 64 MiB) to
+adjust the automatic crossover, or select `OutOfCore` explicitly. The
+`segment_cache_capacity_bytes` field (default 256 MiB) bounds retained
+storage pages. Smaller caches save memory and can increase I/O, especially
+when queries revisit more pages than the cache can retain. Set the policy when
+opening the database, including through `HawDBEmbeddedOpenOptions::config`
+or `EmbeddedStoreOpenOptions::with_database_config`.
+
+```rust
+use hawdb::{Database, DatabaseConfig, StorageResidencyMode};
+
+let config = DatabaseConfig {
+    storage_residency_mode: StorageResidencyMode::OutOfCore,
+    segment_cache_capacity_bytes: 16 * 1024 * 1024,
+    ..DatabaseConfig::default()
+};
+let db = Database::open_with_config("graph.hawdb", config)?;
+# Ok::<(), hawdb::HawDBError>(())
+```
+
+Use `storage_residency_report()` to compare cache residency, misses,
+evictions and live graph deltas, and sample process RSS separately. A storage
+cache budget covers cache-owned pages. Materialized rows, in-flight queries
+and other components have separate memory costs. Hosts can coordinate runtime
+admission across multiple embedded governors with a shared
+`ProcessMemoryPolicy` and fresh process RSS samples.
+
+A fused projection with a required `id(n) = ...` bound can use a
+`NodeIdSeek`. The seek checks the label of the visible node before decoding
+the needed properties, then applies the residual predicate. `EXPLAIN ANALYZE`
+reports the identity pruning strategy and visited candidates.
+
 Canonical node, relationship, adjacency, exact-property, executor, search
 projection, analytics, and checked snapshot-export paths use owned iterators so
 a scan holds at most one decoded segment plus its caller-owned batch or TopN.
@@ -1811,6 +1894,30 @@ other work holds the capacity or the host is short of memory: drop the request
 and retry it later unchanged. When it is false, the request can never fit the
 configured limits.
 
+Background maintenance that the local QoS policy or scheduler defers or
+rejects is reported the same way
+([#1926](https://github.com/nowledge-co/hawdb/issues/1926)). This covers the
+`*_background_*` and `*_scheduled_background_*` entry points (search
+projection deltas, rebuilds and metadata repair, artifact jobs, schema and
+index maintenance, adjacency consolidation, optimizer statistics, storage
+checkpoints, HawDB Lightning bootstrap export and graph analytics), the
+automatic checkpoint owner, and `LocalQosPolicy::admit_or_refuse` and
+`LocalQosScheduler::try_start_or_refuse`. Every QoS budget code
+(`per_work_limit_exceeded`, `total_background_limit_exceeded`,
+`class_background_limit_exceeded`, `tenant_budget_exceeded`) maps to the
+governor code `background_task_saturated`. For these refusals `requested` is the
+request's estimated background operations. `available` is the operations the
+refusing limit has left: the whole limit for a per-work limit, and 0 for a
+tenant budget, which the caller's hint owns rather than the policy. A deferral
+is `retryable` unless the request is larger than the refusing limit itself,
+which is always true of a per-work limit refusal. A rejection is never
+retryable. A policy with `background_enabled: false` is configuration, not
+load, so it returns `HawDBError::CapabilityUnavailable(BackgroundMaintenance)`
+instead (Python `CapabilityError`, C ABI `capability_unavailable`). These
+refusals used to be `storage error: background ... deferred: <reason>`. Use
+`QosAdmission`'s `code()` and `reason()` on the caller-owned ranking APIs when
+the policy's own wording is needed.
+
 A handle's default governor is detected from the host
 (`RuntimeGovernor::detect`). Unless its resources are pinned, admission
 re-samples host and cgroup memory at most once per second, the same default
@@ -2113,16 +2220,26 @@ are not touched until final-page hydration. `SearchOutOfCoreReader::hydrate_docu
 provides the same row and payload budgets for projection-owned source chunks or
 other payloads.
 
-Final-page hit hydration has two levels (`SearchHitHydration`). The default
+Final-page hit hydration has three levels (`SearchHitHydration`). The default
 `Documents` level returns metadata fields, matched terms/spans and the vector
-score recomputed from the stored embedding. Vector-only requests without query
-terms have no matched spans, so they read only the hit's metadata sidecar
-segment and its own binary vector row instead of the full document payload;
-the hits are identical. This covers Knowledge Retrieval and Cypher vector seeds
-in vector mode. `SearchOutOfCoreReader::search_with_hydration(..,
-SearchHitHydration::ScoresOnly)` skips hydration entirely for callers that only
-consume IDs and scores; its hits carry the ranking scores and no metadata or
-matched terms.
+score recomputed from the stored embedding. Requests without query terms have
+no matched spans, so they read only the hit's metadata sidecar segment and its
+own binary vector row instead of the full document payload; the hits are
+identical. This covers Knowledge Retrieval and Cypher vector seeds in vector
+mode. `SearchOutOfCoreReader::search_with_hydration(..,
+SearchHitHydration::Metadata)` takes that sidecar path for every mode: its hits
+equal `Documents` hits with empty `matched_terms` and `matched_spans`, and no
+document payload is read or decoded. `SearchHitHydration::ScoresOnly` skips
+hydration entirely for callers that only consume IDs and scores; its hits carry
+the ranking scores and no metadata or matched terms. `Documents` stays the
+default of `search_with_options`, so existing callers keep their matched
+terms/spans; callers that do not display them opt out explicitly.
+
+Matched terms and spans come from one analyzer pass over each hit's title and
+content (plus its tokenized metadata fields for terms): the analyzer already
+emits each word's identifier tokens together, so a span's terms need no second
+analysis of the word. The result equals the earlier whole-document plus
+per-word analysis, which tests keep as a reference.
 
 The read report separates metadata-sidecar, vector-sidecar, and hydration
 payload bytes, and also exposes range reads, peak decoded sidecar and full
@@ -2139,7 +2256,18 @@ production read owner. `EmbeddedStoreOpenOptions::with_qualified_out_of_core_sea
 is the production read-owner boundary: it accepts explicit reader budgets and
 opens through the production qualification constructor only after the release
 identity, projection generation, source graph epoch, and opened graph commit
-epoch match. The admitted embedded handle then uses that pinned generation for
+epoch match. A mismatch is a stale or insufficient qualification, not
+storage damage, and refuses the open before anything is changed: an opened
+graph at another commit epoch than the qualification's canonical one (for
+example after a write between qualification and open) returns
+`HawDBError::SearchProductionQualificationGraphEpochMismatch`, and a report
+that does not qualify the opened projection for the release (another
+generation, source epoch or release identity, or unready evidence) returns
+`HawDBError::SearchProductionQualificationRefused` with its blocker codes.
+Neither poisons anything, and both keep their previous `storage error:` text;
+catch the projection up, qualify it again and reopen (#1932). Damaged
+projection files still fail the reader's own open checks as `StorageIntegrity`
+or `Storage`. The admitted embedded handle then uses that pinned generation for
 candidate search, bounded hydration, Knowledge Retrieval graph-context
 expansion, and Cypher vector seed reads without opening the full-residency
 index. Production traffic activation remains gated on representative

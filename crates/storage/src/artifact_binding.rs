@@ -100,7 +100,7 @@ pub fn read_bound_graph_manifest(
     let file = File::open(path)?;
     let actual_len = file.metadata()?.len();
     if actual_len > expected_len {
-        return Err(HawDBError::Storage(format!(
+        return Err(HawDBError::StorageIntegrity(format!(
             "{artifact} contains {actual_len} bytes, exceeding its admitted bound {expected_len}"
         )));
     }
@@ -109,7 +109,7 @@ pub fn read_bound_graph_manifest(
     let mut encoded = Vec::with_capacity(capacity);
     file.take(read_limit).read_to_end(&mut encoded)?;
     if encoded.len() as u64 > expected_len {
-        return Err(HawDBError::Storage(format!(
+        return Err(HawDBError::StorageIntegrity(format!(
             "{artifact} grew beyond its admitted bound {expected_len} during open"
         )));
     }
@@ -132,19 +132,19 @@ pub fn verify_integrity(
 ) -> Result<()> {
     let actual_len = bytes.len() as u64;
     if actual_len != expected_len {
-        return Err(HawDBError::Storage(format!(
+        return Err(HawDBError::StorageIntegrity(format!(
             "{artifact} encoded length mismatch: expected {expected_len}, got {actual_len}"
         )));
     }
     let actual = integrity_digest(bytes);
     if actual.crc32c.as_u64() != expected_checksum {
-        return Err(HawDBError::Storage(format!(
+        return Err(HawDBError::StorageIntegrity(format!(
             "{artifact} CRC32C mismatch: expected {expected_checksum}, got {}",
             actual.crc32c
         )));
     }
     if actual.sha256 != expected_sha256 {
-        return Err(HawDBError::Storage(format!(
+        return Err(HawDBError::StorageIntegrity(format!(
             "{artifact} SHA-256 mismatch: expected {expected_sha256}, got {}",
             actual.sha256
         )));

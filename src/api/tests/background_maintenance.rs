@@ -138,18 +138,53 @@ fn adjacency_consolidation_is_bounded_and_background_admitted() {
             plan.estimated_entries,
         )
         .unwrap_err();
-    assert!(error
-        .to_string()
-        .contains("background adjacency consolidation deferred"));
+    assert!(matches!(
+        error,
+        HawDBError::CapabilityUnavailable {
+            capability: hawdb_core::RuntimeCapability::BackgroundMaintenance
+        }
+    ));
     assert_eq!(db.adjacency_consolidation_plan().unwrap(), plan);
 
+    // Competing background work defers both entry points, typed and retryable
+    // (#1926), without poisoning the handle or consolidating anything.
+    let requested = plan.estimated_entries as u64;
+    let busy = LocalQosPolicy {
+        max_background_operations: None,
+        max_total_background_operations: Some(plan.estimated_entries),
+        ..LocalQosPolicy::default()
+    };
+    let running = LocalQosState {
+        running_background_operations: plan.estimated_entries,
+        ..LocalQosState::default()
+    };
+    let error = db
+        .consolidate_bounded_background_adjacency_deltas(&busy, &running, plan.estimated_entries)
+        .unwrap_err();
+    assert_background_refusal(&error, requested, 0, true);
+    let scheduler = db.local_qos_scheduler();
+    let total = scheduler.policy().max_total_background_operations.unwrap();
+    let per_work = scheduler.policy().max_background_operations.unwrap();
+    let held = (0..total / per_work)
+        .map(|_| {
+            scheduler
+                .try_start(WorkRequest::background(WorkClass::Analytics, per_work))
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let error = db
+        .consolidate_bounded_scheduled_background_adjacency_deltas(plan.estimated_entries)
+        .unwrap_err();
+    assert_background_refusal(&error, requested, 0, true);
+    assert!(!db.storage_handle_poisoned().unwrap());
+    assert_eq!(db.adjacency_consolidation_plan().unwrap(), plan);
+    held.into_iter()
+        .for_each(crate::qos::LocalQosPermit::finish);
+
     let report = db
-        .consolidate_bounded_background_adjacency_deltas(
-            &LocalQosPolicy::default(),
-            &LocalQosState::default(),
-            plan.estimated_entries,
-        )
+        .consolidate_bounded_scheduled_background_adjacency_deltas(plan.estimated_entries)
         .unwrap();
+    assert_eq!(scheduler.state(), LocalQosState::default());
     assert_eq!(report.consolidated_group_count, 1);
     assert_eq!(
         report.remaining,
@@ -318,9 +353,12 @@ fn stale_optimizer_statistics_are_caller_owned_background_work() {
                 BackgroundWorkHint::default(),
             )
             .unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("background optimizer statistics refresh deferred"));
+        assert!(matches!(
+            error,
+            HawDBError::CapabilityUnavailable {
+                capability: hawdb_core::RuntimeCapability::BackgroundMaintenance
+            }
+        ));
         assert!(!db
             .statistics()
             .unwrap()

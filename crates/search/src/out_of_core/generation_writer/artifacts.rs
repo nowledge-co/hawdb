@@ -52,6 +52,18 @@ mod paths;
 #[cfg(test)]
 mod tests;
 
+/// Documents per new segment.
+fn segment_target_documents() -> usize {
+    #[cfg(test)]
+    if let Some(documents) =
+        crate::out_of_core::content_blocks::tests::WRITE_SEGMENT_DOCUMENTS.get()
+    {
+        // Packs several records into one block of one segment for tests.
+        return documents;
+    }
+    SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS
+}
+
 pub(super) struct SegmentArtifactBuilder<'a> {
     descriptor_path: OwnedPath,
     descriptor_temporary: OwnedPath,
@@ -85,6 +97,8 @@ pub(super) struct SegmentArtifactOutput {
     pub(super) layout: SearchOutOfCoreLayoutBody,
     pub(super) descriptor_working_bytes: u64,
     pub(super) descriptor_bytes: u64,
+    /// `Some(4)` when the descriptor omits a value set (#1746).
+    pub(super) descriptor_version: Option<u16>,
     pub(super) document_payload_bytes: u64,
     pub(super) metadata_payload_bytes: u64,
     pub(super) vector_payload_bytes: u64,
@@ -138,12 +152,12 @@ impl<'a> SegmentArtifactBuilder<'a> {
     ) -> Result<Self> {
         checkpoint(&task)?;
         let documents_memory = memory.retained.reserve(checked_mul(
-            SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS,
+            segment_target_documents(),
             std::mem::size_of::<SegmentDocument>(),
         )?)?;
         let mut documents = Vec::new();
         documents
-            .try_reserve_exact(SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS)
+            .try_reserve_exact(segment_target_documents())
             .map_err(|error| {
                 HawDBError::or_stop(&error, || {
                     HawDBError::Execution(format!(
@@ -151,7 +165,7 @@ impl<'a> SegmentArtifactBuilder<'a> {
                     ))
                 })
             })?;
-        if documents.capacity() > SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS {
+        if documents.capacity() > segment_target_documents() {
             return Err(HawDBError::Execution(
                 "search segment document capacity exceeded admission".into(),
             ));
@@ -222,6 +236,10 @@ impl<'a> SegmentArtifactBuilder<'a> {
             },
             descriptor_working_bytes: self.descriptor_working_bytes,
             descriptor_bytes,
+            descriptor_version: self
+                .descriptor
+                .omits_value_summaries
+                .then_some(crate::out_of_core::VALUE_SUMMARY_DESCRIPTOR_VERSION),
             document_payload_bytes: self.document_offset,
             metadata_payload_bytes: self.metadata_offset,
             vector_payload_bytes: self.vector_offset,
@@ -274,7 +292,7 @@ impl<'a> SegmentArtifactBuilder<'a> {
         let encoded_bytes = document.encoded_len(Some(&self.task))? as u64;
         let projected = self.segment_encoded_bytes.saturating_add(encoded_bytes);
         if !self.documents.is_empty()
-            && (self.documents.len() == SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS
+            && (self.documents.len() == segment_target_documents()
                 || projected > self.options.max_segment_uncompressed_bytes.get())
         {
             self.flush_segment()?;
@@ -331,14 +349,32 @@ impl<'a> SegmentArtifactBuilder<'a> {
             SegmentKind::Documents,
             Some(&self.task),
         )?;
-        let (document_length, checksum) = encoding::append_segment(
-            &mut self.document_file,
-            &document_encoding,
-            self.options.max_segment_uncompressed_bytes.get(),
-            self.options.max_segment_compressed_bytes.get(),
-            &self.memory,
-            &self.task,
-        )?;
+        let (document_length, checksum) =
+            match super::super::content_blocks::written_content_encoding() {
+                super::super::content_blocks::ContentEncoding::Blocks1 => {
+                    encoding::append_block_segment(
+                        &mut self.document_file,
+                        &document_encoding,
+                        self.options.max_segment_uncompressed_bytes.get(),
+                        self.options.max_segment_compressed_bytes.get(),
+                        &self.memory,
+                        &self.task,
+                    )?
+                }
+                // Only compatibility tests write the pre-#1917 envelope.
+                super::super::content_blocks::ContentEncoding::Stream1 => {
+                    let payload =
+                        self.encode_segment_payload(segment_id, SegmentKind::Documents)?;
+                    let range = append_sidecar_payload_with_context(
+                        &mut self.document_file,
+                        &mut 0,
+                        payload.as_ref(),
+                        self.documents.len(),
+                        Some(&self.task),
+                    )?;
+                    (range.length, range.checksum)
+                }
+            };
         descriptor.payload_range = Some(SearchSegmentPayloadRange {
             artifact_id: SEARCH_SEGMENT_PAYLOAD_ARTIFACT_ID,
             offset: self.document_offset,

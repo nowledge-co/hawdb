@@ -192,6 +192,26 @@ impl CheckpointClosurePlan {
         store: &mut ImmutableObjectStore,
         work: BlockWork<'_>,
     ) -> Result<PublishedCheckpointClosure, CheckpointClosureError> {
+        self.publish_owned(store, work, false)
+    }
+
+    /// GraphStore has closed all producers and owns their write-once generation.
+    /// Published aliases are mounted for copy-on-write before reuse or return.
+    /// Caller-constructible plans must continue through the copying public API.
+    pub(crate) fn publish_sealed_with_work(
+        self,
+        store: &mut ImmutableObjectStore,
+        work: BlockWork<'_>,
+    ) -> Result<PublishedCheckpointClosure, CheckpointClosureError> {
+        self.publish_owned(store, work, true)
+    }
+
+    fn publish_owned(
+        self,
+        store: &mut ImmutableObjectStore,
+        work: BlockWork<'_>,
+        sealed: bool,
+    ) -> Result<PublishedCheckpointClosure, CheckpointClosureError> {
         let missing = ALL_FAMILIES
             .into_iter()
             .filter(|family| !self.completed_families.contains(family))
@@ -199,7 +219,7 @@ impl CheckpointClosurePlan {
         if !missing.is_empty() {
             return Err(CheckpointClosureError::Incomplete { missing });
         }
-        publish_checkpoint_closure_inner(store, &self.inputs, true, work)
+        publish_checkpoint_closure_inner(store, &self.inputs, true, sealed, work)
     }
 
     fn complete_family(
@@ -288,13 +308,14 @@ pub fn publish_checkpoint_closure(
     store: &mut ImmutableObjectStore,
     inputs: &[CheckpointArtifactInput],
 ) -> Result<PublishedCheckpointClosure, CheckpointClosureError> {
-    publish_checkpoint_closure_inner(store, inputs, false, BlockWork::default())
+    publish_checkpoint_closure_inner(store, inputs, false, false, BlockWork::default())
 }
 
 fn publish_checkpoint_closure_inner(
     store: &mut ImmutableObjectStore,
     inputs: &[CheckpointArtifactInput],
     retain_duplicate_bindings: bool,
+    sealed: bool,
     work: BlockWork<'_>,
 ) -> Result<PublishedCheckpointClosure, CheckpointClosureError> {
     if inputs.is_empty() {
@@ -318,20 +339,26 @@ fn publish_checkpoint_closure_inner(
         // The store streams the source and re-derives its identity, so an
         // artifact that no longer matches its planned reference is rejected
         // without buffering it.
-        if references.insert(input.reference) {
+        let unique = references.insert(input.reference);
+        if unique || sealed {
+            let result = if sealed {
+                store.publish_sealed_file_with_work(input.reference, &input.path, work)
+            } else {
+                store.publish_file_with_work(input.reference, &input.path, work)
+            };
+            result.map_err(|error| match error {
+                ImmutableObjectError::Io {
+                    operation: "open immutable object source" | "read immutable object source",
+                    source,
+                } => CheckpointClosureError::Io {
+                    path: input.path.clone(),
+                    source,
+                },
+                error => CheckpointClosureError::Publish(error),
+            })?;
+        }
+        if unique {
             total_bytes = total_bytes.saturating_add(input.reference.byte_length);
-            store
-                .publish_file_with_work(input.reference, &input.path, work)
-                .map_err(|error| match error {
-                    ImmutableObjectError::Io {
-                        operation: "open immutable object source" | "read immutable object source",
-                        source,
-                    } => CheckpointClosureError::Io {
-                        path: input.path.clone(),
-                        source,
-                    },
-                    error => CheckpointClosureError::Publish(error),
-                })?;
             published.push(input.reference);
         } else if !retain_duplicate_bindings {
             return Err(CheckpointClosureError::DuplicateReference(input.reference));
