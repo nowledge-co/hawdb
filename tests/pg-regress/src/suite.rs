@@ -176,6 +176,7 @@ impl Suite {
                 if step.execute_sql.is_some()
                     && (step.adaptation.as_deref().is_none_or(str::is_empty)
                         || !(control.starts_with("CREATE TABLE")
+                            || control.starts_with("CREATE TEMP TABLE")
                             || control.starts_with("INSERT INTO")))
                 {
                     return Err("fixture SQL adaptation requires explicit setup provenance".into());
