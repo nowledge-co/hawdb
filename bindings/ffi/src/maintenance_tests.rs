@@ -186,8 +186,8 @@ fn files(root: &Path) -> Vec<PathBuf> {
     found
 }
 
-/// The canonical graph checkpoint file of the published generation that a
-/// handle reads. A backup keeps it beside its storage manifest. An opened
+/// The canonical graph file of the selected G (which may precede checkpoint C).
+/// Legacy v1 manifests use C for both. A backup keeps it beside its manifest. An opened
 /// project serves it from `branches/<branch>/data/`; opening a restored
 /// backup adopts its root files into that layout, leaving the root copies
 /// unread, so prefer the branch data copy.
@@ -198,10 +198,14 @@ fn canonical_checkpoint(root: &Path) -> PathBuf {
         .filter(|path| path.file_name().unwrap() == "manifest.hawdb")
         .find_map(|path| {
             let manifest = std::fs::read_to_string(path).unwrap();
-            manifest.lines().find_map(|line| {
-                let (field, value) = line.split_once('\t')?;
-                (field == "checkpoint_generation" && value != "none").then(|| value.to_string())
-            })
+            ["graph_artifact_generation", "checkpoint_generation"]
+                .into_iter()
+                .find_map(|requested| {
+                    manifest.lines().find_map(|line| {
+                        let (field, value) = line.split_once('\t')?;
+                        (field == requested && value != "none").then(|| value.to_string())
+                    })
+                })
         })
         .unwrap_or_else(|| panic!("no published generation below {}", root.display()));
     let name = format!("canonical.{generation}.hawdb");
@@ -307,10 +311,18 @@ fn scrub_reports_damage_and_poisons_only_the_damaged_copy() {
 fn restore_verifies_the_backup_before_creating_the_destination() {
     let directory = TestDirectory::new("restore-damage");
     let db = seeded(&directory.join("database"));
-    backup(db, &directory.join("backup")).unwrap();
+    // The next backup checkpoints unchanged graph data, so C advances past G.
+    backup(db, &directory.join("baseline-backup")).unwrap();
+    let backed_up = backup(db, &directory.join("backup")).unwrap();
     unsafe { hawdb_close(db) };
 
-    flip_byte(&canonical_checkpoint(&directory.join("backup")));
+    let canonical = canonical_checkpoint(&directory.join("backup"));
+    assert_ne!(
+        canonical.file_name().unwrap(),
+        format!("canonical.{}.hawdb", backed_up["generation"]).as_str(),
+        "fixture must carry G across a newer checkpoint C"
+    );
+    flip_byte(&canonical);
     let error = restore(&directory.join("backup"), &directory.join("restored")).unwrap_err();
     assert_ne!(error["kind"], "invalid_argument", "{error}");
     assert!(!directory.join("restored").exists());

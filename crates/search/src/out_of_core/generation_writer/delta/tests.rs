@@ -222,7 +222,9 @@ fn mutation_target_resolution_binds_documents_to_their_manifest_content_segment(
         ]))
         .unwrap();
     assert_eq!(targets.metrics.hydrated_documents, 2);
-    assert_eq!(targets.metrics.segment_range_reads, 2);
+    // One verified index and one block per content segment (#1917).
+    assert_eq!(targets.metrics.content_index_reads, 2);
+    assert_eq!(targets.metrics.content_blocks_read, 2);
     assert_eq!(
         targets.targets["memory:a"].content_segment_id,
         reader.manifest.segments[0].segment_id

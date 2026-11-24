@@ -47,6 +47,10 @@ mod tests;
 
 #[derive(Debug, Clone, Copy)]
 pub struct DurableManifest {
+    /// Graph bundle identity, independent of the row/checkpoint generation.
+    /// Absent on v1 input, where the graph belongs to the checkpoint itself.
+    pub graph_artifact_generation: Option<u64>,
+    pub graph_artifact_source_commit_epoch: Option<u64>,
     pub checkpoint_generation: Option<u64>,
     pub checkpoint_encoded_len: Option<u64>,
     pub checkpoint_encoded_checksum: Option<u64>,
@@ -375,6 +379,8 @@ impl Default for DurableManifest {
 impl DurableManifest {
     pub const fn initial_generation() -> Self {
         Self {
+            graph_artifact_generation: None,
+            graph_artifact_source_commit_epoch: None,
             checkpoint_generation: None,
             checkpoint_encoded_len: None,
             checkpoint_encoded_checksum: None,
@@ -411,6 +417,16 @@ impl DurableManifest {
         ))
     }
 
+    pub fn graph_generation(self) -> Option<u64> {
+        self.graph_artifact_generation
+            .or(self.checkpoint_generation)
+    }
+
+    pub fn graph_source_commit_epoch(self) -> u64 {
+        self.graph_artifact_source_commit_epoch
+            .unwrap_or(self.checkpoint_commit_epoch)
+    }
+
     pub fn wal_path(self, root: &Path) -> PathBuf {
         root.join(wal_generation_file(self.wal_generation))
     }
@@ -429,7 +445,7 @@ impl DurableManifest {
         work: crate::immutable_object::BlockWork<'_>,
     ) -> Result<Vec<CheckpointArtifactInput>> {
         self.validate()?;
-        let generation = self.checkpoint_generation.ok_or_else(|| {
+        let generation = self.graph_generation().ok_or_else(|| {
             HawDBError::Storage("manifest artifact inputs require a checkpoint generation".into())
         })?;
         let mut inputs = Vec::new();
@@ -560,6 +576,34 @@ impl DurableManifest {
     }
 
     pub fn validate(self) -> Result<()> {
+        if self.graph_artifact_generation.is_some()
+            != self.graph_artifact_source_commit_epoch.is_some()
+        {
+            return Err(HawDBError::Storage(
+                "manifest graph bundle generation/epoch binding is incomplete".into(),
+            ));
+        }
+        if let Some(graph_generation) = self.graph_artifact_generation {
+            if graph_generation == 0
+                || self.checkpoint_generation.is_none()
+                || graph_generation > self.checkpoint_epoch
+                || self.graph_source_commit_epoch() > self.checkpoint_commit_epoch
+            {
+                return Err(HawDBError::Storage(
+                    "manifest graph bundle lies outside its checkpoint generation/epoch".into(),
+                ));
+            }
+            if graph_generation < self.checkpoint_epoch
+                && (self.canonical_manifest_encoded_len.is_none()
+                    || self.property_spill_manifest_encoded_len.is_none()
+                    || self.property_projection_manifest_encoded_len.is_none()
+                    || self.canonical_adjacency_generation_artifacts.is_none())
+            {
+                return Err(HawDBError::Storage(
+                    "manifest carried graph bundle is incomplete".into(),
+                ));
+            }
+        }
         if self.wal_replay_start_lsn == 0 || self.next_lsn == 0 {
             return Err(HawDBError::Storage(
                 "manifest WAL LSN values must be non-zero".to_string(),
@@ -582,8 +626,8 @@ impl DurableManifest {
         }
         if let Some(binding) = self.canonical_adjacency_generation_artifacts {
             if binding.generation == 0
-                || binding.generation != self.checkpoint_epoch
-                || binding.source_commit_epoch != self.checkpoint_commit_epoch
+                || Some(binding.generation) != self.graph_generation()
+                || binding.source_commit_epoch != self.graph_source_commit_epoch()
             {
                 return Err(HawDBError::Storage(format!(
                     "manifest canonical adjacency generation/epoch {}/{} does not match checkpoint {}/{}",
@@ -816,6 +860,7 @@ impl DurableManifest {
             ));
         }
         let mut manifest = Self::initial_generation();
+        let mut manifest_revision = 1;
         let mut canonical_adjacency = CanonicalAdjacencyGenerationFields::default();
         let mut relational_row = RelationalRootManifestFields::default();
         let mut relational_overflow = RelationalRootManifestFields::default();
@@ -834,7 +879,17 @@ impl DurableManifest {
                 )));
             }
             match fields.as_slice() {
-                ["version", version] => validate_storage_version(version)?,
+                ["version", version] => {
+                    manifest_revision = validate_manifest_storage_version(version)?;
+                }
+                ["graph_artifact_generation", raw] => {
+                    manifest.graph_artifact_generation =
+                        parse_optional_u64(raw, "graph artifact generation")?;
+                }
+                ["graph_artifact_source_commit_epoch", raw] => {
+                    manifest.graph_artifact_source_commit_epoch =
+                        parse_optional_u64(raw, "graph artifact source commit epoch")?;
+                }
                 ["checkpoint_generation", raw] => {
                     manifest.checkpoint_generation =
                         parse_optional_u64(raw, "checkpoint generation")?;
@@ -1140,6 +1195,24 @@ impl DurableManifest {
                 )));
             }
         }
+        for field in [
+            "graph_artifact_generation",
+            "graph_artifact_source_commit_epoch",
+        ] {
+            if (manifest_revision == 2) != seen_fields.contains(field) {
+                return Err(HawDBError::Storage(format!("manifest revision {manifest_revision} has an invalid graph bundle field set: {field}")));
+            }
+        }
+        if manifest_revision == 2
+            && manifest.checkpoint_generation.is_some()
+            && (manifest.graph_artifact_generation.is_none()
+                || manifest.graph_artifact_source_commit_epoch.is_none())
+        {
+            return Err(HawDBError::Storage(
+                "published v2 manifest requires an explicit graph bundle generation/epoch binding"
+                    .into(),
+            ));
+        }
         manifest.relational_row_generation_artifacts = relational_row.finish_row()?;
         manifest.canonical_adjacency_generation_artifacts = canonical_adjacency.finish()?;
         manifest.relational_overflow_generation_artifacts =
@@ -1159,7 +1232,18 @@ impl DurableManifest {
     pub(crate) fn encode(&self) -> String {
         let mut body = String::new();
         body.push_str(&format!("{MANIFEST_HEADER_V1}\n"));
-        body.push_str(&format!("version\t{STORAGE_VERSION}\n"));
+        body.push_str(&format!("version\t{MANIFEST_STORAGE_VERSION}\n"));
+        body.push_str(&format!(
+            "graph_artifact_generation\t{}\n",
+            encode_optional_u64(self.graph_generation())
+        ));
+        body.push_str(&format!(
+            "graph_artifact_source_commit_epoch\t{}\n",
+            encode_optional_u64(
+                self.graph_generation()
+                    .map(|_| self.graph_source_commit_epoch())
+            )
+        ));
         body.push_str(&format!(
             "checkpoint_generation\t{}\n",
             encode_optional_u64(self.checkpoint_generation)
@@ -1452,6 +1536,30 @@ impl DurableManifest {
 }
 
 pub const STORAGE_VERSION: &str = "hawdb-storage-v1";
+/// Only the outer manifest advances; graph/checkpoint payload codecs remain v1.
+pub const MANIFEST_STORAGE_VERSION: &str = "hawdb-storage-v2";
+
+fn validate_manifest_storage_version(version: &str) -> Result<u16> {
+    if version == MANIFEST_STORAGE_VERSION {
+        return Ok(2);
+    }
+    if version == STORAGE_VERSION {
+        return Ok(1);
+    }
+    match validate_storage_version(version) {
+        Err(HawDBError::UnsupportedStorageFormat(
+            hawdb_core::StorageFormatError::UnsupportedVersion { format, found, .. },
+        )) => Err(HawDBError::UnsupportedStorageFormat(
+            hawdb_core::StorageFormatError::UnsupportedVersion {
+                format,
+                found,
+                supported: 2,
+            },
+        )),
+        Err(error) => Err(error),
+        Ok(()) => Ok(1),
+    }
+}
 const MANIFEST_HEADER_V1: &str = "HAWDB_MANIFEST_V1";
 
 pub fn safe_reclaim_commit_epoch(

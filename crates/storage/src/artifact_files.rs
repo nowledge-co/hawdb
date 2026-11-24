@@ -70,6 +70,22 @@ pub fn parse_generation_file(name: &str, prefix: &str) -> Option<u64> {
         .ok()
 }
 
+/// Only the four families in a carried graph bundle; row/WAL generations have
+/// independent liveness even when they originally shared the same generation.
+pub fn parse_graph_generation_file(name: &str) -> Option<u64> {
+    parse_generation_file(name, "canonical.")
+        .or_else(|| parse_canonical_manifest_generation_file(name))
+        .or_else(|| parse_canonical_segment_descriptor_generation_file(name))
+        .or_else(|| parse_generation_file(name, "adjacency."))
+        .or_else(|| parse_canonical_adjacency_descriptor_generation_file(name))
+        .or_else(|| parse_generation_file(name, "properties."))
+        .or_else(|| parse_property_spill_manifest_generation_file(name))
+        .or_else(|| parse_property_spill_descriptor_generation_file(name))
+        .or_else(|| parse_generation_file(name, "property-index."))
+        .or_else(|| parse_property_projection_manifest_generation_file(name))
+        .or_else(|| parse_property_projection_descriptor_generation_file(name))
+}
+
 pub fn parse_canonical_manifest_generation_file(name: &str) -> Option<u64> {
     name.strip_prefix("canonical.")?
         .strip_suffix(".manifest.hawdb")?

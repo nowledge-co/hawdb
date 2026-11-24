@@ -180,6 +180,108 @@ impl Operation for DecompressionContext {
     }
 }
 
+/// Compresses a sequence of independent Zstd frames with one native context.
+///
+/// Each frame declares its exact content size, so a reader can decode and
+/// verify it alone. Search content blocks use one frame per block (#1917);
+/// reusing the context avoids a native workspace allocation per frame.
+pub struct FrameEncoder {
+    context: CompressionContext,
+    staging: Vec<u8>,
+}
+
+/// Staging output for one compression step; flushed to the sink after each step.
+const FRAME_STAGING_BYTES: usize = 32 * 1024;
+
+impl FrameEncoder {
+    pub fn new(level: i32) -> io::Result<Self> {
+        let mut staging = Vec::new();
+        staging
+            .try_reserve_exact(FRAME_STAGING_BYTES)
+            .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
+        Ok(Self {
+            context: CompressionContext::new(level)?,
+            staging,
+        })
+    }
+
+    /// Bytes retained by the Rust staging buffer, excluding native workspace.
+    pub const fn staging_bytes() -> usize {
+        FRAME_STAGING_BYTES
+    }
+
+    /// Starts one frame of exactly `content_len` bytes, or of unknown size
+    /// when `None`. Every byte written goes to `output` compressed; call
+    /// [`FrameWriter::finish`] to end the frame. A failed frame leaves the
+    /// encoder unusable.
+    pub fn frame<W: Write>(
+        &mut self,
+        content_len: Option<u64>,
+        output: W,
+    ) -> io::Result<FrameWriter<'_, W>> {
+        if let Some(bytes) = content_len {
+            self.context.set_pledged_src_size(bytes)?;
+        }
+        Ok(FrameWriter {
+            encoder: self,
+            output,
+        })
+    }
+}
+
+pub struct FrameWriter<'a, W: Write> {
+    encoder: &'a mut FrameEncoder,
+    output: W,
+}
+
+impl<W: Write> FrameWriter<'_, W> {
+    fn drain(&mut self) -> io::Result<()> {
+        if !self.encoder.staging.is_empty() {
+            self.output.write_all(&self.encoder.staging)?;
+            self.encoder.staging.clear();
+        }
+        Ok(())
+    }
+
+    /// Ends the frame and returns the sink.
+    pub fn finish(mut self) -> io::Result<W> {
+        loop {
+            let FrameEncoder { context, staging } = &mut *self.encoder;
+            let mut output = OutBuffer::around(staging);
+            let remaining = context.step(
+                &mut InBuffer::around(&[]),
+                &mut output,
+                zstd::zstd_safe::zstd_sys::ZSTD_EndDirective::ZSTD_e_end,
+            )?;
+            self.drain()?;
+            if remaining == 0 {
+                return Ok(self.output);
+            }
+        }
+    }
+}
+
+impl<W: Write> Write for FrameWriter<'_, W> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let mut input = InBuffer::around(bytes);
+        while input.pos() < bytes.len() {
+            let FrameEncoder { context, staging } = &mut *self.encoder;
+            let mut output = OutBuffer::around(staging);
+            context.step(
+                &mut input,
+                &mut output,
+                zstd::zstd_safe::zstd_sys::ZSTD_EndDirective::ZSTD_e_continue,
+            )?;
+            self.drain()?;
+        }
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.output.flush()
+    }
+}
+
 pub fn encode_all(mut source: impl Read, level: i32) -> io::Result<Vec<u8>> {
     let mut encoder = Encoder::new(Vec::new(), level)?;
     io::copy(&mut source, &mut encoder)?;

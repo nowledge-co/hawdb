@@ -108,6 +108,7 @@ fn hit_hydration_levels() {
         };
         let documents = run(SearchHitHydration::Documents);
         let scores_only = run(SearchHitHydration::ScoresOnly);
+        let metadata = run(SearchHitHydration::Metadata);
         assert!(!documents.result.hits.is_empty(), "{mode:?} {text:?}");
         assert_eq!(
             documents.result.hits.iter().map(scores).collect::<Vec<_>>(),
@@ -143,8 +144,10 @@ fn hit_hydration_levels() {
         }
 
         // Default hydration matches the stored documents exactly.
+        // Body hydration reads its blocks or finds them in the content cache.
         assert_eq!(
-            documents.metrics.hydration_segment_bytes_read == 0,
+            documents.metrics.hydration_segment_bytes_read == 0
+                && documents.metrics.content_index_cache_hits == 0,
             sidecar,
             "{mode:?} {text:?}"
         );
@@ -169,6 +172,46 @@ fn hit_hydration_levels() {
             if sidecar {
                 assert!(hit.matched_terms.is_empty() && hit.matched_spans.is_empty());
             }
+        }
+        // The page's hits share one lexical document mapping block, which
+        // routing reads once per page rather than once per hit (#1917).
+        for output in [&documents, &metadata] {
+            assert_eq!(
+                output.metrics.lexical_document_block_reads
+                    - scores_only.metrics.lexical_document_block_reads,
+                1,
+                "{mode:?} {text:?}"
+            );
+        }
+        // Metadata hydration equals Documents without matches and never
+        // reads or decodes the document payload, whatever the mode.
+        let without_matches = documents
+            .result
+            .hits
+            .iter()
+            .cloned()
+            .map(|mut hit| {
+                hit.matched_terms.clear();
+                hit.matched_spans.clear();
+                hit
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(metadata.result.hits, without_matches, "{mode:?} {text:?}");
+        assert_eq!(metadata.result.total_hits, documents.result.total_hits);
+        assert_eq!(metadata.metrics.hydration_segment_bytes_read, 0);
+        assert_eq!(metadata.metrics.content_index_cache_hits, 0);
+        assert_eq!(metadata.metrics.content_blocks_read, 0);
+        assert_eq!(metadata.metrics.content_block_cache_hits, 0);
+        assert_eq!(
+            metadata.metrics.hydrated_documents,
+            metadata.result.hits.len()
+        );
+        if !sidecar {
+            assert!(documents
+                .result
+                .hits
+                .iter()
+                .any(|hit| !hit.matched_terms.is_empty() && !hit.matched_spans.is_empty()));
         }
     }
     drop(reader);

@@ -169,11 +169,41 @@ pub(super) fn collect_token_list(text: &str, analyzer: &SearchAnalyzerLexicon) -
     tokens.into_vec()
 }
 
+/// Visits a field's analyzed tokens with the raw word that produced each
+/// one, in one pass. A word is a maximal run of alphanumeric or `_`
+/// characters. Its identifier tokens (`phrase == false`) are exactly
+/// [`identifier_tokens`] of the word before deduplication; phrase tokens
+/// (`phrase == true`) join it with the previous word's last part. Every token
+/// of a word is emitted before the next word's.
+pub(crate) fn visit_word_tokens<'a>(
+    text: &'a str,
+    analyzer: &'a SearchAnalyzerLexicon,
+    control: Control<'_>,
+    mut emit: impl FnMut(&'a str, &str, bool) -> Result<()>,
+) -> Result<()> {
+    let checkpoints = CheckpointThrottle::new();
+    let control = control.with_checkpoint_throttle(&checkpoints);
+    visit_word_token_events(text, analyzer, control, |raw, token, scope| {
+        emit(raw, token.as_str(), matches!(scope, TokenScope::Phrase(_)))
+    })
+}
+
 fn visit_token_events<'a>(
     text: &'a str,
     analyzer: &'a SearchAnalyzerLexicon,
     control: Control<'_>,
     mut emit: impl FnMut(Text<'a>, TokenScope) -> Result<()>,
+) -> Result<()> {
+    visit_word_token_events(text, analyzer, control, |_, token, scope| {
+        emit(token, scope)
+    })
+}
+
+fn visit_word_token_events<'a>(
+    text: &'a str,
+    analyzer: &'a SearchAnalyzerLexicon,
+    control: Control<'_>,
+    mut emit: impl FnMut(&'a str, Text<'a>, TokenScope) -> Result<()>,
 ) -> Result<()> {
     let mut previous_part = None::<Text<'_>>;
     let mut identifier = 0;
@@ -191,6 +221,7 @@ fn visit_token_events<'a>(
             control,
             |token, phrase| {
                 emit(
+                    raw,
                     token,
                     if phrase {
                         TokenScope::Phrase(identifier)
@@ -224,6 +255,7 @@ fn visit_raw_identifier<'a>(
     visit_identifier_tokens(raw, parts, analyzer, control, |token| emit(token, false))
 }
 
+#[cfg(test)]
 pub(super) fn identifier_tokens(raw: &str, analyzer: &SearchAnalyzerLexicon) -> Vec<String> {
     let raw = raw.trim();
     if raw.is_empty() {
@@ -253,18 +285,23 @@ fn visit_identifier_tokens<'a>(
 ) -> Result<Option<Text<'a>>> {
     let mut tokens = TokenEmitter::new(analyzer, control, emit);
     tokens.emit_token(Text::lowercase(raw, false, control)?)?;
-    // Jieba still owns its whole-run scratch and borrowed token collection.
-    visit_chinese_search_tokens_with_workspace(raw, control.workspace, |token| {
-        tokens.analyzed(Text::Borrowed(token))
-    })?;
-    for run in raw.split(|ch| !is_cjk_search_char(ch)) {
-        for width in [2, 3] {
-            let mut starts = [0; 3];
-            for (index, (offset, ch)) in run.char_indices().enumerate() {
-                starts.copy_within(1..width, 0);
-                starts[width - 1] = offset;
-                if index + 1 >= width {
-                    tokens.emit_token(Text::Borrowed(&run[starts[0]..offset + ch.len_utf8()]))?;
+    // ASCII words have no CJK characters, so neither Jieba nor the n-gram
+    // runs below can emit anything for them.
+    if !raw.is_ascii() {
+        // Jieba still owns its whole-run scratch and borrowed token collection.
+        visit_chinese_search_tokens_with_workspace(raw, control.workspace, |token| {
+            tokens.analyzed(Text::Borrowed(token))
+        })?;
+        for run in raw.split(|ch| !is_cjk_search_char(ch)) {
+            for width in [2, 3] {
+                let mut starts = [0; 3];
+                for (index, (offset, ch)) in run.char_indices().enumerate() {
+                    starts.copy_within(1..width, 0);
+                    starts[width - 1] = offset;
+                    if index + 1 >= width {
+                        tokens
+                            .emit_token(Text::Borrowed(&run[starts[0]..offset + ch.len_utf8()]))?;
+                    }
                 }
             }
         }
@@ -286,6 +323,9 @@ fn visit_identifier_tokens<'a>(
 }
 
 fn lowercase_is_identity(text: &str) -> bool {
+    if text.is_ascii() {
+        return !text.bytes().any(|byte| byte.is_ascii_uppercase());
+    }
     text.chars()
         .all(|ch| ch.to_lowercase().eq(std::iter::once(ch)))
 }

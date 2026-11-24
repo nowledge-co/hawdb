@@ -144,9 +144,29 @@ capabilities, including when resuming an interrupted repair. An unsupported
 record followed by a torn tail never authorizes truncation or quarantine.
 
 The storage manifest and checkpoint `version` line (`hawdb-storage-v<N>`)
-follows the same rule: an intact version of that family other than the
-supported one returns `StorageFormatError::UnsupportedVersion { format:
+follows the same rule: an intact version of that family outside the reader's
+supported revisions returns `StorageFormatError::UnsupportedVersion { format:
 "storage manifest", found: N, supported }`; any other text is malformed.
+
+The outer manifest writer now emits `hawdb-storage-v2`, with the version line
+before the new graph binding fields. This reader accepts v1 and v2; a v1
+reader explicitly refuses v2. Checkpoint and graph payload codecs remain v1.
+`GraphStore::storage_version()` and `Database::storage_version()` report the
+outer writer revision (v2), rather than a common revision for every payload.
+The engine-wide persistent format version advances from 6 to 7 because an
+older binary cannot open newly written manifests. Logical dumps remain the
+portable transfer mechanism; no automatic database recreation occurs.
+
+V2 separates checkpoint generation C and its logical commit from graph bundle
+generation G and source commit E. A relational-only checkpoint can carry all
+four graph families at their original G/E, with their original hashes and
+descriptor bindings, while writing the new catalog/relational checkpoint at C.
+Graph WAL changes, direct graph Catalog changes, missing admitted artifacts or
+non-default graph build configurations force a new bundle. No graph family is
+independently mixed with another generation. Current, previous, candidate and
+reader graph roots protect G during reclamation without retaining unrelated
+old relational checkpoint files. See [graph bundle carry](GRAPH_BUNDLE_CARRY.md)
+for invariants, recovery boundaries and qualification limits.
 
 Upgrade the reader to a release that supports the writer's codecs and features;
 do not downgrade a database containing features that the older reader lacks.
@@ -972,6 +992,38 @@ WAL replay entry bound.
 `DatabaseConfig::storage_residency_mode` selects materialized, out-of-core, or
 automatic checkpoint loading. Automatic mode materializes small canonical
 artifacts and retains larger artifacts behind a bounded `SegmentCache`.
+Hosts can set `auto_materialize_checkpoint_bytes` (default 64 MiB) to
+adjust the automatic crossover, or select `OutOfCore` explicitly. The
+`segment_cache_capacity_bytes` field (default 256 MiB) bounds retained
+storage pages. Smaller caches save memory and can increase I/O, especially
+when queries revisit more pages than the cache can retain. Set the policy when
+opening the database, including through `HawDBEmbeddedOpenOptions::config`
+or `EmbeddedStoreOpenOptions::with_database_config`.
+
+```rust
+use hawdb::{Database, DatabaseConfig, StorageResidencyMode};
+
+let config = DatabaseConfig {
+    storage_residency_mode: StorageResidencyMode::OutOfCore,
+    segment_cache_capacity_bytes: 16 * 1024 * 1024,
+    ..DatabaseConfig::default()
+};
+let db = Database::open_with_config("graph.hawdb", config)?;
+# Ok::<(), hawdb::HawDBError>(())
+```
+
+Use `storage_residency_report()` to compare cache residency, misses,
+evictions and live graph deltas, and sample process RSS separately. A storage
+cache budget covers cache-owned pages. Materialized rows, in-flight queries
+and other components have separate memory costs. Hosts can coordinate runtime
+admission across multiple embedded governors with a shared
+`ProcessMemoryPolicy` and fresh process RSS samples.
+
+A fused projection with a required `id(n) = ...` bound can use a
+`NodeIdSeek`. The seek checks the label of the visible node before decoding
+the needed properties, then applies the residual predicate. `EXPLAIN ANALYZE`
+reports the identity pruning strategy and visited candidates.
+
 Canonical node, relationship, adjacency, exact-property, executor, search
 projection, analytics, and checked snapshot-export paths use owned iterators so
 a scan holds at most one decoded segment plus its caller-owned batch or TopN.
@@ -2159,16 +2211,26 @@ are not touched until final-page hydration. `SearchOutOfCoreReader::hydrate_docu
 provides the same row and payload budgets for projection-owned source chunks or
 other payloads.
 
-Final-page hit hydration has two levels (`SearchHitHydration`). The default
+Final-page hit hydration has three levels (`SearchHitHydration`). The default
 `Documents` level returns metadata fields, matched terms/spans and the vector
-score recomputed from the stored embedding. Vector-only requests without query
-terms have no matched spans, so they read only the hit's metadata sidecar
-segment and its own binary vector row instead of the full document payload;
-the hits are identical. This covers Knowledge Retrieval and Cypher vector seeds
-in vector mode. `SearchOutOfCoreReader::search_with_hydration(..,
-SearchHitHydration::ScoresOnly)` skips hydration entirely for callers that only
-consume IDs and scores; its hits carry the ranking scores and no metadata or
-matched terms.
+score recomputed from the stored embedding. Requests without query terms have
+no matched spans, so they read only the hit's metadata sidecar segment and its
+own binary vector row instead of the full document payload; the hits are
+identical. This covers Knowledge Retrieval and Cypher vector seeds in vector
+mode. `SearchOutOfCoreReader::search_with_hydration(..,
+SearchHitHydration::Metadata)` takes that sidecar path for every mode: its hits
+equal `Documents` hits with empty `matched_terms` and `matched_spans`, and no
+document payload is read or decoded. `SearchHitHydration::ScoresOnly` skips
+hydration entirely for callers that only consume IDs and scores; its hits carry
+the ranking scores and no metadata or matched terms. `Documents` stays the
+default of `search_with_options`, so existing callers keep their matched
+terms/spans; callers that do not display them opt out explicitly.
+
+Matched terms and spans come from one analyzer pass over each hit's title and
+content (plus its tokenized metadata fields for terms): the analyzer already
+emits each word's identifier tokens together, so a span's terms need no second
+analysis of the word. The result equals the earlier whole-document plus
+per-word analysis, which tests keep as a reference.
 
 The read report separates metadata-sidecar, vector-sidecar, and hydration
 payload bytes, and also exposes range reads, peak decoded sidecar and full

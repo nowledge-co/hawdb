@@ -165,6 +165,112 @@ impl<R: BufRead> Read for Decoder<'_, R> {
     }
 }
 
+/// Decodes one complete content-block frame at a time into a caller buffer,
+/// reusing one admitted native context across blocks (#1917).
+///
+/// The context and its pinned in/out buffers are admitted exactly as the
+/// streaming [`Decoder`] admits them. Output is never larger than the caller's
+/// verified block length, and every input byte must belong to the frame.
+pub(crate) struct BlockDecoder<'a> {
+    context: DecompressionContext,
+    task: Option<&'a RuntimeTaskContext>,
+    buffer_bytes: usize,
+    // Native state drops before its capacity owners.
+    _context_memory: Option<QueryMemoryLease>,
+    buffer_memory: Option<QueryMemoryLease>,
+}
+
+impl<'a> BlockDecoder<'a> {
+    pub(crate) fn new(
+        memory: Option<&QueryMemoryAccount>,
+        task: Option<&'a RuntimeTaskContext>,
+    ) -> Result<Self> {
+        if let Some(task) = task {
+            checkpoint(task)?;
+        }
+        super::compression::require_qualified_zstd("decode admission")?;
+        let context_memory = memory
+            .map(|memory| memory.reserve(CONTEXT_BYTES))
+            .transpose()?;
+        let buffer_memory = memory.map(|memory| memory.reserve(0)).transpose()?;
+        let context = DecompressionContext::new()?;
+        if context.sizeof() > CONTEXT_BYTES {
+            return Err(HawDBError::Execution(
+                "search content block decoder context exceeded admission".into(),
+            ));
+        }
+        Ok(Self {
+            context,
+            task,
+            buffer_bytes: 0,
+            _context_memory: context_memory,
+            buffer_memory,
+        })
+    }
+
+    /// Decodes `input`, which must be exactly one zstd frame, into `output`,
+    /// which it must fill exactly.
+    pub(crate) fn decode(&mut self, input: &[u8], output: &mut [u8]) -> Result<()> {
+        let invalid = |reason: &str| HawDBError::Storage(format!("search content block {reason}"));
+        if let Some(task) = self.task {
+            checkpoint(task)?;
+        }
+        if input.len() < 5 || u32::from_le_bytes(input[..4].try_into().unwrap()) != 0xfd2fb528 {
+            return Err(invalid("is not one zstd frame"));
+        }
+        let descriptor = input[4];
+        let single = descriptor & 0x20 != 0;
+        let dictionary = [0, 1, 2, 4][(descriptor & 3) as usize];
+        let content = [usize::from(single), 2, 4, 8][(descriptor >> 6) as usize];
+        let header = 5 + usize::from(!single) + dictionary + content;
+        if input.len() < header {
+            return Err(invalid("frame header is truncated"));
+        }
+        let required = frame_buffer_bytes(&input[..header])?;
+        if required > self.buffer_bytes {
+            if let Some(memory) = &mut self.buffer_memory {
+                memory.grow(required - self.buffer_bytes)?;
+            }
+            self.buffer_bytes = required;
+        }
+        self.context.reset()?;
+        let mut source = InBuffer::around(input);
+        let mut target = OutBuffer::around(output);
+        loop {
+            if let Some(task) = self.task {
+                checkpoint(task)?;
+            }
+            let (before_in, before_out) = (source.pos(), target.pos());
+            let remaining = self
+                .context
+                .decompress_stream(&mut target, &mut source)
+                .map_err(|error| invalid(&format!("decode failed: {error}")))?;
+            if self.context.sizeof() > CONTEXT_BYTES + self.buffer_bytes {
+                return Err(HawDBError::Execution(
+                    "search content block native buffers exceeded admission".into(),
+                ));
+            }
+            if remaining == 0 {
+                break;
+            }
+            if source.pos() == before_in && target.pos() == before_out {
+                return Err(invalid(if target.pos() == target.capacity() {
+                    "inflates past its indexed length"
+                } else {
+                    "frame is truncated"
+                }));
+            }
+        }
+        if source.pos() != input.len() {
+            return Err(invalid("has bytes after its frame"));
+        }
+        if target.pos() != target.capacity() {
+            return Err(invalid("inflates short of its indexed length"));
+        }
+        Ok(())
+    }
+}
+
 fn frame_buffer_bytes(header: &[u8]) -> Result<usize> {
     let magic = u32::from_le_bytes(header[..4].try_into().unwrap());
     if magic & 0xfffffff0 == 0x184d2a50 {

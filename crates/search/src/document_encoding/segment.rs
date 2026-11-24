@@ -91,6 +91,12 @@ impl<'a, T: RecordSource> SegmentEncoding<'a, T> {
         self.bytes
     }
 
+    /// The records of a document segment, for writers that frame them
+    /// without the segment prefix line (#1917 content blocks).
+    pub(crate) fn documents(&self) -> Option<&'a [T]> {
+        matches!(self.kind, SegmentKind::Documents).then_some(self.documents)
+    }
+
     pub(crate) fn write_to(&self, writer: &mut impl io::Write) -> io::Result<()> {
         if matches!(self.kind, SegmentKind::Documents) {
             writer.write_all(b"HAWDB_SEARCH_SEGMENT_V1\n")?;

@@ -421,8 +421,9 @@ mod tests {
         store
             .checkpoint(&catalog)
             .expect("checkpoint generation one");
+        let pinned_generations =
+            crate::read_view::PhysicalGenerationPins::from_views([store.published_read_view()]);
         let pinned = store.snapshot();
-        let pinned_generations = BTreeSet::from([1]);
 
         for sequence in 2..=4 {
             store

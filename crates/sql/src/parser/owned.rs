@@ -491,8 +491,8 @@ impl<'a> Lowerer<'a> {
             }),
         };
         if statement.from.is_none()
-            && (statement.selection.is_some()
-                || statement.subquery_predicate.is_some()
+            && ((statement.selection.is_some() && statement.subquery_predicate.is_none())
+                || (statement.subquery_predicate.is_some() && statement.table_function.is_some())
                 || !statement.group_by.is_empty()
                 || statement.having.is_some()
                 || !statement.order_by.is_empty()

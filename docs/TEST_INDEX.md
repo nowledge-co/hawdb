@@ -29,7 +29,7 @@ acceptance without rewriting earlier frozen baselines. The checked-in
 proves a v2 row root with a named secondary index and bound index generation
 opens read-only and writable, checkpoints, and reopens. The historical partial-index fixture covers codec v4 and row-page v3.
 The covering-index fixture from main `ebc2c9c4a` covers codec v5 and row-page v4.
-New writers use relational codec v6, row-page v5, and persistent-format version 5.
+New writers use relational codec v6, row-page v5, and persistent-format version 6.
 The existing root checkpoint-layout tests own these reopen checks.
 
 `OCTET_LENGTH` scalar compatibility (https://github.com/nowledge-co/hawdb/issues/1835)
@@ -96,10 +96,25 @@ correlated and uncorrelated EXISTS/NOT EXISTS, scalar and row IN/NOT IN,
 empty and NULL truth tables, lexical alias shadowing, multi-level qualified
 correlation, arity/type errors even when the outer scan is empty, CTE liveness
 through a subquery, and fail-closed row, payload, blocking-memory, and candidate
-work budgets. Plain EXPLAIN reports `subquery_strategy=budgeted_nested_loop`
-without execution; EXPLAIN ANALYZE reports the executed
-`SubqueryPredicateExec`. Root `relational_sql::compound_queries` checkpoints,
-reopens, and re-runs parameterized derived/VALUES/subquery reads in
+work budgets. Focused cases pin parameterized EXISTS bounds, projection
+elision with bound target and ORDER BY columns, and cardinality-sensitive
+DISTINCT and set operations. CTE cases check wildcard width and qualified
+and unqualified column binding when local relations shadow catalog tables
+or outer columns, including later CTE definitions and nested membership.
+FROM-less global aggregates retain the group when their subquery predicate
+filters out the implicit input. Scalar IN tests pin the transition
+from cached scanning to hash membership under repeated costly probes, the
+tracked peak and fallback under a tighter memory limit, and NULL after
+promotion. Early hits stay on the scan and fit a candidate-work budget that
+eager hashing would exceed. The suite also checks mixed-type comparisons.
+Plain EXPLAIN describes the bounded subquery strategies. EXPLAIN ANALYZE reports the executed `SubqueryPredicateExec` and
+identifies hash membership when used. Root `relational_sql::compound_queries`
+checks name binding before empty outer scans and AND/OR short-circuiting,
+including correlated, nested and CTE references with lazy unused targets.
+Paired evaluated and short-circuited EXISTS cases cover comma JOIN visibility
+and outer column capture, recursively inferred seed columns, and WITH query
+ORDER BY resolution against output names.
+Its persistent cases checkpoint, reopen and re-run derived/VALUES/subquery reads in
 Materialized/Materialized and OutOfCore/DemandPaged modes. Derived tables and
 subquery results are statement-scoped only and never enter WAL, catalog, or
 checkpoint state. Replay with `cargo test --locked -p hawdb-sql-syntax --lib`,
@@ -212,10 +227,13 @@ with `cargo test --locked -p hawdb --lib exact_candidate_tests` or
 Embedded out-of-core candidate working memory (`nowledge-co/hawdb#1722`) lives
 in `embedded_store::out_of_core_working_memory_tests` (same
 `//:hawdb_unit_general_tests` owner), reusing the #1692 fixture. At the
-smallest admission serving text, exact vector-only and windowed exact hybrid
-snapshot reads (measured at 256 MiB), those reads and default vector-only
-succeed within the charge while an unwindowed exact hybrid read is refused with
-a typed `MemoryBytes` budget error; at 256 MiB every mode succeeds with a
+smallest admission serving text and windowed exact hybrid snapshot reads
+(measured at 256 MiB), those reads succeed within the charge while an
+unwindowed exact hybrid read is refused with a typed `MemoryBytes` budget
+error; exact and default vector-only reads, whose blocking vector state
+(~2.8 MiB here) exceeds both, succeed within the exact read's measured
+admission. (Before #1917 `stream1` hydration charged a ~2.5 MiB decoder window
+to every text and hybrid page, so one admission covered all three.) At 256 MiB every mode succeeds with a
 nonzero `query_memory_peak_bytes` within admission, through both snapshot and
 handle. `out_of_core::tests::admitted_working`
 (`//crates/search:hawdb_search_tests` and the FTS+vector profiles) asserts with
@@ -728,7 +746,63 @@ byte-identical. Each refusal asserts `format() == SEARCH_PROJECTION_MANIFEST_FOR
 `hawdb-core` `storage_format` tests pin the exported format constants. `bindings/ffi/src/error_tests.rs` and `bindings/python/src/errors.rs`
 pin the binding kind. No lane, profile or timeout is added. Local replay:
 `cargo test --locked -p hawdb-search --lib manifest_version`. See
-[the policy](SEARCH_PROJECTION_MANIFEST_VERSION.md).
+[the policy](SEARCH_PROJECTION_MANIFEST_VERSION.md). These cases write
+pre-#1917 envelope content artifacts so that versions 1 and 2 stay pinned.
+
+Search-crate owner `out_of_core::content_blocks::tests` (`nowledge-co/hawdb#1917`),
+in the same `hawdb-search` unit lane, covers block-framed content segments
+([format](SEARCH_CONTENT_BLOCKS.md)). New generations write `blocks1` behind a
+version-3 selector that a version-2 reader refuses with the typed error; every
+document round-trips with one record per block and with several. Hydrating one
+id reads the index and exactly one block (inflated bytes counted by a test
+hook), three ids read three blocks, and text hits read at most one block each.
+A damaged block fails only requests that read it, deep verification
+(`verify_content_segments`) and whole-segment projection scans; a damaged index
+fails every request in its segment. Reserved header fields, codecs,
+dictionaries and newer layouts are typed refusals only behind a matching
+digest; the unreleased text-record layout 1 and truncated, garbled and
+non-tiling indexes are `Storage`. Binary records
+(`content_blocks::records::tests`) decode to exactly the documents their text
+lines decode to (tabs, newlines, `;`/`=` and non-ASCII in every string field,
+empty fields, no/empty vectors, signed zero, subnormal and extreme
+components), account `search_document_bytes` without decoding, and re-encode
+as the canonical text lines byte for byte across 1-, 3-, 7-byte and 8-KiB
+reads; the streaming record walk and in-place scan refuse wrong counts,
+bounds, order, oversized ids and every truncation, and accept exactly the same
+blocks for shuffled, duplicated, non-UTF-8 and prefix ids (the walk refuses
+ids above the admitted header bytes and charges the ids it holds). Checksum-
+valid blocks above 1 MiB holding several records with shuffled, duplicated or
+non-UTF-8 middle ids are `Storage` through deep verification, a whole-segment
+read that stops after its first line and hydration, while the intact block
+passes all three
+(`content_blocks::tests::streamed_blocks_validate_every_record_id_like_sparse_reads`).
+A record above the
+1-MiB buffered-block limit hydrates and deep-verifies through the streaming
+re-encoder. An index whose boundary between two frames is moved (spans still
+tiling the range, CRCs and inflated lengths recomputed) is refused by both a
+streamed run and every single-block read. Deep verification of a ~4 MiB
+document succeeds under a 3.5 MiB task reservation with a live-allocation peak
+below it (15 MiB before the block-wise verifier) and is a typed `MemoryBytes`
+refusal at 64 KiB. A task or query account that admits the streaming
+decoder's context but not a large block's frame window is the typed
+`MemoryBytes` refusal of that window, not `Storage`, through hit hydration, a
+whole-segment read and deep verification
+(`hydration::query::tests::a_refused_frame_window_after_an_admitted_decoder_stays_typed`).
+Text-only hits are charged the bytes they hold (no stored
+vector) through one count from selection to the cross-segment check and
+`hydrated_bytes`: two hits sharing a segment and two hits split over two
+segments are both refused between one and two hits' bytes and both served at
+two, through `search_with_options` and `search_with_options_admitted`
+(`hydration::tests::budgets::text_hit_budget_is_the_same_within_and_across_segments`).
+Envelope
+artifacts written as before #1917 still read and verify. The content cache
+serves repeated reads without I/O, releases its pins, refuses admission above
+its capacity without changing results, and never admits a damaged block.
+Existing hydration, delta and budget cases assert block reads instead of
+whole-segment reads. Power-loss and publication ordering are unchanged and stay
+owned by the existing search segment qualification. No lane, profile or timeout
+is added. Local replay:
+`cargo test --locked -p hawdb-search --all-features --lib content_blocks`.
 
 The experimental [Windows directory-custody first packet](../scripts/windows-directory-custody-probe.ps1)
 is owned by the narrowly path-filtered, same-repository
@@ -1956,7 +2030,15 @@ lane (`background-maintenance` required) and uses default storage limits and a o
 schedule work ([#1438](https://github.com/nowledge-co/hawdb/issues/1438)).
 Four hundred whole-table update rounds on one handle (512 rows of 1 KiB) exceed
 the 64 MiB live envelope several times; base `bb30c40` rejects round 97 before
-WAL append. Cases assert every commit, peak occupancy within the envelope, at
+WAL append. The 400-round writer retries only the pre-WAL
+`BranchBusy { resource: "automatic checkpoint capacity" }`, at most 32 times
+in the complete campaign, without advancing the round or admitted-entry count.
+A parked real checkpoint owner deterministically forces a relational update to
+hit that capacity deadline; its source identity and overlay remain unchanged,
+then the same round succeeds after checkpoint and survives reopen. These controls
+remain in `//:hawdb_unit_checkpoint_headroom_controls_tests`, with the existing
+exclusive/serial policy and timeout. Cases assert every commit, peak occupancy
+within the envelope, at
 least two pressure-triggered generations, values before and after reopen, exact
 debt/residency accounting folded by checkpoint, the shared 70%/80% boundaries
 for all four row/index pairs, a reader pinned across two drains, and a
@@ -2079,6 +2161,7 @@ workload does not change default or CI benchmark selection.
 | --- | --- |
 | Manual work-admission benchmark | `HAWDB_EXECUTOR_BENCH_MODE=work-admission bazel run //:hawdb_bench_executor_vectorization` compares complete one-hop property hydration at degrees 32/1,024 and an 8,192-row predicate scan, with a deadline and no work cap. Three warmups, 11 raw samples of eight iterations, checksum/row-count and final-zero ledger assertions. Explicit opt-in only; default `full` and CI coverage are unchanged. Compare identical harness/profile/source identities; local timings are not remote CI speedups. |
 | Core, expression, SQL/SQL-syntax, Cypher and DDL | Typed values, expression semantics, parsing/binding and schema constraints. |
+| Fused Cypher node identity projection | Existing root general unit lane covers a bounded-cache out-of-core checkpoint reopen, one-candidate pruning, parameter rebinding, residual filters, label rejection before wide-value admission, missing/invalid IDs, live deletion and pinned snapshot visibility. Replay: `cargo test --locked -p hawdb --lib projected_node_id_seek_respects_residency_labels_and_snapshot`. See [storage residency](STORAGE.md#out-of-core-residency). |
 | Ordinary relational projection admission | Existing `//crates/relational:hawdb_relational_tests` / Prow crates owner. Borrowed previews admit repeated projection values, locator sort keys and DISTINCT ordering keys before copying. Ordinary, ordered, borrowed and FROM-less paths retain their existing result contracts. A test-only, thread-local System allocation probe compares cumulative large-payload allocation traffic with the same-source narrow control; it does not measure peak RSS. Guards cover canonical memory and persisted row snapshots, expression aliases, refusal/refund/retry, empty and LIMIT 0 input, duplicate/NULL values and exact result-payload boundaries. Replay: `cargo test --locked -p hawdb-relational --all-features --lib projection_admission`. No feature, deadline, profile or lane change. See [projection admission](RELATIONAL_PROJECTION_ADMISSION.md). |
 | Cypher temporal types | Core `temporal::` tests cover ISO parsing/rendering, constructors, components, arithmetic, `duration.between`, truncation, comparable order versus `Value` order/hash and the shared binary payload (golden bytes, corruption). Storage tests pin WAL fields 11–15, canonical tags 11–15 and text `D/T/L/Z/P` encodings with golden bytes, unknown-tag/field fail-closed decoding and background-writer parity; executor spill tags 10–14 round-trip. Parser (`tests::temporal`) and planner (`logical::temporal_tests`) cover syntax, depth limits, constant folding to `PropertyCompare` and the pinned statement clock. Root `api::tests::temporal` covers the embedded API: constructors, components, CREATE/SET/MERGE, WAL replay, checkpoint reopen in materialized and out-of-core modes, range-index seeks, CASE-based ORDER BY keys containing temporal component arithmetic with changing parameters and warm cache hits, and the LDBC IC3/IC4, IC7 and IC10 shapes. FFI, Python and Go binding tests cover tagged JSON. The root and Python binding locks exercise minimum `time` 0.3.47 and preserve their shared dependency identities; the other independent Cargo binding locks retain compatible 0.3.55, preserving the temporal facade names in both configurations. Existing CI lanes apply. Replay: `cargo test --locked -p hawdb-core temporal`, `-p hawdb-storage temporal`, `-p hawdb --lib temporal`. See [contract](CYPHER_TEMPORAL.md). |
 | Kùzu `string(x)` cast ([#1682](https://github.com/nowledge-co/hawdb/issues/1682)) | Mem thread version stamps compare Kùzu `string(x)` text across migration, so the cast must reproduce Kùzu 0.11.3 bytes, not `toString`. Core `conversion_function::tests::kuzu_string_matches_kuzu_0_11_text` is a differential table of values measured with Kùzu 0.11.3 (timestamps with trimmed microseconds and zones dropped to the UTC instant, BC/five-digit years, `%f` floats including `inf`/`nan`/`-0`, `True`/`False`, lists/structs with empty NULL members, every interval part and sign, UUIDs, blob escapes, float vectors); `kuzu_string_alias_null_and_unsupported_types` covers the `to_string` alias, NULL in/NULL out, unchanged `toString` and the local-time/decimal errors. The text is measured by an exact non-allocating length pass and charged before it is rendered: core `charged_conversion_is_refused_before_rendering` (refusal before rendering, exact charges, exact lengths for every table case) and `unaccounted_conversion_refuses_oversized_text` (64 MiB cap for plan-time parameter binding and batch mutation rows); executor `expression::value::borrowed::conversion_tests` refuses `string()` of 1,000 `1e308` floats, a 4,096-dimension vector and nested integer lists through a 64 KiB query-memory account with the account's own error kind and unchanged available bytes, charges successful results at least their length and releases them, and bounds the account-less path. Root `api::tests::kuzu_string_cast` runs the issue table through Cypher and the two halves of the Mem stamp `COALESCE(string(t.updated_at), '') + '|' + COALESCE(string(t.message_count), '')` (joined on the host) over whole-second, sub-second, zoned, NULL and missing `updated_at` (also after SET and WAL replay), and pins that epoch-nanosecond `timestamp(...)` integers render as integers; `thread_version_stamp_expression_matches_kuzu` runs the full expression with string `+` concatenation (#1791). Existing CI lanes apply. Replay: `cargo test --locked -p hawdb-core --lib kuzu_string` and `cargo test --locked -p hawdb --lib kuzu_string`. See [conversion functions](CYPHER_LOAD_CSV.md#kùzu-stringx). |
@@ -2616,7 +2699,9 @@ vector_only, background_only, text_vector, text_background and vector_background
 | --- | --- | --- |
 | `//crates/search:hawdb_search_tests` and `hawdb_search_<profile>_tests` | Search unit, persistence/recovery and feature capability behavior | Large lifecycle fixtures include 128-MiB sources. The three admitted-root heap-reclamation probes run in exact-case child processes because staging-registry nodes are shared across operations; all peak and final-zero assertions remain. The `io_waves` family runs through the isolated owners below, using these same executables. Repository test profile; the full matrix still runs. Existing deadlines remain unchanged. |
 | Binary vector sidecars (`out_of_core::vector_segment::tests`, `out_of_core::vector_query::tests`, `out_of_core::tests::vector_segments`) | Layout V2 round trip of exact `f32` bits for every row subset, multi-byte IDs and empty segments; head/row CRC detection of every corrupt head byte and of corrupt selected rows (unselected corrupt rows are never read); count/dimension/length/bounds/order mismatches; refusal of superseded V1 text payloads and layouts with a rebuild message; encoder rejection of non-finite, ragged and unordered rows; query-account admission refunds, bounded run reads and cancellation; exact, filtered, DiskANN, RaBitQ and hybrid serving equal to brute-force cosine bits; Required rerank checksum/budget/cancellation guards; ID-only head mapping | Existing Search unit feature-matrix owners and repository checked profile. Graph/compressed/hybrid serving cases require `vector-search` (hybrid also `full-text-search`); format cases run in every profile. No CI scheduling or timeout changes. Replay: `cargo test --locked -p hawdb-search --lib vector_segment` and `cargo test --locked -p hawdb-search --lib vector_query`. Ref [#1469](https://github.com/nowledge-co/hawdb/issues/1469). The text-decimal selected-decode family (`out_of_core::vector_selection_tests::`) and the selected-vector arm of `out_of_core::vector_query::layout_probe::` were retired with the V1 text sidecar; their recorded results remain in [VECTOR_SELECTED_DECODE_BENCHMARK.md](VECTOR_SELECTED_DECODE_BENCHMARK.md) and [the layout investigation](benchmarks/vector_adjacency_layout_2026_10_29/README.md). |
-| Out-of-core hit hydration levels (`out_of_core::hydration::tests::hit_hydration_levels`) | Default document hydration versus sidecar hydration for vector-only requests (identical hits, no document payload reads) and `SearchHitHydration::ScoresOnly` (identical IDs and ranking scores, no hydration reads) across exact, filtered and graph vector modes, plus text/hybrid requests that keep full hydration | Existing Search unit feature-matrix owners and repository checked profile; graph cases require `vector-search`, text/hybrid cases `full-text-search`. Replay: `cargo test --locked -p hawdb-search --lib hit_hydration_levels`. |
+| Out-of-core hit hydration levels (`out_of_core::hydration::tests::hit_hydration_levels`) | Default document hydration versus sidecar hydration for vector-only requests (identical hits, no document payload reads), `SearchHitHydration::Metadata` (hits equal to `Documents` without matched terms/spans, no payload reads or content cache hits, in every mode; one lexical document block read per page, not per hit) and `SearchHitHydration::ScoresOnly` (identical IDs and ranking scores, no hydration reads) across exact, filtered and graph vector modes, plus text/hybrid requests that keep full hydration | Existing Search unit feature-matrix owners and repository checked profile; graph cases require `vector-search`, text/hybrid cases `full-text-search`. Replay: `cargo test --locked -p hawdb-search --lib hit_hydration_levels`. |
+| One-pass matched terms and spans (`query_matches::tests`) | The single analyzer pass per field equals the reference whole-document term analysis plus per-word span analysis for default, empty, Nowledge-memory and alias/stopword lexicons: phrase aliases, identifier parts, repeated words, CJK, Unicode, digits, metadata-only matches and empty queries; span count and byte refusals equal the reference collector's; a field-long unpunctuated CJK word holds and funds only its distinct query terms, not one entry per occurrence | Existing Search unit feature-matrix owners and repository checked profile; no fixtures. The out-of-core query-funded path is compared with the same reference by `out_of_core::query_output::tests`. Replay: `cargo test --locked -p hawdb-search --lib query_matches`. |
+| Ascending document-id prober (`lexical_projection::tests::robustness::ascending_document_prober_reads_each_mapping_block_once`) | Batched hit routing: over a multi-block mapping, ascending present/absent/out-of-range probes plus unordered restarts and repeats answer exactly like single probes, read each block once in an ascending pass, report bytes only for reads, and hold at most one query-funded block (released on drop) | Existing Search unit feature-matrix owners and repository checked profile; small temporary projection. Replay: `cargo test --locked -p hawdb-search --lib ascending_document_prober`. |
 | Adjacency layout investigation (`out_of_core::vector_query::layout_probe::adjacency_layout_measurement`) | Manual persistent-component A/B measurement of IDs-only/property adjacency scans with disabled/bounded engine caches | One ignored probe requires the repository-wide release profile and stays out of CI/fuzz scheduling: `cargo test --locked --release -p hawdb-search --lib layout_probe:: -- --ignored --nocapture --test-threads=1`. [Methods, results and limits](benchmarks/vector_adjacency_layout_2026_10_29/README.md). Payload-visit counters are not physical I/O; an engine cache disabled run is not an OS-cold run. The selected-vector arm was retired with the V1 text sidecar (#1469). Ref [#1326](https://github.com/nowledge-co/hawdb/issues/1326). |
 | `hawdb_search_io_wave_tests` and `hawdb_search_<profile>_io_wave_tests` | Complete standalone writer Task/Wave admission, idle release, cancellation and cleanup contracts | All nine unit feature profiles reuse their existing executable. Required crate presubmits run this family with one libtest thread and Bazel `exclusive`; no additional Rust executable or compilation profile. The runner rejects empty discovery and overlapping skips and preserves caller arguments and failures. The existing 20-second task deadlines and enclosing target timeouts are unchanged. Replay: `bazel test //crates/search:hawdb_search_text_background_io_wave_tests`; the runner itself is covered by `//crates/search:search_unit_family_script_test`. |
 | Search BM25 decode and filter reuse (`lexical_projection::`, `text_seed`) | Reusable posting buffers, corrupt-frame rollback, stable internal predicates, arbitrary callback semantics, exact metadata routing and memory ownership | Existing Search unit feature-matrix owners and repository checked profile; public text-seed cases require `full-text-search`. Allocation probes serialize through the existing measurement gate and cover 8/128/4096 postings; filter cases cover false results, cancellation, complete/window counts and sparse overlapping layers. Local replay: `bazel test //crates/search:hawdb_search_tests --test_arg=lexical_projection:: --test_arg=text_seed --test_arg=--nocapture`. Existing ignored differential campaigns remain local-only. Ref [#1206](https://github.com/nowledge-co/hawdb/issues/1206). |
@@ -2949,8 +3034,8 @@ part of the existing Search Consumer unit target; no new CI job is required.
 
 | Family | Purpose and owner | Lane and known limits |
 | --- | --- | --- |
-| PostgreSQL regressions on HawDB alone | [`tests/pg-regress/tests/upstream_sql.rs`](../tests/pg-regress/tests/upstream_sql.rs), `make pg-regress-hawdb`; 19 unchanged upstream queries with exact source/output ranges and checked checksums | Manual Cargo integration test, `--no-default-features --test upstream_sql`; no PostgreSQL server or libpq. Covers column-left int8 comparisons, ungrouped HAVING and ordering by a non-projected input column. Original output supplies integer/ASCII-word expected rows; typed error mapping and fixture-only adaptations are explicit. Unselected syntax and ambiguous psql cells are not coverage. |
-| PostgreSQL upstream SQL comparison | Same independent project, `make pg-regress`; Rust `libpq` reference client; typed rows, NULL, duplicate multiplicity, ordering and DML counts against a real 18.0 server | Optional manual path; pinned selected Boolean/int8 and adapted SELECT cases; unsupported source statements are not coverage. Stock expected files are provenance for this live-comparison CLI. |
+| PostgreSQL regressions on HawDB alone | [`tests/pg-regress/tests/upstream_sql.rs`](../tests/pg-regress/tests/upstream_sql.rs), `make pg-regress-hawdb`; 33 unchanged upstream queries with exact source/output ranges and checked checksums | Manual Cargo integration test, `--no-default-features --test upstream_sql`. Covers column-left int8 comparisons, ungrouped HAVING, ordering by a non-projected input column, scalar and row membership including correlation and NULL/empty inputs, correlated EXISTS within OR, parenthesized derived tables, deep CTE name shadowing, and a recursive CTE sum. Two additional row-membership cases using unsupported CAST-to-int4 remain explicit exclusions, not passes. The EXISTS fixture retains all eleven logical rows with explicit TEMP/partition/series exclusions. Original output supplies integer, nullable integer and ASCII-word expected rows. Typed error mappings and fixture-only adaptations are explicit. Unselected syntax and ambiguous psql cells are not coverage. |
+| PostgreSQL upstream SQL comparison | Same independent project, `make pg-regress`; Rust `libpq` reference client; typed rows, NULL, duplicate multiplicity, ordering and DML counts against a real 18.0 server | Optional manual path; pinned selected Boolean, int8, SELECT, subselect and WITH cases; unsupported source statements are not coverage. Stock expected files are provenance for this live-comparison CLI. |
 | PostgreSQL isolation schedules | Same runner and embedded transaction worker; selected `simple-write-skew.spec` step permutations with explicit Serializable options and first-statement snapshot capture | Manual only; synchronous nonblocking steps. SSI victim/timing divergence is reported as a strict comparison mismatch, not proof of a HawDB isolation defect. Lock-wait scheduling, numeric fixtures and full PG equivalence remain outside this slice. |
 | Harness negative controls | `cargo test --locked --manifest-path tests/pg-regress/Cargo.toml --all-targets --all-features` | Local comparator/provenance controls; no production CI registration. Independent Rust fmt/Clippy and actual PG 18.0 execution remain additional evidence. |
 
@@ -4915,3 +5000,43 @@ SciFact uses every test query without sampling; branch controls cover 0/1/128/20
 additional nodes with and without a prior checkpoint. This is a manual evidence
 campaign, not a new CI performance gate. Repository profiles, CI assertions,
 feature matrices, timeouts and test lanes remain unchanged.
+## Carried graph bundles (issue 1641)
+
+The existing storage unit owner (`//crates/storage:hawdb_storage_tests`)
+includes `store::graph_checkpoint::graph_bundle_tests` and the v2 manifest
+codec guards. They cover complete payload/descriptor carry, byte/inode identity,
+including checksum-valid rejection of published v2 manifests whose graph
+generation and source epoch are both `none`, with explicit G=C, empty initial
+and legacy v1 positive controls. They also cover
+relational DDL/writes, backup/restore/scrub, graph WAL replay, direct graph
+Catalog changes, post-reopen carry, projection-debt status and candidate cancellation/catch-up. The original inline
+`store::tests` functions are mechanically included from
+`store/tests/graph_store_cases_{1,2}.rs` in their original namespace; their test
+inventory and execution owner are unchanged.
+
+The root unit owner covers `api::tests::read_transactions::read_transaction_retains_carried_graph_base_until_release`
+(real out-of-core C!=G reader, four checkpoints, graph mutation, graph-only
+retention and release) and `store_facade_tests::derived_repair_tests::carried_graph_repair*`
+(checksum-bound quarantine and interrupted repair before/after head publication).
+The existing power-loss discovery/sharding owner includes
+`api::tests::power_loss::graph_bundle_carry` under both durability policies;
+it materializes the existing complete lost/torn/reordered publication plans
+around both head-rename boundaries and acknowledgement. No profile, timeout,
+feature matrix or new CI lane is introduced.
+
+Existing reader/cohort tests compare checkpoint C and graph G independently in
+both Materialized and OutOfCore modes, including queued cancellation, failed
+writer retirement and concurrent final fork drop. A graph bundle that is still
+current remains retained after reader release; reclamation checks first advance
+the graph and its preceding checkpoint. Corruption fixtures explicitly dirty
+the graph when they require an uncached fresh bundle, and target manifest G.
+These cases remain in the general, concurrent, recovery and analytics-core-general
+root partitions; replay the four owners with
+`bazel test //:hawdb_unit_general_tests //:hawdb_unit_concurrent_tests //:hawdb_unit_recovery_tests //:hawdb_unit_analytics_core_general_tests`.
+
+The full storage TLA suite owns `HawDBGraphBundleCarry` and its six negative controls plus a
+carried-suffix reachability control; see [scope and refinement argument](GRAPH_BUNDLE_CARRY.md). Replay
+with `cargo test --locked -p hawdb-storage --lib -- graph_bundle durable_manifest`,
+`cargo test --locked -p hawdb --all-features --lib -- read_transaction_retains_carried_graph carried_graph_repair graph_bundle_carry`,
+and the model/evidence/mutant commands in `docs/tla/README.md`. These bounded
+fixtures do not qualify physical devices, Windows namespace behavior or LDBC/TPC-C throughput.

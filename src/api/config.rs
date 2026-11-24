@@ -97,6 +97,10 @@ pub struct DatabaseConfig {
     pub max_wal_batch_operations: Option<usize>,
     pub max_checkpoint_encoded_bytes: Option<u64>,
     pub max_checkpoint_decoded_bytes: Option<u64>,
+    /// Resident byte limit for cached storage segments and pages. Defaults to
+    /// 256 MiB. Smaller limits evict more aggressively and may increase reads.
+    /// The limit covers the cache; query scratch and materialized rows have
+    /// separate memory ownership.
     pub segment_cache_capacity_bytes: u64,
     /// Aggregate encoded graph-manifest bytes allowed during database open.
     /// Payload pages remain governed separately by the segment cache.
@@ -105,7 +109,11 @@ pub struct DatabaseConfig {
     /// Cache hits consume the separately derived logical traversal budget only.
     pub max_relational_index_read_bytes: NonZeroUsize,
     pub max_relational_hydration_bytes: NonZeroUsize,
+    /// Controls whether the canonical graph is materialized or read on demand.
+    /// Defaults to `Auto`.
     pub storage_residency_mode: hawdb_storage::config::StorageResidencyMode,
+    /// Size threshold for graph materialization under `Auto`. Defaults to
+    /// 64 MiB. Explicit residency modes do not consult this threshold.
     pub auto_materialize_checkpoint_bytes: u64,
     pub max_out_of_core_delta_bytes: Option<u64>,
     /// Derived columnar shadow double-write: every checkpoint also

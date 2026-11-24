@@ -64,6 +64,9 @@ impl DurableStore {
         let generation = manifest.checkpoint_generation.ok_or_else(|| {
             HawDBError::Storage("checkpoint closure requires a checkpoint generation".into())
         })?;
+        let graph_generation = manifest
+            .graph_generation()
+            .expect("checkpoint has graph identity");
         let input = |path: PathBuf| -> Result<CheckpointArtifactInput> {
             let digest = digest_closure_artifact(
                 &path,
@@ -131,9 +134,13 @@ impl DurableStore {
                 &mut plan,
                 CheckpointArtifactFamily::Canonical,
                 map_paths(vec![
-                    canonical_artifact_generation_file(generation),
-                    hawdb_storage::canonical::canonical_segment_descriptor_page_file(generation),
-                    hawdb_storage::canonical::canonical_segment_descriptor_root_file(generation),
+                    canonical_artifact_generation_file(graph_generation),
+                    hawdb_storage::canonical::canonical_segment_descriptor_page_file(
+                        graph_generation,
+                    ),
+                    hawdb_storage::canonical::canonical_segment_descriptor_root_file(
+                        graph_generation,
+                    ),
                 ])?,
             )?;
         } else {
@@ -146,7 +153,7 @@ impl DurableStore {
                 CheckpointArtifactFamily::Adjacency,
                 map_paths(vec![
                     hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_page_file(
-                        generation,
+                        graph_generation,
                     ),
                 ])?,
             )?;
@@ -159,9 +166,13 @@ impl DurableStore {
                 &mut plan,
                 CheckpointArtifactFamily::PropertySpill,
                 map_paths(vec![
-                    property_spill_artifact_generation_file(generation),
-                    hawdb_storage::property_spill::property_spill_descriptor_page_file(generation),
-                    hawdb_storage::property_spill::property_spill_descriptor_root_file(generation),
+                    property_spill_artifact_generation_file(graph_generation),
+                    hawdb_storage::property_spill::property_spill_descriptor_page_file(
+                        graph_generation,
+                    ),
+                    hawdb_storage::property_spill::property_spill_descriptor_root_file(
+                        graph_generation,
+                    ),
                 ])?,
             )?;
         } else {
@@ -173,12 +184,12 @@ impl DurableStore {
                 &mut plan,
                 CheckpointArtifactFamily::PropertyProjection,
                 map_paths(vec![
-                    property_projection_artifact_generation_file(generation),
+                    property_projection_artifact_generation_file(graph_generation),
                     hawdb_storage::property_projection::property_projection_descriptor_page_file(
-                        generation,
+                        graph_generation,
                     ),
                     hawdb_storage::property_projection::property_projection_descriptor_root_file(
-                        generation,
+                        graph_generation,
                     ),
                 ])?,
             )?;
@@ -298,6 +309,7 @@ impl DurableStore {
 
     pub(in crate::store) fn backup_to(&self, destination: &Path) -> Result<StorageBackupReport> {
         let generation = self.checkpoint_epoch;
+        let graph_generation = self.graph_generation();
         if self.checkpoint_encoded_len.is_none() {
             return Err(HawDBError::Storage(
                 "storage must have a published checkpoint before backup".to_string(),
@@ -412,34 +424,40 @@ impl DurableStore {
             }
             if self.canonical_manifest_encoded_len.is_some() {
                 sources.insert(
-                    canonical_artifact_generation_file(generation),
+                    canonical_artifact_generation_file(graph_generation),
                     self.root_path
-                        .join(canonical_artifact_generation_file(generation)),
+                        .join(canonical_artifact_generation_file(graph_generation)),
                 );
                 sources.insert(
-                    canonical_manifest_generation_file(generation),
+                    canonical_manifest_generation_file(graph_generation),
                     self.root_path
-                        .join(canonical_manifest_generation_file(generation)),
+                        .join(canonical_manifest_generation_file(graph_generation)),
                 );
                 for name in [
-                    hawdb_storage::canonical::canonical_segment_descriptor_page_file(generation),
-                    hawdb_storage::canonical::canonical_segment_descriptor_root_file(generation),
+                    hawdb_storage::canonical::canonical_segment_descriptor_page_file(
+                        graph_generation,
+                    ),
+                    hawdb_storage::canonical::canonical_segment_descriptor_root_file(
+                        graph_generation,
+                    ),
                 ] {
                     sources.insert(name.clone(), self.root_path.join(name));
                 }
             }
             if self.canonical_adjacency_generation_artifacts.is_some() {
                 sources.insert(
-                    canonical_adjacency_artifact_generation_file(generation),
+                    canonical_adjacency_artifact_generation_file(graph_generation),
                     self.root_path
-                        .join(canonical_adjacency_artifact_generation_file(generation)),
+                        .join(canonical_adjacency_artifact_generation_file(
+                            graph_generation,
+                        )),
                 );
                 for name in [
                     hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_page_file(
-                        generation,
+                        graph_generation,
                     ),
                     hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_root_file(
-                        generation,
+                        graph_generation,
                     ),
                 ] {
                     sources.insert(name.clone(), self.root_path.join(name));
@@ -447,39 +465,47 @@ impl DurableStore {
             }
             if self.property_spill_manifest_encoded_len.is_some() {
                 sources.insert(
-                    property_spill_artifact_generation_file(generation),
+                    property_spill_artifact_generation_file(graph_generation),
                     self.root_path
-                        .join(property_spill_artifact_generation_file(generation)),
+                        .join(property_spill_artifact_generation_file(graph_generation)),
                 );
                 sources.insert(
-                    property_spill_manifest_generation_file(generation),
+                    property_spill_manifest_generation_file(graph_generation),
                     self.root_path
-                        .join(property_spill_manifest_generation_file(generation)),
+                        .join(property_spill_manifest_generation_file(graph_generation)),
                 );
                 for name in [
-                    hawdb_storage::property_spill::property_spill_descriptor_page_file(generation),
-                    hawdb_storage::property_spill::property_spill_descriptor_root_file(generation),
+                    hawdb_storage::property_spill::property_spill_descriptor_page_file(
+                        graph_generation,
+                    ),
+                    hawdb_storage::property_spill::property_spill_descriptor_root_file(
+                        graph_generation,
+                    ),
                 ] {
                     sources.insert(name.clone(), self.root_path.join(name));
                 }
             }
             if self.property_projection_manifest_encoded_len.is_some() {
                 sources.insert(
-                    property_projection_artifact_generation_file(generation),
+                    property_projection_artifact_generation_file(graph_generation),
                     self.root_path
-                        .join(property_projection_artifact_generation_file(generation)),
+                        .join(property_projection_artifact_generation_file(
+                            graph_generation,
+                        )),
                 );
                 sources.insert(
-                    property_projection_manifest_generation_file(generation),
+                    property_projection_manifest_generation_file(graph_generation),
                     self.root_path
-                        .join(property_projection_manifest_generation_file(generation)),
+                        .join(property_projection_manifest_generation_file(
+                            graph_generation,
+                        )),
                 );
                 for name in [
                     hawdb_storage::property_projection::property_projection_descriptor_page_file(
-                        generation,
+                        graph_generation,
                     ),
                     hawdb_storage::property_projection::property_projection_descriptor_root_file(
-                        generation,
+                        graph_generation,
                     ),
                 ] {
                     sources.insert(name.clone(), self.root_path.join(name));

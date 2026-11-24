@@ -708,7 +708,11 @@ mod tests {
             checkpointed.physical_generation(),
             before.physical_generation()
         );
-        let pinned_generation = checkpointed.physical_generation().unwrap().0;
+        let pinned_generation = checkpointed.graph_generation().unwrap().0;
+        assert_ne!(
+            Some(pinned_generation),
+            checkpointed.physical_generation().map(|g| g.0)
+        );
         let data = crate::api::tests::active_storage_root(&path);
         let mut old = db.begin_read_transaction().unwrap();
         assert_eq!(old.published_read_view(), checkpointed);

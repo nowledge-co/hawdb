@@ -293,8 +293,9 @@ pub fn quarantine_directory(path: &Path, plan: &DerivedArtifactRepairPlan) -> Pa
 }
 
 pub(super) fn validate_quarantine(path: &Path, record: &DerivedRepairAuditRecord) -> Result<()> {
-    validate_quarantined_file_names(record)?;
     let quarantine = quarantine_directory(path, &record.plan);
+    let graph_generation = quarantined_graph_generation(&quarantine, &record.plan)?;
+    validate_quarantined_file_names(record, graph_generation)?;
     for expected in &record.quarantined_files {
         let actual = file_checksum(&quarantine.join(&expected.name))?;
         if actual.0 != expected.len
@@ -312,7 +313,8 @@ pub(super) fn validate_quarantine(path: &Path, record: &DerivedRepairAuditRecord
                 || actual.2.to_string() != record.plan.manifest_sha256)
         {
             return Err(HawDBError::Storage(
-                "derived repair quarantine manifest does not match the planned source".to_string(),
+                "derived repair quarantine identity changed: source manifest differs from the plan"
+                    .to_string(),
             ));
         }
         if let Some(source) = &record.plan.branch {
@@ -369,7 +371,10 @@ pub(super) fn validate_quarantine(path: &Path, record: &DerivedRepairAuditRecord
     Ok(())
 }
 
-fn validate_quarantined_file_names(record: &DerivedRepairAuditRecord) -> Result<()> {
+fn validate_quarantined_file_names(
+    record: &DerivedRepairAuditRecord,
+    graph_generation: u64,
+) -> Result<()> {
     let mut allowed = vec![MANIFEST_FILE.to_string()];
     let required = if record.plan.branch.is_some() {
         allowed.extend(
@@ -385,7 +390,7 @@ fn validate_quarantined_file_names(record: &DerivedRepairAuditRecord) -> Result<
         vec![MANIFEST_FILE]
     };
     for target in &record.plan.targets {
-        allowed.extend(target_files(*target, record.plan.source_generation));
+        allowed.extend(target_files(*target, graph_generation));
     }
     allowed.sort();
     allowed.dedup();
@@ -562,7 +567,13 @@ fn load_audit_record(path: &Path) -> Result<DerivedRepairAuditRecord> {
             "derived repair audit identity is invalid".to_string(),
         ));
     }
-    validate_quarantined_file_names(&record)?;
+    let quarantine = path
+        .parent()
+        .ok_or_else(|| HawDBError::Storage("repair audit has no parent directory".into()))?
+        .join(DERIVED_QUARANTINE_DIRECTORY)
+        .join(&record.plan.plan_id);
+    let graph_generation = quarantined_graph_generation(&quarantine, &record.plan)?;
+    validate_quarantined_file_names(&record, graph_generation)?;
     Ok(record)
 }
 
@@ -604,6 +615,11 @@ fn repair_source_files(
     let mut files = match &plan.branch {
         Some(source) => {
             let published = super::published_branch(path, source)?;
+            let graph_generation = DurableManifest::load(&published.manifest_path)?
+                .graph_generation()
+                .ok_or_else(|| {
+                    HawDBError::Storage("repair source has no graph generation".into())
+                })?;
             let mut files = vec![
                 (MANIFEST_FILE.to_string(), published.manifest_path),
                 (BRANCH_HEAD_FILE.to_string(), path.join(BRANCH_HEAD_FILE)),
@@ -615,7 +631,7 @@ fn repair_source_files(
             ];
             for binding in published.root.checkpoint_bindings {
                 if plan.targets.iter().any(|target| {
-                    target_files(*target, plan.source_generation).contains(&binding.relative_path)
+                    target_files(*target, graph_generation).contains(&binding.relative_path)
                 }) {
                     files.push((
                         binding.relative_path,
@@ -626,9 +642,14 @@ fn repair_source_files(
             files
         }
         None => {
+            let graph_generation = DurableManifest::load(&path.join(MANIFEST_FILE))?
+                .graph_generation()
+                .ok_or_else(|| {
+                    HawDBError::Storage("repair source has no graph generation".into())
+                })?;
             let mut names = vec![MANIFEST_FILE.to_string()];
             for target in &plan.targets {
-                names.extend(target_files(*target, plan.source_generation));
+                names.extend(target_files(*target, graph_generation));
             }
             names
                 .into_iter()
@@ -642,6 +663,29 @@ fn repair_source_files(
     files.sort();
     files.dedup();
     Ok(files)
+}
+
+/// The audit already binds the complete source manifest. Recover the graph
+/// identity from that immutable evidence, even after the current selector has
+/// advanced to the repaired generation; no extra audit protocol field is needed.
+fn quarantined_graph_generation(
+    quarantine: &Path,
+    plan: &DerivedArtifactRepairPlan,
+) -> Result<u64> {
+    let path = quarantine.join(MANIFEST_FILE);
+    let actual = file_checksum(&path)?;
+    if actual.0 != plan.manifest_len
+        || actual.1 != plan.manifest_crc32c
+        || actual.2.to_string() != plan.manifest_sha256
+    {
+        return Err(HawDBError::Storage(
+            "derived repair quarantine identity changed: source manifest differs from the plan"
+                .into(),
+        ));
+    }
+    DurableManifest::load(&path)?
+        .graph_generation()
+        .ok_or_else(|| HawDBError::Storage("repair quarantine has no graph generation".into()))
 }
 
 fn file_name(path: &Path) -> Result<String> {
