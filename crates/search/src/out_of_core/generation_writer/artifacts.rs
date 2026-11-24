@@ -52,6 +52,18 @@ mod paths;
 #[cfg(test)]
 mod tests;
 
+/// Documents per new segment.
+fn segment_target_documents() -> usize {
+    #[cfg(test)]
+    if let Some(documents) =
+        crate::out_of_core::content_blocks::tests::WRITE_SEGMENT_DOCUMENTS.get()
+    {
+        // Packs several records into one block of one segment for tests.
+        return documents;
+    }
+    SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS
+}
+
 pub(super) struct SegmentArtifactBuilder<'a> {
     descriptor_path: OwnedPath,
     descriptor_temporary: OwnedPath,
@@ -138,12 +150,12 @@ impl<'a> SegmentArtifactBuilder<'a> {
     ) -> Result<Self> {
         checkpoint(&task)?;
         let documents_memory = memory.retained.reserve(checked_mul(
-            SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS,
+            segment_target_documents(),
             std::mem::size_of::<SegmentDocument>(),
         )?)?;
         let mut documents = Vec::new();
         documents
-            .try_reserve_exact(SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS)
+            .try_reserve_exact(segment_target_documents())
             .map_err(|error| {
                 HawDBError::or_stop(&error, || {
                     HawDBError::Execution(format!(
@@ -151,7 +163,7 @@ impl<'a> SegmentArtifactBuilder<'a> {
                     ))
                 })
             })?;
-        if documents.capacity() > SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS {
+        if documents.capacity() > segment_target_documents() {
             return Err(HawDBError::Execution(
                 "search segment document capacity exceeded admission".into(),
             ));
@@ -274,7 +286,7 @@ impl<'a> SegmentArtifactBuilder<'a> {
         let encoded_bytes = document.encoded_len(Some(&self.task))? as u64;
         let projected = self.segment_encoded_bytes.saturating_add(encoded_bytes);
         if !self.documents.is_empty()
-            && (self.documents.len() == SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS
+            && (self.documents.len() == segment_target_documents()
                 || projected > self.options.max_segment_uncompressed_bytes.get())
         {
             self.flush_segment()?;

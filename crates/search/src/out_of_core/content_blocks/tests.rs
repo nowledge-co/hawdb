@@ -12,6 +12,22 @@ use std::io::Seek;
 thread_local! {
     static BLOCK_INFLATED: Cell<u64> = const { Cell::new(0) };
     pub(in crate::out_of_core) static WRITE_STREAM1: Cell<bool> = const { Cell::new(false) };
+    pub(in crate::out_of_core) static WRITE_BLOCK_TARGET: Cell<Option<u64>> =
+        const { Cell::new(None) };
+    pub(in crate::out_of_core) static WRITE_SEGMENT_DOCUMENTS: Cell<Option<usize>> =
+        const { Cell::new(None) };
+    /// Record ids written as other bytes of the same length, keeping every
+    /// length, index entry and checksum consistent with the damaged records.
+    static WRITE_RECORD_IDS: std::cell::RefCell<Vec<(String, Vec<u8>)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+pub(in crate::out_of_core) fn written_record_id(id: &str) -> Option<Vec<u8>> {
+    WRITE_RECORD_IDS.with_borrow(|ids| {
+        let (_, bytes) = ids.iter().find(|(from, _)| from == id)?;
+        assert_eq!(bytes.len(), id.len());
+        Some(bytes.clone())
+    })
 }
 
 pub(in crate::out_of_core) fn record_block_inflated(bytes: u64) {
@@ -728,4 +744,99 @@ fn deep_verification_of_a_large_document_stays_within_task_memory() {
     assert!(peak < 1 << 20, "peak {peak}");
     drop(reader);
     fs::remove_dir_all(root).unwrap();
+}
+
+/// Middle record ids of a checksum-valid streamed block (several records,
+/// above the buffered-block limit) that are out of order, duplicated or not
+/// UTF-8 are refused by deep verification, by a whole-segment read that
+/// stops after the first record (the rest is drained) and by hydration, as
+/// a sparse read refuses them; the intact block passes all three.
+#[test]
+fn streamed_blocks_validate_every_record_id_like_sparse_reads() {
+    let ids = ["doc:a0", "doc:b0", "doc:c0", "doc:d0"];
+    let cases: [(&str, &[(&str, &[u8])]); 4] = [
+        ("intact", &[]),
+        ("shuffled", &[("doc:b0", b"doc:c0"), ("doc:c0", b"doc:b0")]),
+        ("duplicate", &[("doc:c0", b"doc:b0")]),
+        ("invalid middle id", &[("doc:b0", b"doc:b\xff")]),
+    ];
+    for (case, rewrites) in cases {
+        let root = crate::test_temp_dir().join(format!(
+            "hawdb-content-blocks-ids-{}-{}",
+            std::process::id(),
+            CANDIDATE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&root).unwrap();
+        let documents = ids
+            .iter()
+            .enumerate()
+            .map(|(number, id)| SearchDocument {
+                id: id.to_string(),
+                ..document_sized(number, 400 << 10)
+            })
+            .collect::<Vec<_>>();
+        WRITE_BLOCK_TARGET.set(Some(4 << 20));
+        WRITE_SEGMENT_DOCUMENTS.set(Some(ids.len()));
+        WRITE_RECORD_IDS.set(
+            rewrites
+                .iter()
+                .map(|(from, to)| (from.to_string(), to.to_vec()))
+                .collect(),
+        );
+        let written = (|| {
+            let mut writer = SearchOutOfCoreGenerationWriter::create(&root, Default::default())?;
+            for document in &documents {
+                writer.push(document.clone())?;
+            }
+            writer.finish()
+        })();
+        WRITE_BLOCK_TARGET.set(None);
+        WRITE_SEGMENT_DOCUMENTS.set(None);
+        WRITE_RECORD_IDS.set(Vec::new());
+        written.unwrap();
+        let reader = open(&root, 0);
+        let (artifact, range, index) = locate(&reader, "doc:a0");
+        assert_eq!(index.entries().len(), 1, "{case}");
+        let entry = index.entries()[0];
+        assert!(u64::from(entry.uncompressed_len) > MAX_BUFFERED_BLOCK_BYTES);
+        assert_eq!(entry.document_count, 4);
+
+        let verified = reader.verify_content_segments(&hawdb_core::RuntimeTaskContext::default());
+        let first_line = super::super::hydration::read_validated(
+            super::super::hydration::RangeReader {
+                file: &reader.segments[artifact].payload,
+                offset: range.offset,
+                remaining: range.length,
+            },
+            range.length,
+            range.checksum,
+            reader.config.max_uncompressed_segment_bytes.get(),
+            None,
+            |text| {
+                let mut line = String::new();
+                text.read_line(&mut line)
+                    .map_err(crate::build_memory::read::io_error)?;
+                Ok(line)
+            },
+        );
+        let hydrated = reader.hydrate_documents(&["doc:a0".to_string()]);
+        if rewrites.is_empty() {
+            assert_eq!(verified.unwrap().documents, 4);
+            assert!(!first_line.unwrap().is_empty());
+            assert_eq!(hydrated.unwrap().documents, documents[..1]);
+        } else {
+            for (path, result) in [
+                ("deep verification", verified.map(drop)),
+                ("early-stopped read", first_line.map(drop)),
+                ("hydration", hydrated.map(drop)),
+            ] {
+                assert!(
+                    result.as_ref().is_err_and(is_storage),
+                    "{case}: {path}: {result:?}"
+                );
+            }
+        }
+        drop(reader);
+        fs::remove_dir_all(root).unwrap();
+    }
 }

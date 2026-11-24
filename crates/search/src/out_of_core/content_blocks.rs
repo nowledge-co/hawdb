@@ -78,6 +78,16 @@ impl ContentEncoding {
     }
 }
 
+/// The uncompressed size new blocks are filled to.
+pub(super) fn written_block_target() -> u64 {
+    #[cfg(test)]
+    if let Some(bytes) = tests::WRITE_BLOCK_TARGET.get() {
+        // Packs several records into one streamed block for tests.
+        return bytes;
+    }
+    BLOCK_TARGET_BYTES
+}
+
 /// The encoding this release writes for every new content artifact.
 pub(super) fn written_content_encoding() -> ContentEncoding {
     #[cfg(test)]
@@ -762,12 +772,7 @@ impl<'e, R: Read, B: std::ops::Deref<Target = [u8]>> InflatedTap<'e, R, B> {
             .filter(|_| self.block < self.blocks.end)
         {
             self.remaining = u64::from(entry.uncompressed_len);
-            let limit = self
-                .index
-                .first(entry)
-                .len()
-                .max(self.index.last(entry).len());
-            self.lines.start(limit);
+            self.lines.start();
         }
     }
 }
@@ -799,7 +804,10 @@ impl<R: Read, B: std::ops::Deref<Target = [u8]>> Read for InflatedTap<'_, R, B> 
         let entry = self.index.entries()[self.block];
         let bytes = &output[..count];
         self.digest.update(bytes);
-        self.lines.feed(bytes, self.index.first(&entry));
+        // Every record is walked, including a suffix drained unread.
+        if let Err(error) = self.lines.feed(bytes, self.index.first(&entry)) {
+            return Err(fail(self.failure, error));
+        }
         self.remaining -= count as u64;
         if self.remaining == 0 {
             let digest = std::mem::replace(&mut self.digest, Crc32cHasher::new());
@@ -822,8 +830,9 @@ impl<R: Read, B: std::ops::Deref<Target = [u8]>> Read for InflatedTap<'_, R, B> 
 /// Streams and verifies the blocks `blocks` of `index` from `input`, which is
 /// positioned at the first of them, presenting their concatenated records
 /// to `select`. Every block in the run is verified before this returns, even
-/// when `select` stops early; a result is never released from a run with a
-/// damaged block.
+/// when `select` stops early, including every record's id encoding and order
+/// as a sparse read checks them; a result is never released from a run with
+/// a damaged block.
 pub(super) fn stream_blocks<T, B: std::ops::Deref<Target = [u8]>>(
     input: impl Read,
     index: &Index<B>,
@@ -862,6 +871,10 @@ pub(super) fn stream_blocks<T, B: std::ops::Deref<Target = [u8]>>(
         count: 0,
     };
     let compressed_input = BufReader::with_capacity(8192, &mut compressed);
+    let lines = records::RecordWalk::new(
+        admission.map_or(usize::MAX, |admission| admission.max_header_bytes),
+        admission.map(|admission| admission.memory),
+    )?;
     let run = |decoder: &mut dyn Read| -> (Result<T>, io::Result<u64>, bool) {
         let mut inflated = InflatedTap {
             inner: decoder.take(expected_inflated.saturating_add(1)),
@@ -870,7 +883,7 @@ pub(super) fn stream_blocks<T, B: std::ops::Deref<Target = [u8]>>(
             block: blocks.start,
             remaining: 0,
             digest: Crc32cHasher::new(),
-            lines: records::RecordWalk::default(),
+            lines,
             failure: &failure,
         };
         inflated.begin();

@@ -21,6 +21,7 @@
 use super::invalid;
 use crate::document_encoding::{Header as DocumentHeader, RecordSource};
 use crate::{Result, SearchDocument};
+use hawdb_executor::{QueryMemoryAccount, QueryMemoryLease};
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, Read, Write};
 
@@ -99,7 +100,13 @@ pub(in crate::out_of_core) fn write_record(
     ] {
         output.write_all(&value.to_le_bytes())?;
     }
-    output.write_all(header.id.as_bytes())?;
+    #[cfg(test)]
+    let written_id = super::tests::written_record_id(header.id);
+    #[cfg(test)]
+    let id = written_id.as_deref().unwrap_or(header.id.as_bytes());
+    #[cfg(not(test))]
+    let id = header.id.as_bytes();
+    output.write_all(id)?;
     output.write_all(header.title.as_bytes())?;
     let mut content = ContentField {
         output: &mut *output,
@@ -357,24 +364,22 @@ pub(in crate::out_of_core) fn scan<'b>(
     Ok(())
 }
 
-/// Counts the records streaming through one block and captures its first and
-/// last ids, across arbitrary read boundaries.
-#[derive(Default)]
+/// Walks the records streaming through one block, across arbitrary read
+/// boundaries, and checks what a sparse [`scan`] checks: every id is UTF-8
+/// and strictly greater than the one before it, and the record count and the
+/// first and last ids match the block's index entry. Only the current and
+/// previous ids are held. With an admission, each is at most the admitted
+/// header bytes (a longer id is refused, as the text consumers refuse its
+/// header) and their capacity is charged to the admission.
 pub(super) struct RecordWalk {
     records: u64,
     prefix: [u8; PREFIX_BYTES],
     filled: usize,
     stage: Stage,
     id: Vec<u8>,
-    last: Vec<u8>,
-    first_ok: bool,
-    /// The current record's id exceeded `limit` and was truncated.
-    overflow: bool,
-    /// The previous record's (`last`) id was truncated, so it can match no
-    /// indexed id: a truncated id may equal a shorter indexed id that is its
-    /// prefix, which the sparse scan rejects.
-    last_overflow: bool,
-    limit: usize,
+    previous: Vec<u8>,
+    max_id_bytes: usize,
+    memory: Option<QueryMemoryLease>,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -397,30 +402,65 @@ enum Stage {
 }
 
 impl RecordWalk {
-    pub(super) fn start(&mut self, limit: usize) {
-        *self = Self {
-            id: std::mem::take(&mut self.id),
-            last: std::mem::take(&mut self.last),
-            limit,
-            ..Self::default()
-        };
-        self.id.clear();
-        self.last.clear();
+    pub(super) fn new(max_id_bytes: usize, memory: Option<&QueryMemoryAccount>) -> Result<Self> {
+        Ok(Self {
+            records: 0,
+            prefix: [0; PREFIX_BYTES],
+            filled: 0,
+            stage: Stage::Prefix,
+            id: Vec::new(),
+            previous: Vec::new(),
+            max_id_bytes,
+            memory: memory.map(|memory| memory.reserve(0)).transpose()?,
+        })
     }
 
-    fn finish_record(&mut self, first: &str) {
+    /// Starts the next block, keeping the id buffers and their funding.
+    pub(super) fn start(&mut self) {
+        self.records = 0;
+        self.filled = 0;
+        self.stage = Stage::Prefix;
+        self.id.clear();
+        self.previous.clear();
+    }
+
+    /// Admits the next record's `length`-byte id.
+    fn begin_id(&mut self, length: u64) -> Result<()> {
+        let length = usize::try_from(length)
+            .ok()
+            .filter(|length| *length <= self.max_id_bytes)
+            .ok_or_else(|| invalid("record id exceeds the admitted header bytes"))?;
+        // Unadmitted reads grow the id as its bytes arrive, never on a
+        // declared length alone.
+        match &mut self.memory {
+            Some(lease) if length > self.id.capacity() => {
+                crate::build_memory::reserve_capacity(&mut self.id, length, lease)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn finish_record(&mut self, first: &str) -> Result<()> {
+        if std::str::from_utf8(&self.id).is_err() {
+            return Err(invalid("record id is not UTF-8"));
+        }
         if self.records == 0 {
-            self.first_ok = !self.overflow && self.id == first.as_bytes();
+            if self.id != first.as_bytes() {
+                return Err(invalid("block records disagree with its index"));
+            }
+        } else if self.previous >= self.id {
+            // Byte order of UTF-8 is the order of its strings.
+            return Err(invalid("block records are not strictly ordered"));
         }
         self.records += 1;
-        std::mem::swap(&mut self.last, &mut self.id);
+        std::mem::swap(&mut self.previous, &mut self.id);
         self.id.clear();
-        self.last_overflow = std::mem::take(&mut self.overflow);
         self.stage = Stage::Prefix;
         self.filled = 0;
+        Ok(())
     }
 
-    pub(super) fn feed(&mut self, mut bytes: &[u8], first: &str) {
+    pub(super) fn feed(&mut self, mut bytes: &[u8], first: &str) -> Result<()> {
         loop {
             match self.stage {
                 Stage::Prefix | Stage::Entry { .. } => {
@@ -429,14 +469,14 @@ impl RecordWalk {
                         _ => ENTRY_PREFIX_BYTES,
                     };
                     if bytes.is_empty() {
-                        return;
+                        return Ok(());
                     }
                     let take = (wanted - self.filled).min(bytes.len());
                     self.prefix[self.filled..self.filled + take].copy_from_slice(&bytes[..take]);
                     self.filled += take;
                     bytes = &bytes[take..];
                     if self.filled < wanted {
-                        return;
+                        return Ok(());
                     }
                     self.filled = 0;
                     let field = |index: usize| u64::from(u32_at(&self.prefix, 4 * index));
@@ -452,16 +492,18 @@ impl RecordWalk {
                         },
                         _ => unreachable!(),
                     };
+                    if let Stage::Id { remaining, .. } = self.stage {
+                        self.begin_id(remaining)?;
+                    }
                 }
                 Stage::Id {
                     remaining,
                     skip,
                     entries,
                 } => {
+                    // An admitted id was reserved whole by `begin_id`.
                     let take = remaining.min(bytes.len() as u64) as usize;
-                    let room = self.limit.saturating_sub(self.id.len()).min(take);
-                    self.id.extend_from_slice(&bytes[..room]);
-                    self.overflow |= room < take;
+                    self.id.extend_from_slice(&bytes[..take]);
                     bytes = &bytes[take..];
                     if remaining > take as u64 {
                         self.stage = Stage::Id {
@@ -469,7 +511,7 @@ impl RecordWalk {
                             skip,
                             entries,
                         };
-                        return;
+                        return Ok(());
                     }
                     self.stage = Stage::Skip {
                         remaining: skip,
@@ -484,10 +526,10 @@ impl RecordWalk {
                             remaining: remaining - take,
                             entries,
                         };
-                        return;
+                        return Ok(());
                     }
                     if entries == 0 {
-                        self.finish_record(first);
+                        self.finish_record(first)?;
                     } else {
                         self.stage = Stage::Entry { entries };
                     }
@@ -497,14 +539,12 @@ impl RecordWalk {
     }
 
     /// Whether the block ended on a record boundary with the indexed count
-    /// and first and last ids.
+    /// and last id; the first id and the order were checked per record.
     pub(super) fn finish(&self, entry: &super::Entry, last: &str) -> bool {
         matches!(self.stage, Stage::Prefix)
             && self.filled == 0
             && self.records == u64::from(entry.document_count)
-            && self.first_ok
-            && !self.last_overflow
-            && self.last == last.as_bytes()
+            && self.previous == last.as_bytes()
     }
 }
 

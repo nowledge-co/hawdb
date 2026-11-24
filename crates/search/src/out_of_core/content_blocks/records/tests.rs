@@ -3,6 +3,7 @@
 
 //! Binary records decode, re-encode and walk exactly like text records.
 
+use super::super::Entry;
 use super::*;
 use crate::out_of_core::hydration::Bounds;
 use std::io::BufReader;
@@ -142,57 +143,94 @@ fn record_walk_and_scan_check_counts_bounds_and_truncation() {
         first: (0, 0),
         last: (0, 0),
     };
+    // Whether the walk accepts `body` fed in `step`-byte reads.
+    let walked = |body: &[u8], step: usize, first: &str, entry: &Entry, last: &str, max: usize| {
+        let mut walk = RecordWalk::new(max, None).unwrap();
+        walk.start();
+        body.chunks(step.max(1))
+            .try_for_each(|chunk| walk.feed(chunk, first))
+            .is_ok_and(|()| walk.finish(entry, last))
+    };
     for step in [1, 2, 5, 19, body.len()] {
-        let mut walk = RecordWalk::default();
-        walk.start(16);
-        for chunk in body.chunks(step) {
-            walk.feed(chunk, first);
-        }
-        assert!(walk.finish(&entry(4), last), "step {step}");
-        assert!(!walk.finish(&entry(3), last));
-        assert!(!walk.finish(&entry(4), first));
-        let mut wrong_first = RecordWalk::default();
-        wrong_first.start(16);
-        wrong_first.feed(&body, "z");
-        assert!(!wrong_first.finish(&entry(4), last));
+        assert!(
+            walked(&body, step, first, &entry(4), last, 16),
+            "step {step}"
+        );
+        assert!(!walked(&body, step, first, &entry(3), last, 16));
+        assert!(!walked(&body, step, first, &entry(4), first, 16));
+        assert!(!walked(&body, step, "z", &entry(4), last, 16));
     }
     // A truncated block ends inside a record.
     for cut in [1, PREFIX_BYTES, body.len() - 1] {
-        let mut walk = RecordWalk::default();
-        walk.start(16);
-        walk.feed(&body[..cut], first);
-        assert!(!walk.finish(&entry(4), last), "cut {cut}");
+        assert!(
+            !walked(&body[..cut], 7, first, &entry(4), last, 16),
+            "cut {cut}"
+        );
         let mut output = Vec::new();
         assert!(TextRecords::new(&body[..cut])
             .read_to_end(&mut output)
             .is_err());
     }
-    // An id longer than the walk's limit cannot match the bounds.
-    let mut walk = RecordWalk::default();
-    walk.start(0);
-    walk.feed(&body, first);
-    assert!(!walk.finish(&entry(4), last));
+    // An id longer than the admitted header bytes is refused.
+    assert!(walked(&body, 7, first, &entry(4), last, 4));
+    assert!(!walked(&body, 7, first, &entry(4), last, 3));
 
     let bounds = |first, last, count| Bounds { first, last, count };
-    // A last id longer than the limit cannot match an indexed last id that is
-    // its prefix: the walk and the sparse scan accept the same indexes.
-    let mut long_last = documents[..2].to_vec();
-    long_last[1].id = "abcdef".into();
-    let long_body = encode(&long_last);
-    let long_entry = super::super::Entry {
-        uncompressed_len: long_body.len() as u32,
-        ..entry(2)
+    // Middle ids out of order, duplicated or not UTF-8, a last id with the
+    // indexed last id as a prefix, and the intact controls: the walk and the
+    // sparse scan accept exactly the same blocks.
+    let with_ids = |ids: &[&[u8]]| {
+        let mut body = Vec::new();
+        for (document, id) in documents.iter().zip(ids) {
+            let mut written = encode(std::slice::from_ref(document));
+            let length = u32_at(&written, 0) as usize;
+            assert_eq!(length, id.len());
+            written.splice(PREFIX_BYTES..PREFIX_BYTES + length, id.iter().copied());
+            body.extend_from_slice(&written);
+        }
+        body
     };
-    for (indexed_last, accepted) in [("abc", false), ("abcdef", true)] {
-        let mut walk = RecordWalk::default();
-        walk.start(first.len().max(indexed_last.len()));
-        walk.feed(&long_body, first);
-        assert_eq!(walk.finish(&long_entry, indexed_last), accepted);
+    let cases: [(&[&[u8]], &str, bool); 6] = [
+        (&[b"a", b"b\tid", b"c", b"d"], "d", true),
+        (&[b"a", b"c\tid", b"c", b"d"], "d", false),
+        (&[b"a", b"b\tid", b"c", b"c"], "c", false),
+        (&[b"a", b"b\xffid", b"c", b"d"], "d", false),
+        (&[b"a", b"b\tid", b"c", b"e"], "e", true),
+        (&[b"a", b"b\tid", b"c", b"e"], "", false),
+    ];
+    for (ids, indexed_last, accepted) in cases {
+        let body = with_ids(ids);
+        let entry = Entry {
+            uncompressed_len: body.len() as u32,
+            ..entry(4)
+        };
+        for step in [1, 3, body.len()] {
+            assert_eq!(
+                walked(&body, step, first, &entry, indexed_last, usize::MAX),
+                accepted,
+                "{ids:?} {step}"
+            );
+        }
         assert_eq!(
-            scan(&long_body, bounds(first, indexed_last, 2), |_| Ok(())).is_ok(),
-            accepted
+            scan(&body, bounds(first, indexed_last, 4), |_| Ok(())).is_ok(),
+            accepted,
+            "{ids:?}"
         );
     }
+    // The held ids are charged to the admission.
+    let grant = std::num::NonZeroUsize::new(4).unwrap();
+    let ledger = hawdb_executor::QueryMemoryLedger::new(grant);
+    let account = ledger.account(
+        hawdb_executor::QueryMemoryClass::ExternalRead,
+        "record walk",
+        grant,
+    );
+    let mut walk = RecordWalk::new(usize::MAX, Some(&account)).unwrap();
+    walk.start();
+    assert!(matches!(
+        walk.feed(&body, first),
+        Err(crate::HawDBError::ResourceBudgetExceeded(_))
+    ));
     let mut seen = Vec::new();
     scan(&body, bounds(first, last, 4), |record| {
         seen.push(record.id.to_string());

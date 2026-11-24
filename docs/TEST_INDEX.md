@@ -753,9 +753,15 @@ empty fields, no/empty vectors, signed zero, subnormal and extreme
 components), account `search_document_bytes` without decoding, and re-encode
 as the canonical text lines byte for byte across 1-, 3-, 7-byte and 8-KiB
 reads; the streaming record walk and in-place scan refuse wrong counts,
-bounds, order, oversized ids and every truncation, and a last id longer than
-the walk's limit cannot match an indexed last id that is its prefix in either
-the walk or the scan. A record above the
+bounds, order, oversized ids and every truncation, and accept exactly the same
+blocks for shuffled, duplicated, non-UTF-8 and prefix ids (the walk refuses
+ids above the admitted header bytes and charges the ids it holds). Checksum-
+valid blocks above 1 MiB holding several records with shuffled, duplicated or
+non-UTF-8 middle ids are `Storage` through deep verification, a whole-segment
+read that stops after its first line and hydration, while the intact block
+passes all three
+(`content_blocks::tests::streamed_blocks_validate_every_record_id_like_sparse_reads`).
+A record above the
 1-MiB buffered-block limit hydrates and deep-verifies through the streaming
 re-encoder. An index whose boundary between two frames is moved (spans still
 tiling the range, CRCs and inflated lengths recomputed) is refused by both a

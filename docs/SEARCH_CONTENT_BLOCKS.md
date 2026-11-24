@@ -144,7 +144,12 @@ structure, then streams every block once through the admitted decoder while
 checking each block's compressed CRC and frame boundaries, uncompressed
 length and CRC, and its
 record count and first and last ids against its index entry (a streaming
-record walk over the binary lengths). Consumers receive the records
+record walk over the binary lengths). The walk also checks that every id is
+UTF-8 and strictly greater than the one before it, as a sparse read's scan
+does, including in a suffix drained after the consumer stopped. It holds only
+the current and previous ids; an admitted read refuses an id longer than
+`max_document_header_bytes` (as the text consumers refuse its header) and
+charges both to its admission. Consumers receive the records
 re-encoded as the canonical `stream1` text lines, byte for byte, through a
 bounded re-encoder (16 KiB output plus one hex step, charged to the decode
 admission), so their parsers, digests and record admission are unchanged.
