@@ -53,6 +53,8 @@ mod augmentation_jobs_lifecycle;
 mod augmentation_jobs_reads;
 mod background_maintenance;
 mod canonical_snapshot;
+#[cfg(feature = "background-maintenance")]
+mod checkpoint_beside_queued_waiters;
 mod community_assignments;
 mod community_cleanup;
 mod community_lifecycle;
@@ -2825,6 +2827,7 @@ fn assert_background_refusal(error: &HawDBError, requested: u64, available: u64,
             requested,
             available,
             retryable,
+            waited: None,
         }),
         "{error}"
     );

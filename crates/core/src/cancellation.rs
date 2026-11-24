@@ -528,6 +528,11 @@ impl RuntimeTaskContext {
     /// `RuntimeTaskStopped`. A timeout that overflows the clock waits without
     /// an admission deadline. No store lock is held while queued. Attach a
     /// [`RuntimeAdmissionTrace`] to observe how long granted admissions queued.
+    ///
+    /// Never wait for an admission while holding another permit the queue
+    /// head needs, such as inside a transaction or read-snapshot callback:
+    /// the outer permit stays held, so on a one-CPU governor an unbounded
+    /// nested wait without a task deadline never returns.
     pub fn with_admission_wait(self, timeout: crate::time::Duration) -> Self {
         let wait = Instant::now()
             .checked_add(timeout)

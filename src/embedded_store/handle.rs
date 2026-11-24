@@ -840,13 +840,28 @@ impl EmbeddedStoreHandle {
         document_ids: &[String],
         max_documents: usize,
     ) -> Result<SearchHydrationOutput> {
+        self.search_projection_documents_with_report_context(
+            document_ids,
+            max_documents,
+            &RuntimeTaskContext::default(),
+        )
+    }
+
+    /// Runs [`Self::search_projection_documents_with_report`] under the
+    /// caller's admission policy, cancellation and deadline.
+    pub fn search_projection_documents_with_report_context(
+        &self,
+        document_ids: &[String],
+        max_documents: usize,
+        task_context: &RuntimeTaskContext,
+    ) -> Result<SearchHydrationOutput> {
         if document_ids.len() > max_documents {
             return Err(HawDBError::Execution(format!(
                 "search projection document hydration requested {} rows, limit is {max_documents}",
                 document_ids.len()
             )));
         }
-        self.with_admitted_search(|read| read.hydrate(document_ids))
+        self.with_admitted_search_context(task_context, |read| read.hydrate(document_ids))
     }
 
     /// Lists one ordered page of Search projection document IDs for the
@@ -1144,11 +1159,24 @@ impl EmbeddedStoreHandle {
     /// [`RuntimeTaskContext::with_admission_priority`] and wait in the
     /// governor's priority queue with
     /// [`RuntimeTaskContext::with_admission_wait`] instead of being refused
-    /// at once. The same policy applies to every `*_context` entry point on
-    /// this handle (queries, transactions, typed maintenance). No store guard
-    /// or publication lock is held while queued. An admission wait that ends
-    /// returns the typed `RuntimeAdmissionRefused`; cancellation or the task
+    /// at once. The same policy applies to the handle's other context-taking
+    /// admissions: bounded and graph read snapshots, admitted queries and
+    /// streaming reads, `transaction_context` and `with_transaction_context`,
+    /// typed search (`search_candidates_with_report_context`,
+    /// `retrieve_knowledge_with_report_context`,
+    /// `search_projection_documents_with_report_context`), search projection
+    /// ID pages, `checkpoint_context` and
+    /// `compact_search_projection_segments_with_context`. Other typed
+    /// maintenance and context-free methods keep the default (immediate,
+    /// operation priority). No store guard or publication lock is held while
+    /// queued. An admission wait that ends returns the typed
+    /// `RuntimeAdmissionRefused` with `waited` set; cancellation or the task
     /// deadline while queued returns `RuntimeTaskStopped`.
+    ///
+    /// Do not wait for a nested admission inside the `operation` callback
+    /// (or a transaction callback): the outer permit stays held, so on a
+    /// one-CPU governor an `Unbounded` nested wait without a task deadline
+    /// never returns. Use a bounded wait, or admit sequentially.
     pub fn with_bounded_read_snapshot_context<T>(
         &self,
         budget: EmbeddedReadSnapshotBudget,
@@ -1552,6 +1580,17 @@ impl EmbeddedStoreHandle {
         self.with_admitted_search(|read| read.search_candidates(request))
     }
 
+    /// Runs [`Self::search_candidates_with_report`] under the caller's
+    /// admission policy (priority and wait), cancellation and deadline, so a
+    /// shadow-comparison search can run at Background priority.
+    pub fn search_candidates_with_report_context(
+        &self,
+        request: &SearchCandidateRequest,
+        task_context: &RuntimeTaskContext,
+    ) -> Result<SearchCandidateOutput> {
+        self.with_admitted_search_context(task_context, |read| read.search_candidates(request))
+    }
+
     pub fn validate_sampled_vector_recall(
         &self,
         options: VectorRecallValidationOptions,
@@ -1585,6 +1624,16 @@ impl EmbeddedStoreHandle {
         request: &KnowledgeRetrievalRequest,
     ) -> Result<RetrievalOutput> {
         self.with_admitted_search(|read| read.retrieve(request))
+    }
+
+    /// Runs [`Self::retrieve_knowledge_with_report`] under the caller's
+    /// admission policy, cancellation and deadline.
+    pub fn retrieve_knowledge_with_report_context(
+        &self,
+        request: &KnowledgeRetrievalRequest,
+        task_context: &RuntimeTaskContext,
+    ) -> Result<RetrievalOutput> {
+        self.with_admitted_search_context(task_context, |read| read.retrieve(request))
     }
 
     pub fn search_candidate_readiness(

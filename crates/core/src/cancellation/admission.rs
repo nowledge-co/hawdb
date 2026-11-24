@@ -49,6 +49,11 @@ pub enum RuntimeAdmissionWait {
     /// Wait in the admission queue until this instant, then refuse.
     Until(Instant),
     /// Wait until admitted, cancelled, or the task deadline passes.
+    ///
+    /// A nested unbounded wait made while the same thread holds another
+    /// permit (inside a transaction or read-snapshot callback) can wait for
+    /// itself: on a one-CPU governor without a task deadline it never
+    /// returns. Prefer [`Self::Until`] there.
     Unbounded,
 }
 

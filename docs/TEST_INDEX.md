@@ -566,7 +566,12 @@ short-deadline Foreground waiter takes the slot a running Background task
 releases ahead of a queued Background waiter and its trace records the queued
 time; the admission deadline returns the retryable refusal with `waited`; an
 unsatisfiable request is refused without queueing (`waited` absent); and
-cancellation or the task deadline while queued return the typed stop. Every
+cancellation or the task deadline while queued return the typed stop. Three or more aged Background
+waiters overtake one short-deadline Foreground waiter at most once (default
+and strict precedence), a later Foreground waiter may again be overtaken once,
+and an immediate request yields `queued_ahead` only when it competes with the
+selected waiter for a scarce resource (checkpoint-like maintenance passes a
+waiter short of Foreground I/O but not one short of the only CPU). Every
 case leaves the queue empty. The unit-test build raises the bounded re-check
 interval to 60 s, so the 20 s completion bounds prove signal wake-ups rather
 than polling. Core `cancellation::tests::admission_policy_*` pin the
@@ -587,10 +592,19 @@ queued past aging (by default it yields `queued_ahead`) and a Background shadow
 read yields `queued_ahead`; a waiting Background replay completes 300 commits
 beside a greedy Background shadow reader; greedy user reads never see
 `queued_ahead` from a queued Background replay; a short-deadline Foreground mailbox read is
-admitted when a Background task releases the CPU; and a Background shadow
+admitted when a Background task releases the CPU; a Background shadow search
+(`search_candidates_with_report_context`) queues on a held Background pool while
+the Foreground search runs, then completes and is traced; and a Background shadow
 reader beside a Foreground writer paced 1 ms apart never refuses the writer
-while the reader progresses. Only that pacing and one 150 ms aging pause sleep;
-no new lane, profile or timeout. Replay with
+while the reader progresses. Root `api::tests::checkpoint_beside_queued_waiters` (feature
+`background-maintenance`) open a durable database with a 20 ms automatic
+checkpoint age on a four-CPU governor with one Foreground I/O slot and write
+until automatic checkpoints complete, once with a waiter queued for the held
+I/O slot and once beside three callers that keep re-queuing for it; before the
+contention rule the checkpoint was refused `queued_ahead` indefinitely. Only
+that pacing and one 150 ms aging pause sleep; no new lane, profile or timeout.
+Replay with `cargo test --locked -p hawdb --all-features --lib
+checkpoint_beside_queued_waiters`,
 `cargo test --locked -p hawdb-qos --lib blocking_admission_tests`,
 `cargo test --locked -p hawdb-core --lib admission_policy` and
 `cargo test --locked -p hawdb --lib admission_wait_tests`.

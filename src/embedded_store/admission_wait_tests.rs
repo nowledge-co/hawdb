@@ -24,6 +24,14 @@ fn one_cpu_governor() -> RuntimeGovernor {
 }
 
 fn governor(cpus: usize, foreground_io_depth: usize) -> RuntimeGovernor {
+    governor_with_io(cpus, foreground_io_depth, 1)
+}
+
+fn governor_with_io(
+    cpus: usize,
+    foreground_io_depth: usize,
+    background_io_depth: usize,
+) -> RuntimeGovernor {
     RuntimeGovernor::new(
         RuntimeGovernorConfig {
             memory_budget_bytes: Some(2 << 30),
@@ -37,7 +45,7 @@ fn governor(cpus: usize, foreground_io_depth: usize) -> RuntimeGovernor {
             RuntimeResourceBudget::from_limits(NonZeroUsize::new(cpus).unwrap(), None, None),
             RuntimeMemorySnapshot::from_limits(Some(8 << 30), Some(6 << 30), None, None, None),
         ),
-        IoConcurrencyBudget::new(foreground_io_depth, 1),
+        IoConcurrencyBudget::new(foreground_io_depth, background_io_depth),
     )
 }
 
@@ -744,5 +752,60 @@ fn short_foreground_wait_is_admitted_when_background_work_releases_the_slot() {
     assert!(mailbox_done.elapsed() < PROMPT);
     assert_eq!(trace.admissions(), 1);
     assert!(trace.queued_for() > Duration::ZERO);
+    assert_idle(&governor);
+}
+
+/// Typed search takes the caller's policy too: a shadow-comparison search at
+/// Background priority uses the Background pool (here held, so it queues)
+/// while the same Foreground search is admitted at once, and the queued
+/// search completes when the pool frees. A Background search reserves the
+/// projection's seed I/O depth (2 here) from the Background I/O depth, so
+/// that depth must be at least as large or the refusal is terminal.
+#[test]
+fn shadow_search_runs_at_background_priority_and_waits() {
+    let governor = governor_with_io(1, 2, 2);
+    let handle = handle(&governor);
+    let request = crate::SearchCandidateRequest::text("seed", 1);
+    let background_pool = governor
+        .try_admit(RuntimeWorkRequest::new(
+            RuntimeWorkPriority::Background,
+            RuntimeWorkKind::Control,
+        ))
+        .unwrap();
+    let trace = RuntimeAdmissionTrace::new();
+    let shadow = thread::spawn({
+        let handle = handle.clone();
+        let request = request.clone();
+        let context = shadow_reader(PROMPT).with_admission_trace(trace.clone());
+        move || handle.search_candidates_with_report_context(&request, &context)
+    });
+    while governor.snapshot().queued_admission_waiters < 1 {
+        assert!(
+            !shadow.is_finished(),
+            "{:?}",
+            shadow.join().unwrap().map(|_| ())
+        );
+        thread::yield_now();
+    }
+    // The foreground search does not compete for the Background pool.
+    let foreground = handle
+        .search_candidates_with_report_context(&request, &RuntimeTaskContext::default())
+        .unwrap();
+    assert_eq!(foreground.accept_bounded().hits.len(), 1);
+    drop(background_pool);
+    assert_eq!(
+        shadow.join().unwrap().unwrap().accept_bounded().hits.len(),
+        1
+    );
+    assert_eq!(trace.admissions(), 1);
+    assert!(trace.queued_for() > Duration::ZERO);
+    let documents = handle
+        .search_projection_documents_with_report_context(
+            &["memory:seed".to_string()],
+            1,
+            &shadow_reader(PROMPT),
+        )
+        .unwrap();
+    assert_eq!(documents.documents.len(), 1);
     assert_idle(&governor);
 }

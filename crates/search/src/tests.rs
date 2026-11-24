@@ -60,6 +60,7 @@ fn assert_background_refusal(error: &HawDBError, requested: u64, available: u64,
             requested,
             available,
             retryable,
+            waited: None,
         }),
         "{error}"
     );

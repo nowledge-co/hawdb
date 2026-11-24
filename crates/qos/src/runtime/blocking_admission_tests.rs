@@ -513,3 +513,61 @@ fn a_new_foreground_waiter_may_again_be_overtaken_once() {
     ));
     assert_eq!(governor.snapshot().queued_admission_waiters, 0);
 }
+
+#[test]
+fn immediate_work_yields_only_when_it_competes_with_the_queued_waiter() {
+    // A checkpoint-like immediate Background maintenance request needs a CPU
+    // slot and a Background task, but no Foreground I/O. A Foreground waiter
+    // queued only for Foreground I/O must not block it (#1947 review): the
+    // queue head may itself be waiting for that maintenance to finish.
+    let governor = RuntimeGovernor::new(
+        RuntimeGovernorConfig::shared_host(),
+        RuntimeResourceSnapshot::from_parts(
+            RuntimeResourceBudget::from_limits(NonZeroUsize::new(4).unwrap(), None, None),
+            RuntimeMemorySnapshot::from_limits(Some(8 * GIB), Some(6 * GIB), None, None, None),
+        ),
+        IoConcurrencyBudget::new(1, 1),
+    );
+    let io_request = RuntimeWorkRequest::foreground_query(0, 0)
+        .with_blocking(false)
+        .with_io_slots(1);
+    let io_holder = governor.try_admit(io_request).unwrap();
+    let waiter = governor.admission_waiter(RuntimeWorkPriority::Foreground);
+    assert_eq!(
+        governor
+            .try_admit_waiter(&waiter, io_request)
+            .unwrap_err()
+            .code,
+        RuntimeAdmissionCode::IoSaturated
+    );
+    let maintenance = governor
+        .try_admit(RuntimeWorkRequest::background_maintenance(1024))
+        .unwrap();
+    // A request competing for the same Foreground I/O still yields.
+    assert_eq!(
+        governor.try_admit(io_request).unwrap_err().code,
+        RuntimeAdmissionCode::QueuedAhead
+    );
+    drop((maintenance, io_holder));
+    drop(governor.try_admit_waiter(&waiter, io_request).unwrap());
+    drop(waiter);
+
+    // On one CPU the same maintenance competes with a waiter short of CPU.
+    let governor = one_cpu_governor();
+    let cpu_holder = governor
+        .try_admit(request(RuntimeWorkPriority::Foreground))
+        .unwrap();
+    let waiter = governor.admission_waiter(RuntimeWorkPriority::Foreground);
+    assert!(governor
+        .try_admit_waiter(&waiter, request(RuntimeWorkPriority::Foreground))
+        .is_err());
+    drop(cpu_holder);
+    assert_eq!(
+        governor
+            .try_admit(RuntimeWorkRequest::background_maintenance(1024))
+            .unwrap_err()
+            .code,
+        RuntimeAdmissionCode::QueuedAhead
+    );
+    drop(waiter);
+}

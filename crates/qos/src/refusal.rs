@@ -109,6 +109,7 @@ impl QosAdmission {
                 requested: operations(request.estimated_operations),
                 available: limit.map_or(0, |limit| operations(limit.saturating_sub(running))),
                 retryable: deferred && fits,
+                waited: None,
             },
         ))
     }
@@ -197,6 +198,7 @@ mod tests {
                     requested: 4,
                     available: 2,
                     retryable,
+                    waited: None,
                 }
             );
         }
@@ -302,6 +304,7 @@ mod tests {
                 requested: 2,
                 available: 1,
                 retryable: true,
+                waited: None,
             }
         );
         held.finish();

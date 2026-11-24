@@ -45,6 +45,7 @@ fn assert_deferred(db: &mut Database, error: &HawDBError) {
                 requested: 1..,
                 available: 0,
                 retryable: true,
+                waited: None,
             })
         ),
         "{error}"
