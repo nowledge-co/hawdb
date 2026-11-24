@@ -120,6 +120,12 @@ fn automatic_checkpoint_runs_while_a_waiter_is_queued() {
     drop(governor.try_admit_waiter(&waiter, io_request()).unwrap());
     drop(waiter);
     assert_eq!(governor.snapshot().queued_admission_waiters, 0);
+    // A read right after a checkpoint completes must succeed (#1964).
+    let rows = db
+        .query_sql("SELECT count(*) AS rows FROM progress")
+        .unwrap()
+        .rows;
+    assert_eq!(rows[0].get("rows"), Some(&Value::Int(written)));
 }
 
 #[test]
