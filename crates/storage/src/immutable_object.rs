@@ -441,6 +441,10 @@ pub struct ImmutableObjectStore {
 }
 
 impl ImmutableObjectStore {
+    pub(crate) fn root_path(&self) -> &Path {
+        &self.root
+    }
+
     pub(crate) fn open_existing(root: PathBuf, max_object_bytes: u64) -> Self {
         Self {
             root,

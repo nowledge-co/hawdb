@@ -5136,6 +5136,14 @@ not change success-only publication or replay invalidation. The manual paired
 benchmark remains the foreground-performance acceptance owner; a removed
 operation scan alone does not establish an end-to-end improvement.
 
+The storage immutable-root unit owner also covers object-store custody across
+prepared handoff: already completed staging/kind ancestry barriers are retained,
+while final object-directory synchronization and full content verification still
+run. Directory fault injection distinguishes reuse from retargeting the public
+object-store path; restored-stamp corruption must fail before changing the head.
+Each refusal reopens the old head and replays the complete acknowledged writes.
+This remains in the existing storage unit lane; no new timing CI is introduced.
+
 The same storage unit owner includes `read_view::generation_identity_tests`:
 compact physical-origin representation must distinguish an absent checkpoint
 from generation zero and retain independent canonical/adjacency pins. A 64-bit

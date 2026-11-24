@@ -76,6 +76,13 @@ saves adjacency construction and writes; it makes no O(dirty) total-time or
 read-I/O claim. Full closure verification still scales with retained data.
 
 Default synchronized commit/checkpoint/head publication barriers are unchanged.
+The prepared immutable-root handoff retains its operation's object-store owner
+through completion, so completed namespace/kind ancestry barriers are not lost
+by reopening the same store. This is bounded per-handoff state, not a global
+durability cache or deferred directory batch. Final object namespace barriers,
+head publication and full existing-object validation still execute. A low-level
+caller that changes the public object-store path gets a fresh owner and its
+complete namespace barriers rather than inheriting receipts from another path.
 The outer manifest is v3 and engine persistent format is 8; older binaries
 reject the version before interpreting independent origins. This reader retains
 v1/v2 uniform-bundle decoding with their original constraints. Payload codecs

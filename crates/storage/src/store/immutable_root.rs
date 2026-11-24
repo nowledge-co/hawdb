@@ -114,6 +114,9 @@ pub struct PreparedImmutableRootHandoff {
     pub root: SealedRoot,
     pub rotation: PreparedWalRotation,
     pub immutable_store_root: PathBuf,
+    // Preserve completed namespace barriers through this single handoff.
+    // Object validation and final publication barriers still run at completion.
+    objects: ImmutableObjectStore,
     // A prepared candidate can outlive the exclusive borrow of its writer.
     // Keep maintenance from treating that writer as the only reachability pin.
     _source_lease: Option<Arc<DatabaseDirectoryLease>>,
@@ -1743,6 +1746,7 @@ impl GraphStore {
             root,
             rotation,
             immutable_store_root,
+            objects,
             _source_lease: self.branch_lease.clone(),
             _root_pin: root_pin,
         })
@@ -1829,8 +1833,15 @@ impl GraphStore {
             };
             publication.record_target_head(&target)?;
         }
-        let mut objects = ImmutableObjectStore::open(&prepared.immutable_store_root)
-            .map_err(HawDBError::from_storage_error)?;
+        let mut objects = if prepared.objects.root_path() == prepared.immutable_store_root.as_path()
+        {
+            prepared.objects
+        } else {
+            // The public path can be retargeted by a low-level caller. Never
+            // transfer completed namespace barriers to a different store.
+            ImmutableObjectStore::open(&prepared.immutable_store_root)
+                .map_err(HawDBError::from_storage_error)?
+        };
         let head = branch_head::publish_prepared_wal_rotation_with_root(
             head_path,
             branch_head::PreparedWalRootPublicationRequest {
@@ -5293,6 +5304,78 @@ pub(super) mod tests {
             branch.store().storage_recovery_report.replayed_wal_entries,
             3
         );
+    }
+
+    #[test]
+    fn handoff_retains_only_completed_namespace_barriers_for_its_object_store() {
+        for mode in ["reuse", "object-barrier", "retarget", "corrupt"] {
+            let fixture = BranchFixture::new();
+            let mut branch = fixture.admit(fixture.main, DurabilityPolicy::default());
+            write_schema_and_graph(&mut branch);
+            let expected_epoch = branch.store().commit_epoch();
+            let expected_nodes = branch.store().node_count_for_label(None);
+            let old_head = *branch.head();
+            let head_path = fixture.head_path(fixture.main);
+            let old_bytes = fs::read(&head_path).unwrap();
+            let mut prepared = branch
+                .store_mut()
+                .prepare_immutable_root_handoff(&fixture.objects)
+                .unwrap();
+            if mode == "retarget" {
+                prepared.immutable_store_root = fixture.project.join("retargeted-objects");
+            }
+            if mode == "corrupt" {
+                let path = prepared
+                    .objects
+                    .object_path(prepared.root.object_reference().unwrap());
+                let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+                let mut bytes = std::fs::read(&path).unwrap();
+                bytes[0] ^= 1;
+                std::fs::write(&path, bytes).unwrap();
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&path)
+                    .unwrap()
+                    .set_times(std::fs::FileTimes::new().set_modified(modified))
+                    .unwrap();
+            }
+            let blocked = prepared
+                .immutable_store_root
+                .join(if mode == "object-barrier" {
+                    "objects/sealed-root"
+                } else {
+                    "objects/.staging"
+                });
+            let failure = crate::durability::fail_sync_directory_for(&blocked);
+            let result = branch.store_mut().complete_immutable_root_handoff(
+                prepared,
+                &head_path,
+                old_head.project_id,
+                old_head.branch_id,
+                old_head.physical_generation,
+            );
+            drop(failure);
+            if mode == "reuse" {
+                result.unwrap();
+                assert_ne!(fs::read(&head_path).unwrap(), old_bytes);
+            } else {
+                let error = result.unwrap_err();
+                if mode != "corrupt" {
+                    assert!(error
+                        .to_string()
+                        .contains("injected directory sync failure"));
+                }
+                assert_eq!(fs::read(&head_path).unwrap(), old_bytes);
+            }
+            drop(branch);
+            let recovered = fixture.admit(fixture.main, DurabilityPolicy::default());
+            assert_eq!(recovered.store().commit_epoch(), expected_epoch, "{mode}");
+            assert_eq!(
+                recovered.store().node_count_for_label(None),
+                expected_nodes,
+                "{mode}"
+            );
+        }
     }
 
     #[test]
