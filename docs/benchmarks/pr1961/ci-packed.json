@@ -1,0 +1,1373 @@
+{
+  "head": "612cb32ceb778b2200b37bb8eee38980625b56ae",
+  "base": "4a2d7e0ad6762fb3f8cf93e8a61659469d622889",
+  "runner": "86f02312163d00fe3b613c0100e755ad4004c68d",
+  "runner_identity": "final_sha from clone-records.json for root, crates and crash; crash evidence source_revision agrees",
+  "jobs": [
+    {
+      "job": "pull-skein-bazel-test-checkpoint-controls",
+      "prowJob": "55c723bc-5142-4b7e-a275-a246f7ebb27a",
+      "state": "success",
+      "url": "https://prow.nowledge.co/view/gs/ci-cd-503413-prow-public/artifacts/native/pr-logs/pull/nowledge-co_hawdb/1961/pull-skein-bazel-test-checkpoint-controls/2125224163072282624"
+    },
+    {
+      "job": "pull-skein-bazel-test-crates",
+      "prowJob": "8ce69cbe-5999-44c0-8635-e1fb443bfc1e",
+      "state": "success",
+      "url": "https://prow.nowledge.co/view/gs/ci-cd-503413-prow-public/artifacts/native/pr-logs/pull/nowledge-co_hawdb/1961/pull-skein-bazel-test-crates/2125224166863933440"
+    },
+    {
+      "job": "pull-skein-storage-crash-recovery",
+      "prowJob": "0986dfcb-9943-4548-b60f-cede1aed2f01",
+      "state": "success",
+      "url": "https://prow.nowledge.co/view/gs/ci-cd-503413-prow-public/artifacts/native/pr-logs/pull/nowledge-co_hawdb/1961/pull-skein-storage-crash-recovery/2125224163164557312"
+    },
+    {
+      "job": "pull-skein-bazel-test-checkpoint-large-commit",
+      "prowJob": "34582c4a-ae35-43c0-8891-c9f5475dfe24",
+      "state": "success",
+      "url": "https://prow.nowledge.co/view/gs/ci-cd-503413-prow-public/artifacts/native/pr-logs/pull/nowledge-co_hawdb/1961/pull-skein-bazel-test-checkpoint-large-commit/2125224160266293248"
+    },
+    {
+      "job": "pull-skein-bazel-test-analytics-dense",
+      "prowJob": "681f3286-74fc-4a7c-bde6-4305f1da602f",
+      "state": "success",
+      "url": "https://prow.nowledge.co/view/gs/ci-cd-503413-prow-public/artifacts/native/pr-logs/pull/nowledge-co_hawdb/1961/pull-skein-bazel-test-analytics-dense/2125224154620760064"
+    },
+    {
+      "job": "pull-skein-bazel-build",
+      "prowJob": "523e2c29-c018-427a-a29d-608c1d828bc5",
+      "state": "success",
+      "url": "https://prow.nowledge.co/view/gs/ci-cd-503413-prow-public/artifacts/native/pr-logs/pull/nowledge-co_hawdb/1961/pull-skein-bazel-build/2125224151663775744"
+    },
+    {
+      "job": "pull-skein-supply-chain",
+      "prowJob": "ec20cb9d-0109-4c78-9583-bb8295545355",
+      "state": "success",
+      "url": "https://prow.nowledge.co/view/gs/ci-cd-503413-prow-public/artifacts/native/pr-logs/pull/nowledge-co_hawdb/1961/pull-skein-supply-chain/2125224151592472576"
+    },
+    {
+      "job": "pull-skein-bazel-test-root",
+      "prowJob": "2fbc17f0-b0be-406c-a3a1-d40bd67ebb56",
+      "state": "success",
+      "url": "https://prow.nowledge.co/view/gs/ci-cd-503413-prow-public/artifacts/native/pr-logs/pull/nowledge-co_hawdb/1961/pull-skein-bazel-test-root/2125224154549456896"
+    },
+    {
+      "job": "pull-skein-bazel-test-checkpoint-growing-table",
+      "prowJob": "78f2d423-8c39-40c2-afd9-83a3b34ec849",
+      "state": "success",
+      "url": "https://prow.nowledge.co/view/gs/ci-cd-503413-prow-public/artifacts/native/pr-logs/pull/nowledge-co_hawdb/1961/pull-skein-bazel-test-checkpoint-growing-table/2125224157565161472"
+    }
+  ],
+  "bep": {
+    "root": {
+      "complete": true,
+      "events": 1050,
+      "targetCount": 77,
+      "targets": [
+        {
+          "label": "//:mvcc_joined_read_shard_script_test",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.395s"
+        },
+        {
+          "label": "//:root_unit_partition_script_test",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.657s"
+        },
+        {
+          "label": "//:query_limit_inventory_script_test",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.094s"
+        },
+        {
+          "label": "//:power_loss_partition_script_test",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.159s"
+        },
+        {
+          "label": "//:hawdb_linux_ci_benchmark_dispatch_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.852s"
+        },
+        {
+          "label": "//:cargo_bazel_package_parity_test",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.203s"
+        },
+        {
+          "label": "//:cargo_bazel_package_parity_script_test",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.141s"
+        },
+        {
+          "label": "//:storage_tla_evidence_script_test",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "2.002s"
+        },
+        {
+          "label": "//:hawdb_minimal_native_vector_boundary_test",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.025s"
+        },
+        {
+          "label": "//:hawdb_storage_language_boundary_test",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.018s"
+        },
+        {
+          "label": "//:hawdb_graph_text_dependency_boundary_test",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.021s"
+        },
+        {
+          "label": "//:query_limit_inventory_test",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 0,
+          "duration": "2.005s"
+        },
+        {
+          "label": "//:native_release_mode_script_test",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "1.064s"
+        },
+        {
+          "label": "//:pypi_publish_script_test",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "1.027s"
+        },
+        {
+          "label": "//:native_release_package_script_test",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.546s"
+        },
+        {
+          "label": "//crates/system-sql:hawdb_system_sql_loom_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.648s"
+        },
+        {
+          "label": "//:hawdb_graph_text_consumer_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.021s"
+        },
+        {
+          "label": "//:hawdb_unit_storage_crash_matrix_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "2.807s"
+        },
+        {
+          "label": "//:hawdb_default_consumer_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.033s"
+        },
+        {
+          "label": "//:hawdb_unit_row_page_compaction_out_of_core_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "2.936s"
+        },
+        {
+          "label": "//:hawdb_pgq_create_binder_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.018s"
+        },
+        {
+          "label": "//:hawdb_host_allocator_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.024s"
+        },
+        {
+          "label": "//:hawdb_search_generation_context_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.734s"
+        },
+        {
+          "label": "//:hawdb_unit_analytics_core_general_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "13.291s"
+        },
+        {
+          "label": "//:hawdb_search_lexical_corpus_qualification_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.021s"
+        },
+        {
+          "label": "//:hawdb_unit_recovery_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "55.340s"
+        },
+        {
+          "label": "//:hawdb_linux_ci_previous_wrapper_adapter_smoke_test",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.065s"
+        },
+        {
+          "label": "//:hawdb_fallible_search_contract_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.028s"
+        },
+        {
+          "label": "//:hawdb_unit_concurrent_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "40.303s"
+        },
+        {
+          "label": "//:hawdb_shadow_self_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.026s"
+        },
+        {
+          "label": "//:hawdb_logical_dump_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "4.012s"
+        },
+        {
+          "label": "//:hawdb_process_memory_policy_contract_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "1.308s"
+        },
+        {
+          "label": "//:hawdb_unit_row_page_compaction_materialized_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "4.079s"
+        },
+        {
+          "label": "//:hawdb_search_projection_consumer_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.747s"
+        },
+        {
+          "label": "//:hawdb_linux_ci_migration_gate_smoke_test",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "3.444s"
+        },
+        {
+          "label": "//:hawdb_cli_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.252s"
+        },
+        {
+          "label": "//:hawdb_mvcc_baseline_comparison_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "7.234s"
+        },
+        {
+          "label": "//:hawdb_mvcc_staging_session_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "7.580s"
+        },
+        {
+          "label": "//:hawdb_linux_ci_migration_gate_blocked_smoke_test",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "3.635s"
+        },
+        {
+          "label": "//:hawdb_mvcc_projection_publication_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "1.601s"
+        },
+        {
+          "label": "//:hawdb_unit_row_page_compaction_admission_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "1.245s"
+        },
+        {
+          "label": "//:hawdb_linux_ci_storage_recovery_smoke_test",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.347s"
+        },
+        {
+          "label": "//:hawdb_execution_request_contract_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "20.781s"
+        },
+        {
+          "label": "//:hawdb_mvcc_joined_reads_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 8,
+          "duration": "21.796s"
+        },
+        {
+          "label": "//:hawdb_linux_ci_fixture_contract_smoke_test",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.108s"
+        },
+        {
+          "label": "//:hawdb_mvcc_full_source_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "3.135s"
+        },
+        {
+          "label": "//:hawdb_linux_ci_background_maintenance_smoke_test",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.306s"
+        },
+        {
+          "label": "//:hawdb_branch_project_open_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "9.286s"
+        },
+        {
+          "label": "//:hawdb_unit_general_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "203.472s"
+        },
+        {
+          "label": "//:hawdb_search_generation_context_minimal_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.987s"
+        },
+        {
+          "label": "//:hawdb_search_projection_consumer_minimal_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "1.424s"
+        },
+        {
+          "label": "//:hawdb_mvcc_full_source_minimal_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "1.947s"
+        },
+        {
+          "label": "//:hawdb_process_memory_policy_contract_minimal_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.830s"
+        },
+        {
+          "label": "//:hawdb_minimal_consumer_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.022s"
+        },
+        {
+          "label": "//:hawdb_mvcc_projection_publication_minimal_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "3.163s"
+        },
+        {
+          "label": "//:hawdb_branch_project_open_minimal_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "8.038s"
+        },
+        {
+          "label": "//:hawdb_in_memory_portable_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.069s"
+        },
+        {
+          "label": "//:hawdb_host_allocator_minimal_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.046s"
+        },
+        {
+          "label": "//:hawdb_mvcc_staging_session_minimal_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "9.116s"
+        },
+        {
+          "label": "//:hawdb_mvcc_baseline_comparison_minimal_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "8.745s"
+        },
+        {
+          "label": "//:hawdb_fallible_search_contract_minimal_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.044s"
+        },
+        {
+          "label": "//:hawdb_wasm_playground_bridge_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.137s"
+        },
+        {
+          "label": "//:hawdb_mvcc_joined_reads_minimal_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 8,
+          "duration": "27.435s"
+        },
+        {
+          "label": "//:hawdb_acl_capability_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "1.222s"
+        },
+        {
+          "label": "//:hawdb_linux_ci_benchmark_relational_index_access_smoke_test",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 0,
+          "duration": "22.479s"
+        },
+        {
+          "label": "//crates/test-contracts:checkpoint_contracts_minimal_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 0,
+          "duration": "10.823s"
+        },
+        {
+          "label": "//:hawdb_linux_ci_optimizer_group_1_smoke_test",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 0,
+          "duration": "97.655s"
+        },
+        {
+          "label": "//:hawdb_linux_ci_benchmark_relational_index_page_cache_smoke_test",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 0,
+          "duration": "0.189s"
+        },
+        {
+          "label": "//:hawdb_linux_ci_optimizer_group_3_smoke_test",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 0,
+          "duration": "12.022s"
+        },
+        {
+          "label": "//:hawdb_linux_ci_optimizer_summary_smoke_test",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 0,
+          "duration": "5.861s"
+        },
+        {
+          "label": "//:hawdb_linux_ci_wal_group_commit_smoke_test",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 0,
+          "duration": "117.948s"
+        },
+        {
+          "label": "//:hawdb_linux_ci_benchmark_relational_oltp_mix_smoke_test",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 0,
+          "duration": "2.075s"
+        },
+        {
+          "label": "//:hawdb_linux_ci_benchmark_index_restart_cost_smoke_test",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 0,
+          "duration": "5.784s"
+        },
+        {
+          "label": "//:hawdb_linux_ci_benchmark_integrity_checksum_smoke_test",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 0,
+          "duration": "20.382s"
+        },
+        {
+          "label": "//:hawdb_linux_ci_benchmark_relational_monotonic_append_smoke_test",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 0,
+          "duration": "1.668s"
+        },
+        {
+          "label": "//crates/test-contracts:checkpoint_contracts_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 0,
+          "duration": "10.080s"
+        },
+        {
+          "label": "//:hawdb_linux_ci_relational_row_page_lending_smoke_test",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 0,
+          "duration": "0.298s"
+        }
+      ]
+    },
+    "crates": {
+      "complete": true,
+      "events": 1106,
+      "targetCount": 106,
+      "targets": [
+        {
+          "label": "//crates/search:search_unit_family_script_test",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.286s"
+        },
+        {
+          "label": "//crates/plan-core:hawdb_plan_core_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.034s"
+        },
+        {
+          "label": "//crates/cascades:hawdb_cascades_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.037s"
+        },
+        {
+          "label": "//crates/search:hawdb_search_identifier_allocation_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.148s"
+        },
+        {
+          "label": "//crates/cascades:hawdb_cascades_integration_test",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.036s"
+        },
+        {
+          "label": "//crates/test-contracts:fixture_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.033s"
+        },
+        {
+          "label": "//crates/sql-syntax:hawdb_sql_syntax_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.044s"
+        },
+        {
+          "label": "//crates/cgroup:hawdb_cgroup_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.038s"
+        },
+        {
+          "label": "//crates/sql-syntax:postgres_select_pgq_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.084s"
+        },
+        {
+          "label": "//crates/optimizer-vector:hawdb_optimizer_vector_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.035s"
+        },
+        {
+          "label": "//crates/sql-syntax:postgres_pgq_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.047s"
+        },
+        {
+          "label": "//crates/core:hawdb_core_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.440s"
+        },
+        {
+          "label": "//crates/optimizer-predicate:hawdb_optimizer_predicate_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.041s"
+        },
+        {
+          "label": "//crates/query:hawdb_query_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.045s"
+        },
+        {
+          "label": "//crates/integrity:hawdb_integrity_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.054s"
+        },
+        {
+          "label": "//crates/route-ownership:hawdb_route_ownership_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.194s"
+        },
+        {
+          "label": "//crates/fuzz-contracts:hawdb_fuzz_contracts_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.065s"
+        },
+        {
+          "label": "//crates/ddl:hawdb_ddl_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.067s"
+        },
+        {
+          "label": "//crates/expression:hawdb_expression_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.066s"
+        },
+        {
+          "label": "//crates/analytics:hawdb_analytics_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.065s"
+        },
+        {
+          "label": "//crates/evidence:hawdb_evidence_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.221s"
+        },
+        {
+          "label": "//crates/cypher:hawdb_cypher_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.407s"
+        },
+        {
+          "label": "//crates/telemetry:hawdb_telemetry_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.042s"
+        },
+        {
+          "label": "//crates/search:hawdb_search_analyzer_workspace_allocation_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.452s"
+        },
+        {
+          "label": "//crates/qos:hawdb_qos_loom_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.051s"
+        },
+        {
+          "label": "//crates/runtime-tokio:hawdb_runtime_tokio_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.181s"
+        },
+        {
+          "label": "//crates/qos:hawdb_qos_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.538s"
+        },
+        {
+          "label": "//crates/optimizer-relational:hawdb_optimizer_relational_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.485s"
+        },
+        {
+          "label": "//crates/vector-projection:hawdb_vector_projection_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "7.013s"
+        },
+        {
+          "label": "//crates/plan-cypher:hawdb_plan_cypher_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.237s"
+        },
+        {
+          "label": "//crates/storage:hawdb_storage_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "137.269s"
+        },
+        {
+          "label": "//crates/plan-cache:hawdb_plan_cache_loom_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.050s"
+        },
+        {
+          "label": "//crates/optimizer-graph:hawdb_optimizer_graph_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.098s"
+        },
+        {
+          "label": "//crates/plan-cache:hawdb_template_retention_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "11.404s"
+        },
+        {
+          "label": "//crates/optimizer:hawdb_optimizer_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.033s"
+        },
+        {
+          "label": "//crates/optimizer-graph:planner_golden_test",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.054s"
+        },
+        {
+          "label": "//crates/plan-cache:hawdb_plan_cache_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.901s"
+        },
+        {
+          "label": "//crates/sql:hawdb_sql_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.291s"
+        },
+        {
+          "label": "//crates/executor:hawdb_projection_allocation_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "2.421s"
+        },
+        {
+          "label": "//crates/explain:hawdb_explain_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.049s"
+        },
+        {
+          "label": "//crates/query-policy:hawdb_query_policy_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.043s"
+        },
+        {
+          "label": "//crates/system-sql:hawdb_system_sql_loom_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.648s"
+        },
+        {
+          "label": "//crates/relational:hawdb_relational_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "5.104s"
+        },
+        {
+          "label": "//crates/system-sql:hawdb_system_sql_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.032s"
+        },
+        {
+          "label": "//crates/executor:hawdb_morsel_oracle_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.067s"
+        },
+        {
+          "label": "//crates/artifact:hawdb_artifact_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.029s"
+        },
+        {
+          "label": "//crates/search:hawdb_search_analyzer_observation_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.028s"
+        },
+        {
+          "label": "//crates/search:hawdb_search_text_only_streamed_lifecycle_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "166.082s"
+        },
+        {
+          "label": "//crates/search:hawdb_search_descriptor_allocation_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "1.332s"
+        },
+        {
+          "label": "//crates/search:hawdb_search_text_background_source_policy_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "43.841s"
+        },
+        {
+          "label": "//crates/nowledge-contracts:hawdb_nowledge_contracts_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.042s"
+        },
+        {
+          "label": "//crates/search:hawdb_search_text_only_source_policy_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "51.036s"
+        },
+        {
+          "label": "//crates/bootstrap:hawdb_bootstrap_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.243s"
+        },
+        {
+          "label": "//crates/search:hawdb_search_text_background_streamed_lifecycle_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "149.276s"
+        },
+        {
+          "label": "//crates/search:hawdb_search_analyzer_allocation_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.127s"
+        },
+        {
+          "label": "//crates/compat:hawdb_compat_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.372s"
+        },
+        {
+          "label": "//crates/search:hawdb_search_streamed_lifecycle_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "155.195s"
+        },
+        {
+          "label": "//crates/resource-profile:hawdb_resource_profile_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.038s"
+        },
+        {
+          "label": "//crates/readiness:hawdb_readiness_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "4.338s"
+        },
+        {
+          "label": "//crates/search:hawdb_search_segment_allocation_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "1.629s"
+        },
+        {
+          "label": "//crates/search:hawdb_search_source_policy_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "44.332s"
+        },
+        {
+          "label": "//crates/qualification:hawdb_graph_storage_qualification_cli_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.045s"
+        },
+        {
+          "label": "//crates/qualification:hawdb_qualification_content_store_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.119s"
+        },
+        {
+          "label": "//crates/search:hawdb_search_lexical_delta_allocation_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.955s"
+        },
+        {
+          "label": "//crates/qualification:hawdb_content_store_memory_qualification_cli_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.042s"
+        },
+        {
+          "label": "//crates/qualification:hawdb_content_store_overflow_compaction_qualification_cli_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.055s"
+        },
+        {
+          "label": "//crates/qualification:hawdb_content_store_mutation_qualification_cli_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.068s"
+        },
+        {
+          "label": "//crates/qualification:hawdb_content_store_read_qualification_cli_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.078s"
+        },
+        {
+          "label": "//crates/qualification:hawdb_qualification_release_bundle_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.338s"
+        },
+        {
+          "label": "//crates/qualification:hawdb_release_bundle_cli_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.062s"
+        },
+        {
+          "label": "//crates/qualification:hawdb_qualification_misc_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.068s"
+        },
+        {
+          "label": "//crates/qualification:hawdb_content_store_contract_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.066s"
+        },
+        {
+          "label": "//crates/qualification:hawdb_graph_index_qualification_cli_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.267s"
+        },
+        {
+          "label": "//crates/qualification:hawdb_soak_cli_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "0.075s"
+        },
+        {
+          "label": "//crates/search:hawdb_search_background_only_source_policy_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "2.425s"
+        },
+        {
+          "label": "//crates/search:hawdb_search_minimal_source_policy_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "1.894s"
+        },
+        {
+          "label": "//crates/search:hawdb_search_acl_streamed_lifecycle_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "162.606s"
+        },
+        {
+          "label": "//crates/search:hawdb_search_acl_source_policy_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "37.146s"
+        },
+        {
+          "label": "//crates/search:hawdb_search_text_vector_streamed_lifecycle_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "156.525s"
+        },
+        {
+          "label": "//crates/search:hawdb_search_text_vector_source_policy_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "39.348s"
+        },
+        {
+          "label": "//crates/search:hawdb_search_vector_background_source_policy_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "2.538s"
+        },
+        {
+          "label": "//crates/search:hawdb_search_vector_only_source_policy_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "1.701s"
+        },
+        {
+          "label": "//crates/search:hawdb_search_vector_only_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 0,
+          "duration": "133.318s"
+        },
+        {
+          "label": "//crates/search:hawdb_search_background_only_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 0,
+          "duration": "126.262s"
+        },
+        {
+          "label": "//crates/search:hawdb_search_minimal_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 0,
+          "duration": "125.675s"
+        },
+        {
+          "label": "//crates/search:hawdb_search_text_background_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 0,
+          "duration": "137.522s"
+        },
+        {
+          "label": "//crates/search:hawdb_search_vector_background_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 0,
+          "duration": "136.202s"
+        },
+        {
+          "label": "//crates/search:hawdb_search_acl_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 0,
+          "duration": "162.145s"
+        },
+        {
+          "label": "//crates/search:hawdb_search_text_only_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 0,
+          "duration": "125.824s"
+        },
+        {
+          "label": "//crates/search:hawdb_search_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 0,
+          "duration": "151.336s"
+        },
+        {
+          "label": "//crates/search:hawdb_search_text_vector_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 0,
+          "duration": "147.466s"
+        },
+        {
+          "label": "//crates/search:hawdb_search_vector_background_io_wave_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 0,
+          "duration": "1.573s"
+        },
+        {
+          "label": "//crates/qualification:hawdb_content_store_initial_row_page_qualification_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "11.417s"
+        },
+        {
+          "label": "//crates/search:hawdb_search_minimal_io_wave_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 0,
+          "duration": "1.298s"
+        },
+        {
+          "label": "//crates/search:hawdb_search_acl_io_wave_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 0,
+          "duration": "1.510s"
+        },
+        {
+          "label": "//crates/qualification:hawdb_content_store_production_overflow_compaction_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "3.589s"
+        },
+        {
+          "label": "//crates/qualification:hawdb_content_store_production_read_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 1,
+          "duration": "1.943s"
+        },
+        {
+          "label": "//crates/search:hawdb_search_vector_only_io_wave_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 0,
+          "duration": "1.386s"
+        },
+        {
+          "label": "//crates/search:hawdb_search_text_background_io_wave_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 0,
+          "duration": "1.312s"
+        },
+        {
+          "label": "//crates/qualification:hawdb_content_store_production_mutation_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 0,
+          "duration": "4.550s"
+        },
+        {
+          "label": "//crates/search:hawdb_search_background_only_io_wave_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 0,
+          "duration": "1.269s"
+        },
+        {
+          "label": "//crates/search:hawdb_search_io_wave_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 0,
+          "duration": "1.410s"
+        },
+        {
+          "label": "//crates/search:hawdb_search_text_only_io_wave_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 0,
+          "duration": "1.506s"
+        },
+        {
+          "label": "//crates/executor:hawdb_executor_unit_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 0,
+          "duration": "31.559s"
+        },
+        {
+          "label": "//crates/search:hawdb_search_text_vector_io_wave_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 0,
+          "duration": "1.545s"
+        },
+        {
+          "label": "//crates/qualification:hawdb_qualification_production_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 0,
+          "duration": "1.922s"
+        }
+      ]
+    },
+    "crash": {
+      "complete": true,
+      "events": 441,
+      "targetCount": 1,
+      "targets": [
+        {
+          "label": "//:hawdb_storage_crash_recovery_tests",
+          "status": "PASSED",
+          "runCount": 1,
+          "cached": 0,
+          "duration": "7.930s"
+        }
+      ]
+    }
+  }
+}

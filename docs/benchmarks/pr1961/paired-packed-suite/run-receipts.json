@@ -1,0 +1,214 @@
+[
+  {
+    "group": "paired-128-512-node_property",
+    "nodes": 128,
+    "edges": 512,
+    "workload": "node_property",
+    "measured_pairs": 60,
+    "warmup_pairs": 2,
+    "raw": "paired-128-512-node_property.jsonl",
+    "ready": {
+      "baseline": {
+        "automatic_checkpoint": false,
+        "protocol": "hawdb-checkpoint-pair-v1",
+        "ready": "node_property",
+        "storage_version": "hawdb-storage-v2"
+      },
+      "candidate": {
+        "automatic_checkpoint": false,
+        "protocol": "hawdb-checkpoint-pair-v1",
+        "ready": "node_property",
+        "storage_version": "hawdb-storage-v3"
+      }
+    },
+    "commands": {
+      "baseline": [
+        "/Users/hawkingrei/devel/opensource/skein/.context/perf-recovery-20261124/evidence/incremental-adjacency/packed-bin/embedded-paired-baseline",
+        "/Users/hawkingrei/devel/opensource/skein/.context/perf-recovery-20261124/evidence/incremental-adjacency/paired-packed-suite/paired-128-512-node_property-baseline-fixture",
+        "128",
+        "512",
+        "60",
+        "rebuild",
+        "step-node"
+      ],
+      "candidate": [
+        "/Users/hawkingrei/devel/opensource/skein/.context/perf-recovery-20261124/evidence/incremental-adjacency/packed-bin/embedded-paired-candidate",
+        "/Users/hawkingrei/devel/opensource/skein/.context/perf-recovery-20261124/evidence/incremental-adjacency/paired-packed-suite/paired-128-512-node_property-candidate-fixture",
+        "128",
+        "512",
+        "60",
+        "carry",
+        "step-node"
+      ]
+    },
+    "started": "2026-11-24T13:51:39.296157+00:00",
+    "elapsed_seconds": 61.52079933400091,
+    "exit_codes": {
+      "baseline": 0,
+      "candidate": 0
+    },
+    "binary_sha256": {
+      "baseline": "e108839fa0a782fd9cbc3d14a2269a56f612e1e68b790db43032ce6c60456ca8",
+      "candidate": "a46361dfcdca2a76c6c6313a2dda4a847584f57350262997cc383ecfb426d853"
+    }
+  },
+  {
+    "group": "paired-128-512-relationship_property",
+    "nodes": 128,
+    "edges": 512,
+    "workload": "relationship_property",
+    "measured_pairs": 60,
+    "warmup_pairs": 2,
+    "raw": "paired-128-512-relationship_property.jsonl",
+    "ready": {
+      "baseline": {
+        "automatic_checkpoint": false,
+        "protocol": "hawdb-checkpoint-pair-v1",
+        "ready": "relationship_property",
+        "storage_version": "hawdb-storage-v2"
+      },
+      "candidate": {
+        "automatic_checkpoint": false,
+        "protocol": "hawdb-checkpoint-pair-v1",
+        "ready": "relationship_property",
+        "storage_version": "hawdb-storage-v3"
+      }
+    },
+    "commands": {
+      "baseline": [
+        "/Users/hawkingrei/devel/opensource/skein/.context/perf-recovery-20261124/evidence/incremental-adjacency/packed-bin/embedded-paired-baseline",
+        "/Users/hawkingrei/devel/opensource/skein/.context/perf-recovery-20261124/evidence/incremental-adjacency/paired-packed-suite/paired-128-512-relationship_property-baseline-fixture",
+        "128",
+        "512",
+        "60",
+        "rebuild",
+        "step-relationship"
+      ],
+      "candidate": [
+        "/Users/hawkingrei/devel/opensource/skein/.context/perf-recovery-20261124/evidence/incremental-adjacency/packed-bin/embedded-paired-candidate",
+        "/Users/hawkingrei/devel/opensource/skein/.context/perf-recovery-20261124/evidence/incremental-adjacency/paired-packed-suite/paired-128-512-relationship_property-candidate-fixture",
+        "128",
+        "512",
+        "60",
+        "carry",
+        "step-relationship"
+      ]
+    },
+    "started": "2026-11-24T13:52:40.844618+00:00",
+    "elapsed_seconds": 89.3374673340004,
+    "exit_codes": {
+      "baseline": 0,
+      "candidate": 0
+    },
+    "binary_sha256": {
+      "baseline": "e108839fa0a782fd9cbc3d14a2269a56f612e1e68b790db43032ce6c60456ca8",
+      "candidate": "a46361dfcdca2a76c6c6313a2dda4a847584f57350262997cc383ecfb426d853"
+    }
+  },
+  {
+    "group": "paired-512-4096-node_property",
+    "nodes": 512,
+    "edges": 4096,
+    "workload": "node_property",
+    "measured_pairs": 60,
+    "warmup_pairs": 2,
+    "raw": "paired-512-4096-node_property.jsonl",
+    "ready": {
+      "baseline": {
+        "automatic_checkpoint": false,
+        "protocol": "hawdb-checkpoint-pair-v1",
+        "ready": "node_property",
+        "storage_version": "hawdb-storage-v2"
+      },
+      "candidate": {
+        "automatic_checkpoint": false,
+        "protocol": "hawdb-checkpoint-pair-v1",
+        "ready": "node_property",
+        "storage_version": "hawdb-storage-v3"
+      }
+    },
+    "commands": {
+      "baseline": [
+        "/Users/hawkingrei/devel/opensource/skein/.context/perf-recovery-20261124/evidence/incremental-adjacency/packed-bin/embedded-paired-baseline",
+        "/Users/hawkingrei/devel/opensource/skein/.context/perf-recovery-20261124/evidence/incremental-adjacency/paired-packed-suite/paired-512-4096-node_property-baseline-fixture",
+        "512",
+        "4096",
+        "60",
+        "rebuild",
+        "step-node"
+      ],
+      "candidate": [
+        "/Users/hawkingrei/devel/opensource/skein/.context/perf-recovery-20261124/evidence/incremental-adjacency/packed-bin/embedded-paired-candidate",
+        "/Users/hawkingrei/devel/opensource/skein/.context/perf-recovery-20261124/evidence/incremental-adjacency/paired-packed-suite/paired-512-4096-node_property-candidate-fixture",
+        "512",
+        "4096",
+        "60",
+        "carry",
+        "step-node"
+      ]
+    },
+    "started": "2026-11-24T13:54:10.217778+00:00",
+    "elapsed_seconds": 99.21774758299944,
+    "exit_codes": {
+      "baseline": 0,
+      "candidate": 0
+    },
+    "binary_sha256": {
+      "baseline": "e108839fa0a782fd9cbc3d14a2269a56f612e1e68b790db43032ce6c60456ca8",
+      "candidate": "a46361dfcdca2a76c6c6313a2dda4a847584f57350262997cc383ecfb426d853"
+    }
+  },
+  {
+    "group": "paired-512-4096-relationship_property",
+    "nodes": 512,
+    "edges": 4096,
+    "workload": "relationship_property",
+    "measured_pairs": 60,
+    "warmup_pairs": 2,
+    "raw": "paired-512-4096-relationship_property.jsonl",
+    "ready": {
+      "baseline": {
+        "automatic_checkpoint": false,
+        "protocol": "hawdb-checkpoint-pair-v1",
+        "ready": "relationship_property",
+        "storage_version": "hawdb-storage-v2"
+      },
+      "candidate": {
+        "automatic_checkpoint": false,
+        "protocol": "hawdb-checkpoint-pair-v1",
+        "ready": "relationship_property",
+        "storage_version": "hawdb-storage-v3"
+      }
+    },
+    "commands": {
+      "baseline": [
+        "/Users/hawkingrei/devel/opensource/skein/.context/perf-recovery-20261124/evidence/incremental-adjacency/packed-bin/embedded-paired-baseline",
+        "/Users/hawkingrei/devel/opensource/skein/.context/perf-recovery-20261124/evidence/incremental-adjacency/paired-packed-suite/paired-512-4096-relationship_property-baseline-fixture",
+        "512",
+        "4096",
+        "60",
+        "rebuild",
+        "step-relationship"
+      ],
+      "candidate": [
+        "/Users/hawkingrei/devel/opensource/skein/.context/perf-recovery-20261124/evidence/incremental-adjacency/packed-bin/embedded-paired-candidate",
+        "/Users/hawkingrei/devel/opensource/skein/.context/perf-recovery-20261124/evidence/incremental-adjacency/paired-packed-suite/paired-512-4096-relationship_property-candidate-fixture",
+        "512",
+        "4096",
+        "60",
+        "carry",
+        "step-relationship"
+      ]
+    },
+    "started": "2026-11-24T13:55:49.465257+00:00",
+    "elapsed_seconds": 111.40874979200089,
+    "exit_codes": {
+      "baseline": 0,
+      "candidate": 0
+    },
+    "binary_sha256": {
+      "baseline": "e108839fa0a782fd9cbc3d14a2269a56f612e1e68b790db43032ce6c60456ca8",
+      "candidate": "a46361dfcdca2a76c6c6313a2dda4a847584f57350262997cc383ecfb426d853"
+    }
+  }
+]

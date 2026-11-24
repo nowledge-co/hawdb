@@ -23,7 +23,7 @@
     "exclusion_scope": "candidate role only; v2 is the correct baseline role after frozen-harness/config qualification"
   },
   "current_packed_revision": "0d038b73e3cfb270cdfba9fc999535e2916228ae",
-  "current_packed_timing_status": "not yet qualified",
+  "current_packed_timing_status": "measured; foreground and tail acceptance remains open",
   "read_identity_bytes": {
     "baseline": 56,
     "timed_unpacked": 72,
@@ -40,5 +40,9 @@
   "total_warmup_operations": 16,
   "scope": "Database::checkpoint includes sealed-root closure validation/publication; mutation timing includes synchronized query commit",
   "cargo_lock_sha256": "0fe1285d5afc5fe06d26566fe5fdcbe33075455aee037aa1dc2fdd8ed54ad51d",
-  "profile_sha256": "06c7ca26d39223bd90a6412acd8609c380ce2d1650a72b70c90171656ca89819"
+  "profile_sha256": "06c7ca26d39223bd90a6412acd8609c380ce2d1650a72b70c90171656ca89819",
+  "packed_producer_revision": "612cb32ceb778b2200b37bb8eee38980625b56ae",
+  "packed_build_elapsed": "5m39s, existing isolated candidate target",
+  "packed_host_observation": "No Mem compiler/test processes observed before or after this suite. Normal desktop load remained. Unrelated Codex/npm startup appeared after timing; no causal attribution to outliers.",
+  "packed_read_identity_bytes": 56
 }
