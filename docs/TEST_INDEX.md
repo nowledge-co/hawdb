@@ -4936,6 +4936,34 @@ not in CI. No new lane, fixture, feature or timeout.
 
 ## Carried graph bundles (issue 1641)
 
+Integrity follow-up: https://github.com/nowledge-co/hawdb/issues/1955.
+`api::tests::graph_bundle_integrity` runs in the existing general root group.
+It damages populated canonical records, property spill, property projection,
+adjacency descriptors, canonical manifests, retained relational row pages and
+overflow extents while preserving file length, inode and modification time.
+Each fixture first proves its exact selected-root binding survives an unchanged
+checkpoint. Publication must refuse with `StorageIntegrity`, leave the selected
+head byte-for-byte unchanged, poison the handle and invalidate an independent
+captured SQL snapshot. Manifest and row families may refuse at an earlier
+independent binding check; their coverage does not imply they reach the new
+prior-root lookup. The common closure planner compares its existing streamed
+digest against the selected sealed root's sorted binding for an already-bound
+path, adding no payload scan. Fresh generation paths remain eligible.
+The automatic owner operation-retry tests additionally hold an admitted SQL
+snapshot across a carried manifest or payload mismatch and require refusal
+after the worker reports the error. Existing private WAL I/O and preparation
+I/O guards retain non-poisoning retries. Candidate bootstrap uses detached
+poison flags; on an integrity failure it rechecks selected-root bindings with
+checkpoint work accounting, preserving shared readers only after verifying the selected source intact.
+A stopped or refused diagnostic leaves integrity unresolved and fails closed. This failure-only diagnostic can scan the selected
+closure; ordinary successful carry adds no payload scan. Storage preparation
+state tests use an admitted branch and a damaged private candidate to prove
+verified source readers stay usable, then cancel the source diagnostic and
+require shared invalidation for unresolved integrity.
+Storage artifact-binding tests distinguish physical length/CRC/SHA mismatches
+(`StorageIntegrity`) from format/budget admission refusals (`Storage`). No
+profile, timeout, feature matrix or CI lane changes.
+
 The existing storage unit owner (`//crates/storage:hawdb_storage_tests`)
 includes `store::graph_checkpoint::graph_bundle_tests` and the v2 manifest
 codec guards. They cover complete payload/descriptor carry, byte/inode identity,

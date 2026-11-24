@@ -785,3 +785,50 @@ fn safe_io_denial_keeps_staging_identity_until_preparation_finishes() {
 fn abandoning_denied_preparation_cleans_its_owned_staging_and_preserves_source() {
     retained_stage_survives_denial_then_finishes_or_is_abandoned(false);
 }
+
+#[test]
+fn private_bootstrap_integrity_failure_preserves_verified_source_readers() {
+    let fixture = crate::store::immutable_root::tests::BranchFixture::new();
+    let (mut store, mut catalog) = fixture
+        .admit(fixture.main, DurabilityPolicy::default())
+        .into_parts();
+    store.checkpoint(&catalog).unwrap();
+    let reader = store.snapshot_for_read();
+    store
+        .create_node(&mut catalog, "Later", BTreeMap::new())
+        .unwrap();
+    let mut frame = store
+        .begin_checkpoint_preparation(&catalog)
+        .unwrap()
+        .unwrap();
+    let work = crate::background::CheckpointWorkContext::default();
+    let prepared = frame.prepare_with_work_context(&work).unwrap().unwrap();
+    let artifact = store
+        .durable_root_path()
+        .unwrap()
+        .join(canonical_manifest_generation_file(prepared.generation));
+    let mut bytes = fs::read(&artifact).unwrap();
+    *bytes.last_mut().unwrap() ^= 1;
+    fs::write(&artifact, bytes).unwrap();
+    frame.bootstrap = Some(frame.source.checkpoint_candidate_from_prepared(
+        &frame.catalog,
+        prepared,
+        &work,
+    ));
+    let error = frame
+        .prepare_candidate_with_work_context(&work)
+        .unwrap_err();
+    assert!(matches!(error, HawDBError::StorageIntegrity(_)), "{error}");
+    assert!(!store.storage_handle_poisoned());
+    assert!(!reader.storage_handle_poisoned());
+    assert_eq!(reader.scan_nodes(None).count(), 2);
+
+    // The same known candidate failure with an interrupted source diagnostic
+    // cannot certify the selected source healthy. This must fail closed.
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    let stopped = probe.context(scheduler());
+    probe.cancellation.cancel();
+    frame.check_source_after_bootstrap_failure(&error, &stopped);
+    assert!(store.storage_handle_poisoned());
+    assert!(reader.storage_handle_poisoned());
+}

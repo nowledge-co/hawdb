@@ -459,13 +459,13 @@ impl DurableManifest {
             let digest =
                 digest_closure_artifact(&path, kind, "read manifest-bound artifact", work)?;
             if digest.byte_length != byte_length {
-                return Err(HawDBError::Storage(format!(
+                return Err(HawDBError::StorageIntegrity(format!(
                     "manifest-bound artifact {} length differs from its binding",
                     path.display()
                 )));
             }
             if digest.content.sha256 != content_sha256 {
-                return Err(HawDBError::Storage(format!(
+                return Err(HawDBError::StorageIntegrity(format!(
                     "manifest-bound artifact {} digest differs from its binding",
                     path.display()
                 )));

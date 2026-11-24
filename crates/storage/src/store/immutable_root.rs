@@ -2586,24 +2586,31 @@ fn publish_sealed_root(
     Ok(root)
 }
 
+pub(in crate::store) fn checkpoint_artifact_relative_path<'path>(
+    database_root: &Path,
+    artifact: &'path Path,
+) -> Result<&'path str> {
+    let relative_path = artifact.strip_prefix(database_root).map_err(|_| {
+        HawDBError::Storage(format!(
+            "checkpoint closure artifact {} is outside the database directory",
+            artifact.display()
+        ))
+    })?;
+    relative_path.to_str().ok_or_else(|| {
+        HawDBError::Storage(format!(
+            "checkpoint closure artifact {} has a non-UTF-8 path",
+            artifact.display()
+        ))
+    })
+}
+
 fn checkpoint_artifact_bindings(
     database_root: &Path,
     inputs: &[CheckpointArtifactInput],
 ) -> Result<Vec<CheckpointArtifactBinding>> {
     let mut bindings = Vec::with_capacity(inputs.len());
     for input in inputs {
-        let relative_path = input.path.strip_prefix(database_root).map_err(|_| {
-            HawDBError::Storage(format!(
-                "checkpoint closure artifact {} is outside the database directory",
-                input.path.display()
-            ))
-        })?;
-        let relative_path = relative_path.to_str().ok_or_else(|| {
-            HawDBError::Storage(format!(
-                "checkpoint closure artifact {} has a non-UTF-8 path",
-                input.path.display()
-            ))
-        })?;
+        let relative_path = checkpoint_artifact_relative_path(database_root, &input.path)?;
         bindings.push(CheckpointArtifactBinding {
             relative_path: relative_path.to_string(),
             reference: input.reference,
@@ -3020,7 +3027,7 @@ fn copy_recovery_container(source: &Path, destination: &Path) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::checkpoint_closure::{build_sealed_root, CheckpointClosurePlan};
     use crate::relational::{
@@ -3122,15 +3129,15 @@ mod tests {
         fs::remove_dir_all(path).unwrap();
     }
 
-    struct BranchFixture {
+    pub(in crate::store) struct BranchFixture {
         project: PathBuf,
         objects: PathBuf,
         catalog_path: PathBuf,
-        main: branch_catalog::BranchId,
+        pub(in crate::store) main: branch_catalog::BranchId,
     }
 
     impl BranchFixture {
-        fn new() -> Self {
+        pub(in crate::store) fn new() -> Self {
             Self::new_with_index_mode(crate::config::RelationalIndexMode::Materialized)
         }
 
@@ -3221,7 +3228,7 @@ mod tests {
                 .join("branch.head")
         }
 
-        fn admit(
+        pub(in crate::store) fn admit(
             &self,
             id: branch_catalog::BranchId,
             durability: DurabilityPolicy,

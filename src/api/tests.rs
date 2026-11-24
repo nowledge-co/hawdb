@@ -79,6 +79,7 @@ mod entity_writes;
 mod expression_functions;
 mod external_content_artifacts;
 mod graph_analytics;
+mod graph_bundle_integrity;
 mod graph_change_epoch;
 mod graph_hash_join;
 mod graph_match_reads;
