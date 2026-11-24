@@ -17,8 +17,32 @@ pub(in crate::store) struct GraphBundleCheckpointArtifacts {
 
 impl DurableStore {
     pub(in crate::store) fn graph_generation(&self) -> u64 {
+        self.graph_artifact_generation
+    }
+
+    pub(in crate::store) fn adjacency_generation(&self) -> u64 {
         self.canonical_adjacency_generation_artifacts
             .map_or(self.checkpoint_epoch, |binding| binding.generation)
+    }
+
+    pub(in crate::store) fn reusable_adjacency(
+        &self,
+        catalog: &Catalog,
+        adjacency_change_commit_epoch: u64,
+        config: DerivedArtifactBuildConfig,
+    ) -> Option<CanonicalAdjacencyCheckpointArtifacts> {
+        if self.checkpoint_epoch == 0
+            || adjacency_change_commit_epoch > self.checkpoint_commit_epoch
+            || self.checkpoint_graph_catalog.as_ref()? != catalog
+            || config.adjacency != Default::default()
+            || config.property_projection != Default::default()
+            || self.canonical_adjacency.is_none()
+        {
+            return None;
+        }
+        Some(CanonicalAdjacencyCheckpointArtifacts {
+            generation: self.canonical_adjacency_generation_artifacts?,
+        })
     }
 
     pub(in crate::store) fn reusable_graph_bundle(

@@ -148,22 +148,28 @@ follows the same rule: an intact version of that family outside the reader's
 supported revisions returns `StorageFormatError::UnsupportedVersion { format:
 "storage manifest", found: N, supported }`; any other text is malformed.
 
-The outer manifest writer now emits `hawdb-storage-v2`, with the version line
-before the new graph binding fields. This reader accepts v1 and v2; a v1
-reader explicitly refuses v2. Checkpoint and graph payload codecs remain v1.
+The outer manifest writer now emits `hawdb-storage-v3`, with the version line
+before graph binding fields. This reader accepts v1, v2 and v3; older readers
+explicitly refuse v3. Checkpoint and graph payload codecs remain v1.
 `GraphStore::storage_version()` and `Database::storage_version()` report the
-outer writer revision (v2), rather than a common revision for every payload.
-The engine-wide persistent format version advances from 6 to 7 because an
+outer writer revision (v3), rather than a common revision for every payload.
+The engine-wide persistent format version advances from 7 to 8 because an
 older binary cannot open newly written manifests. Logical dumps remain the
 portable transfer mechanism; no automatic database recreation occurs.
+
+V3 permits adjacency to retain its independent, authenticated physical origin
+across node property updates. The canonical/spill/property bundle may be newer.
+Checkpoint coverage and the WAL replay boundary remain common to all families.
+See [incremental graph checkpoints](INCREMENTAL_GRAPH_CHECKPOINT.md) for the
+eligibility, reader pinning, reclamation and maintenance contracts.
 
 V2 separates checkpoint generation C and its logical commit from graph bundle
 generation G and source commit E. A relational-only checkpoint can carry all
 four graph families at their original G/E, with their original hashes and
 descriptor bindings, while writing the new catalog/relational checkpoint at C.
 Graph WAL changes, direct graph Catalog changes, missing admitted artifacts or
-non-default graph build configurations force a new bundle. No graph family is
-independently mixed with another generation. Current, previous, candidate and
+non-default graph build configurations force a new uniform bundle in v2.
+V3 permits the explicitly bound adjacency exception described above. Current, previous, candidate and
 reader graph roots protect G during reclamation without retaining unrelated
 old relational checkpoint files. See [graph bundle carry](GRAPH_BUNDLE_CARRY.md)
 for invariants, recovery boundaries and qualification limits.

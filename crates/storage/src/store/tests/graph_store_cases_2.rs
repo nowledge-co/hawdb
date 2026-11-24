@@ -498,7 +498,7 @@ fn rejects_unsupported_manifest_storage_version() {
     }
     rewrite_checksummed_file(
         &path.join("manifest.hawdb"),
-        "version\thawdb-storage-v2\n",
+        "version\thawdb-storage-v3\n",
         "version\thawdb-storage-v0\n",
         "manifest",
     );
@@ -510,7 +510,7 @@ fn rejects_unsupported_manifest_storage_version() {
         HawDBError::UnsupportedStorageFormat(hawdb_core::StorageFormatError::UnsupportedVersion {
             format: hawdb_core::STORAGE_MANIFEST_FORMAT,
             found: 0,
-            supported: 2,
+            supported: 3,
         })
     );
     std::fs::remove_dir_all(path).unwrap();

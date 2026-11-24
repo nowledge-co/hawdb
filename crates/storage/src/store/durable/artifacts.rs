@@ -748,17 +748,7 @@ pub(in crate::store) fn load_published_canonical_adjacency(
     let Some(binding) = durable_manifest.canonical_adjacency_generation_artifacts else {
         return Ok(None);
     };
-    let generation = durable_manifest.graph_generation().ok_or_else(|| {
-        HawDBError::Storage(
-            "canonical adjacency metadata requires a checkpoint generation".to_string(),
-        )
-    })?;
-    if binding.generation != generation {
-        return Err(HawDBError::Storage(format!(
-            "canonical adjacency generation {} does not match durable generation {generation}",
-            binding.generation
-        )));
-    }
+    let generation = binding.generation;
     open_budget.admit(
         binding.descriptor_root_artifact.encoded_len,
         "canonical adjacency descriptor root",

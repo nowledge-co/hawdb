@@ -769,6 +769,9 @@ impl GraphStore {
         work.checkpoint().map_err(HawDBError::from_storage_error)?;
         let reused_graph =
             durable.reusable_graph_bundle(catalog, self.graph_change_commit_epoch, build_config);
+        let reused_adjacency = reused_graph.map(|bundle| bundle.adjacency).or_else(|| {
+            durable.reusable_adjacency(catalog, self.adjacency_change_commit_epoch, build_config)
+        });
         let estimated_record_bytes = self.estimated_logical_record_bytes();
         let checkpoint_out_of_core = match self.residency_mode {
             StorageResidencyMode::Materialized => false,
@@ -956,7 +959,7 @@ impl GraphStore {
         let adjacency_relationships = self
             .canonical_base
             .as_ref()
-            .filter(|_| reused_graph.is_none())
+            .filter(|_| reused_adjacency.is_none())
             .map(|_| {
                 Ok::<_, HawDBError>(
                     self.checkpoint_relationship_records_owned(work)?
@@ -1081,7 +1084,7 @@ impl GraphStore {
             #[cfg(test)]
             eprintln!("bounded-preparation-stage adjacency-start");
             if plan.adjacency.is_none() {
-                plan.adjacency = Some(if let Some(bundle) = reused_graph { bundle.adjacency } else { match adjacency_relationships {
+                plan.adjacency = Some(if let Some(adjacency) = reused_adjacency { adjacency } else { match adjacency_relationships {
                 Some(relationships) => durable.write_canonical_adjacency(
                     relationships,
                     generation,
@@ -1477,6 +1480,8 @@ impl GraphStore {
                 relational_overflow_compaction_report,
                 relational_row_compaction_report,
                 manifest_artifacts: CheckpointManifestArtifacts {
+                    graph_generation: reused_graph.map_or(generation, |_| durable.graph_generation()),
+                    graph_source_commit_epoch: reused_graph.map_or(commit_epoch, |_| durable.graph_artifact_source_commit_epoch),
                     checkpoint: checkpoint_artifact,
                     relational_checkpoint: relational_checkpoint_artifact,
                     canonical_manifest: canonical_manifest_artifact,

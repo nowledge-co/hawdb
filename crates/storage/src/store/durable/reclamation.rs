@@ -89,11 +89,17 @@ impl DurableStore {
                 let name = entry.file_name();
                 let name = name.to_str()?;
                 let generation = storage_generation_for_file(name)?;
-                let retained_graph = crate::artifact_files::parse_graph_generation_file(name)
-                    .is_some_and(|graph| {
+                let retained_graph = if let Some(adjacency) =
+                    crate::artifact_files::parse_adjacency_generation_file(name)
+                {
+                    adjacency == self.adjacency_generation()
+                        || Some(adjacency) == self.previous_adjacency_generation
+                } else {
+                    crate::artifact_files::parse_graph_generation_file(name).is_some_and(|graph| {
                         graph == self.graph_generation()
                             || Some(graph) == self.previous_graph_generation
-                    });
+                    })
+                };
                 (generation < retain_from && !retained_graph)
                     .then(|| entry.metadata().ok().map(|metadata| metadata.len()))
                     .flatten()
@@ -226,6 +232,11 @@ impl DurableStore {
             .unwrap_or_default();
         retained_graph_generations.insert(self.graph_generation());
         retained_graph_generations.extend(self.previous_graph_generation);
+        let mut retained_adjacencies = pinned_reader_generations
+            .map(|pins| pins.adjacency_generations().clone())
+            .unwrap_or_default();
+        retained_adjacencies.insert(self.adjacency_generation());
+        retained_adjacencies.extend(self.previous_adjacency_generation);
         retained_generations.insert(current_generation);
         // WAL rotations share the namespace and may leave gaps between
         // checkpoints. Preserve the actual preceding recovery generation.
@@ -268,8 +279,12 @@ impl DurableStore {
                 continue;
             };
             let generation = storage_generation_for_file(name);
-            if let Some(graph_generation) = crate::artifact_files::parse_graph_generation_file(name)
-                && retained_graph_generations.contains(&graph_generation)
+            if let Some(adjacency) = crate::artifact_files::parse_adjacency_generation_file(name) {
+                if retained_adjacencies.contains(&adjacency) {
+                    continue;
+                }
+            } else if crate::artifact_files::parse_graph_generation_file(name)
+                .is_some_and(|graph| retained_graph_generations.contains(&graph))
             {
                 continue;
             }

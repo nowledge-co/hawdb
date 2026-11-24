@@ -626,8 +626,8 @@ impl DurableManifest {
         }
         if let Some(binding) = self.canonical_adjacency_generation_artifacts {
             if binding.generation == 0
-                || Some(binding.generation) != self.graph_generation()
-                || binding.source_commit_epoch != self.graph_source_commit_epoch()
+                || binding.generation > self.graph_generation().unwrap_or(self.checkpoint_epoch)
+                || binding.source_commit_epoch > self.graph_source_commit_epoch()
             {
                 return Err(HawDBError::Storage(format!(
                     "manifest canonical adjacency generation/epoch {}/{} does not match checkpoint {}/{}",
@@ -1199,22 +1199,34 @@ impl DurableManifest {
             "graph_artifact_generation",
             "graph_artifact_source_commit_epoch",
         ] {
-            if (manifest_revision == 2) != seen_fields.contains(field) {
+            if (manifest_revision >= 2) != seen_fields.contains(field) {
                 return Err(HawDBError::Storage(format!("manifest revision {manifest_revision} has an invalid graph bundle field set: {field}")));
             }
         }
-        if manifest_revision == 2
+        if manifest_revision >= 2
             && manifest.checkpoint_generation.is_some()
             && (manifest.graph_artifact_generation.is_none()
                 || manifest.graph_artifact_source_commit_epoch.is_none())
         {
             return Err(HawDBError::Storage(
-                "published v2 manifest requires an explicit graph bundle generation/epoch binding"
+                "published v2/v3 manifest requires an explicit graph bundle generation/epoch binding"
                     .into(),
             ));
         }
         manifest.relational_row_generation_artifacts = relational_row.finish_row()?;
         manifest.canonical_adjacency_generation_artifacts = canonical_adjacency.finish()?;
+        if manifest_revision < 3
+            && manifest
+                .canonical_adjacency_generation_artifacts
+                .is_some_and(|binding| {
+                    Some(binding.generation) != manifest.graph_generation()
+                        || binding.source_commit_epoch != manifest.graph_source_commit_epoch()
+                })
+        {
+            return Err(HawDBError::Storage(
+                "legacy manifest has independent adjacency origins".into(),
+            ));
+        }
         manifest.relational_overflow_generation_artifacts =
             relational_overflow.finish_overflow()?;
         manifest.relational_index_generation_artifacts = relational_index.finish()?;
@@ -1537,10 +1549,13 @@ impl DurableManifest {
 
 pub const STORAGE_VERSION: &str = "hawdb-storage-v1";
 /// Only the outer manifest advances; graph/checkpoint payload codecs remain v1.
-pub const MANIFEST_STORAGE_VERSION: &str = "hawdb-storage-v2";
+pub const MANIFEST_STORAGE_VERSION: &str = "hawdb-storage-v3";
 
 fn validate_manifest_storage_version(version: &str) -> Result<u16> {
     if version == MANIFEST_STORAGE_VERSION {
+        return Ok(3);
+    }
+    if version == "hawdb-storage-v2" {
         return Ok(2);
     }
     if version == STORAGE_VERSION {
@@ -1553,7 +1568,7 @@ fn validate_manifest_storage_version(version: &str) -> Result<u16> {
             hawdb_core::StorageFormatError::UnsupportedVersion {
                 format,
                 found,
-                supported: 2,
+                supported: 3,
             },
         )),
         Err(error) => Err(error),

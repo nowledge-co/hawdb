@@ -39,4 +39,6 @@
 ///
 /// Version 7 (#1641): outer manifest v2 explicitly binds carried graph
 /// generations. Earlier binaries reject that manifest revision.
-pub const PERSISTENT_FORMAT_VERSION: u32 = 7;
+/// Version 8 (#1960): outer manifest v3 separates adjacency origins from the
+/// canonical graph bundle while preserving one checkpoint replay boundary.
+pub const PERSISTENT_FORMAT_VERSION: u32 = 8;

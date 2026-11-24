@@ -2858,11 +2858,7 @@ fn mount_branch_runtime(
         objects,
         artifact_directory,
         &root.checkpoint_bindings,
-        derived_repair.then(|| {
-            manifest
-                .graph_generation()
-                .expect("checkpoint has graph identity")
-        }),
+        derived_repair.then_some(manifest),
     )?;
     // The manifest names the checkpoint's original WAL generation. A seal
     // can omit that empty generation and begin at a newer private generation.
@@ -2883,7 +2879,7 @@ fn mount_checkpoint_bindings(
     objects: &ImmutableObjectStore,
     destination: &Path,
     bindings: &[CheckpointArtifactBinding],
-    derived_repair_generation: Option<u64>,
+    derived_repair_generation: Option<DurableManifest>,
 ) -> Result<()> {
     let project = crate::file_descriptors::ProjectFileDescriptors::registered(destination)?;
     let context = crate::file_descriptors::context_for_path(destination)?;
@@ -2901,9 +2897,24 @@ fn mount_checkpoint_bindings(
             &context,
         );
         if let Err(error) = mounted {
-            let rebuildable = derived_repair_generation.is_some_and(|generation| {
-                super::derived_repair::rebuildable_artifact_kind(&binding.relative_path, generation)
-                    .is_some()
+            let rebuildable = derived_repair_generation.is_some_and(|manifest| {
+                let graph = manifest
+                    .graph_generation()
+                    .expect("checkpoint has graph identity");
+                super::derived_repair::rebuildable_artifact_kind(&binding.relative_path, graph)
+                    == Some(
+                        super::derived_repair::DerivedArtifactKind::PersistentPropertyProjection,
+                    )
+                    || manifest
+                        .canonical_adjacency_generation_artifacts
+                        .is_some_and(|adjacency| {
+                            super::derived_repair::rebuildable_artifact_kind(
+                                &binding.relative_path,
+                                adjacency.generation,
+                            ) == Some(
+                                super::derived_repair::DerivedArtifactKind::CanonicalAdjacency,
+                            )
+                        })
             });
             // Never reinterpret descriptor exhaustion or another I/O failure
             // as corrupt data. Ordinary admission bypasses no closure member.

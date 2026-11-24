@@ -189,7 +189,8 @@ impl DurableStore {
             plan.mark_family_empty(CheckpointArtifactFamily::Canonical)
                 .map_err(HawDBError::from_storage_error)?;
         }
-        if manifest.canonical_adjacency_generation_artifacts.is_some() {
+        if let Some(binding) = manifest.canonical_adjacency_generation_artifacts {
+            let graph_generation = binding.generation;
             add(
                 &mut plan,
                 CheckpointArtifactFamily::Adjacency,
@@ -486,7 +487,8 @@ impl DurableStore {
                     sources.insert(name.clone(), self.root_path.join(name));
                 }
             }
-            if self.canonical_adjacency_generation_artifacts.is_some() {
+            if let Some(binding) = self.canonical_adjacency_generation_artifacts {
+                let graph_generation = binding.generation;
                 sources.insert(
                     canonical_adjacency_artifact_generation_file(graph_generation),
                     self.root_path

@@ -400,14 +400,16 @@ pub struct PublishedReadView {
     checkpoint_commit_epoch: Option<u64>,
     physical_generation: Option<ManifestGeneration>,
     graph_generation: Option<ManifestGeneration>,
+    adjacency_generation: Option<ManifestGeneration>,
 }
 
-/// Checkpoint and graph bases retained by live readers. Keeping the families
-/// separate avoids retaining unrelated old relational files with a graph base.
+/// Checkpoint, canonical graph and adjacency bases retained by live readers.
+/// Separate families avoid retaining unrelated files at an adjacency origin.
 #[derive(Debug, Clone, Default)]
 pub struct PhysicalGenerationPins {
     checkpoints: std::collections::BTreeSet<u64>,
     graphs: std::collections::BTreeSet<u64>,
+    adjacencies: std::collections::BTreeSet<u64>,
     branch_wals: std::collections::BTreeSet<u64>,
 }
 
@@ -417,6 +419,10 @@ impl PhysicalGenerationPins {
     }
     pub(crate) fn graph_generations(&self) -> &std::collections::BTreeSet<u64> {
         &self.graphs
+    }
+
+    pub(crate) fn adjacency_generations(&self) -> &std::collections::BTreeSet<u64> {
+        &self.adjacencies
     }
 
     pub(crate) fn retains_branch_wal(&self, generation: u64) -> bool {
@@ -439,6 +445,8 @@ impl PhysicalGenerationPins {
                 .extend(view.physical_generation.map(|generation| generation.0));
             pins.graphs
                 .extend(view.graph_generation.map(|generation| generation.0));
+            pins.adjacencies
+                .extend(view.adjacency_generation.map(|generation| generation.0));
         }
         pins
     }
@@ -465,6 +473,7 @@ impl PublishedReadView {
             checkpoint_commit_epoch,
             physical_generation,
             graph_generation: physical_generation,
+            adjacency_generation: physical_generation,
         }
     }
 
@@ -472,14 +481,32 @@ impl PublishedReadView {
     pub fn with_graph_generation(mut self, generation: Option<ManifestGeneration>) -> Self {
         debug_assert_eq!(self.physical_generation.is_some(), generation.is_some());
         self.graph_generation = generation;
+        self.adjacency_generation = generation;
         self
+    }
+
+    #[doc(hidden)]
+    pub fn with_adjacency_generation(mut self, generation: Option<ManifestGeneration>) -> Self {
+        debug_assert_eq!(self.physical_generation.is_some(), generation.is_some());
+        self.adjacency_generation = generation;
+        self
+    }
+
+    /// Adjacency origin retained independently from the canonical graph bundle.
+    pub const fn adjacency_generation(self) -> Option<ManifestGeneration> {
+        self.adjacency_generation
     }
 
     /// All physical bases that must remain alive for this read.
     pub fn physical_generations(self) -> impl Iterator<Item = ManifestGeneration> {
-        [self.physical_generation, self.graph_generation]
-            .into_iter()
-            .flatten()
+        [
+            self.physical_generation,
+            self.graph_generation,
+            self.adjacency_generation
+                .filter(|generation| Some(*generation) != self.graph_generation),
+        ]
+        .into_iter()
+        .flatten()
     }
 
     pub const fn visible_commit_epoch(self) -> u64 {

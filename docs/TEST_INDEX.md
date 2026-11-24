@@ -5064,3 +5064,45 @@ with `cargo test --locked -p hawdb-storage --lib -- graph_bundle durable_manifes
 `cargo test --locked -p hawdb --all-features --lib -- read_transaction_retains_carried_graph carried_graph_repair graph_bundle_carry`,
 and the model/evidence/mutant commands in `docs/tla/README.md`. These bounded
 fixtures do not qualify physical devices, Windows namespace behavior or LDBC/TPC-C throughput.
+
+
+### Independent adjacency checkpoint origin
+
+Issue: https://github.com/nowledge-co/hawdb/issues/1960.
+[Design and boundaries](INCREMENTAL_GRAPH_CHECKPOINT.md).
+The existing `//crates/storage:hawdb_storage_tests` owner includes the
+`store::graph_checkpoint::graph_bundle_tests` independent-adjacency cases:
+Materialized/OutOfCore repeated node-property updates, exact carried bytes,
+reopen/backup/restore/scrub, relationship-property invalidation, reader-owned
+adjacency retention independent of canonical files, release/reclamation and
+captured candidate relationship suffix replay, one-epoch mixed node-property
+and relational transaction replay, and Catalog/nondefault configuration refusal.
+Manifest codec guards cover v3
+independent origins, legacy uniform origins, future-version refusal and the
+common checkpoint replay boundary. The existing general root integrity family
+`api::tests::graph_bundle_integrity` now damages a descriptor carried across
+node-property checkpoints with A<G, requiring unchanged head, poisoned owner
+and invalidated captured reader. Existing interrupted derived-repair fixtures
+quarantine and resume A<G sources on both sides of head publication. The existing
+power-loss carry fixture starts from populated A<G roots and retains the full
+lost/torn/reordered plan inventory under both durability policies. Existing test lanes, profiles, timeouts and
+feature matrices are unchanged. Replay through the owning targets, or the
+storage Cargo `graph_bundle_tests` / `durable_manifest::tests` filters.
+
+Manual benchmark (not CI):
+`cargo bench --locked -p hawdb-storage --bench graph_checkpoint_carry -- <new-root> <nodes> <edges> <rounds> <carry|rebuild>`.
+Two untimed warmups precede measured synchronized OutOfCore checkpoints. JSONL
+includes checkpoint duration and newly written graph/adjacency bytes. Node-only
+updates are paired with a relationship-property rebuild control; record
+verification, scrub and reopen run outside timing. Report compilation separately
+from execution and retain raw output. No first-build or remote CI speed claim
+follows from this local manual benchmark.
+
+The companion embedded API measurement includes immutable sealed-root closure
+validation and publication:
+`cargo run --locked --release --example graph_checkpoint_carry_bench -- <new-root> <nodes> <edges> <rounds> <carry|rebuild>`.
+It uses identical workload and warmup conventions through parameter-free fixture
+Cypher and the public `Database::checkpoint` API. Timed work excludes queries
+and record assertions; output labels the API explicitly. Keep these results
+separate from the low-level GraphStore measurement. Both preserve the default
+SyncOnEveryWrite policy and verify records, scrub and reopen outside timing.

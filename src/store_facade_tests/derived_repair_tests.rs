@@ -518,6 +518,9 @@ fn interrupted_branch_repair(stage: CheckpointPublishStage, head_published: bool
     let path = checkpointed_database("interrupted");
     if carried {
         let mut db = Database::open(&path).unwrap();
+        db.query("MATCH (n:Memory {id: 1}) SET n.score = 8")
+            .unwrap();
+        db.checkpoint().unwrap();
         db.query_sql("CREATE TABLE repair_carry (id INTEGER PRIMARY KEY)")
             .unwrap();
         for id in 0..3 {
@@ -529,10 +532,22 @@ fn interrupted_branch_repair(stage: CheckpointPublishStage, head_published: bool
     let manifest = load_active_manifest(&path);
     if carried {
         assert!(manifest.graph_generation().unwrap() < manifest.checkpoint_epoch);
+        assert!(
+            manifest
+                .canonical_adjacency_generation_artifacts
+                .unwrap()
+                .generation
+                < manifest.graph_generation().unwrap()
+        );
     }
     corrupt_checkpoint_artifact(
         &path,
-        &canonical_adjacency_artifact_generation_file(manifest.graph_generation().unwrap()),
+        &canonical_adjacency_artifact_generation_file(
+            manifest
+                .canonical_adjacency_generation_artifacts
+                .unwrap()
+                .generation,
+        ),
     );
     let plan = DatabaseDoctor::plan_derived_artifact_rebuild(
         &path,

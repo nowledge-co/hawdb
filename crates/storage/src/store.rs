@@ -988,10 +988,14 @@ pub struct GraphStore {
     /// Commit epoch of the newest commit that changed graph data or graph
     /// schema; relational-only and append-only commits leave it unchanged.
     graph_change_commit_epoch: u64,
+    // Latest committed operation that can invalidate inline relationship data
+    // or adjacency topology; compared with checkpoint coverage, not build epoch.
+    adjacency_change_commit_epoch: u64,
     /// Whether the WAL record most recently appended for a pending commit
     /// changes the graph. `finish_non_relational_commit` consumes it so live
     /// commits classify exactly like WAL replay.
     pending_commit_changes_graph: bool,
+    pending_commit_changes_adjacency: bool,
     // A maintenance capture's monotonic floor for any post-snapshot debt.
     // Live writers normally have no capture clock; handoff restores that fact.
     checkpoint_capture_started: Option<std::time::Instant>,
@@ -2024,7 +2028,9 @@ impl GraphStore {
             next_rel_id: 0,
             commit_epoch: 0,
             graph_change_commit_epoch: 0,
+            adjacency_change_commit_epoch: 0,
             pending_commit_changes_graph: false,
+            pending_commit_changes_adjacency: false,
             checkpoint_capture_started: None,
             version_index: hawdb_storage::version::VersionIndex::default(),
             version_snapshot_pins: Default::default(),
@@ -2267,6 +2273,9 @@ impl GraphStore {
         )
         .with_graph_generation(
             checkpoint.map(|durable| ManifestGeneration(durable.graph_generation())),
+        )
+        .with_adjacency_generation(
+            checkpoint.map(|durable| ManifestGeneration(durable.adjacency_generation())),
         )
     }
 
@@ -2550,7 +2559,9 @@ impl GraphStore {
             next_rel_id: self.next_rel_id,
             commit_epoch: self.commit_epoch,
             graph_change_commit_epoch: self.graph_change_commit_epoch,
+            adjacency_change_commit_epoch: self.adjacency_change_commit_epoch,
             pending_commit_changes_graph: self.pending_commit_changes_graph,
+            pending_commit_changes_adjacency: self.pending_commit_changes_adjacency,
             checkpoint_capture_started: self.checkpoint_capture_started,
             version_index: self.version_index.clone(),
             version_snapshot_pins: self.version_snapshot_pins.clone(),

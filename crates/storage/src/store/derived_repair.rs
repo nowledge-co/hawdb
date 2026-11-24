@@ -373,8 +373,14 @@ fn validate_branch_derived_objects(store: &GraphStore, kind: DerivedArtifactKind
         .checkpoint_bindings
         .iter()
         .filter(|binding| {
-            rebuildable_artifact_kind(&binding.relative_path, durable.graph_generation())
-                == Some(kind)
+            audit::target_files(
+                kind,
+                match kind {
+                    DerivedArtifactKind::CanonicalAdjacency => durable.adjacency_generation(),
+                    DerivedArtifactKind::PersistentPropertyProjection => durable.graph_generation(),
+                },
+            )
+            .contains(&binding.relative_path)
         })
         .map(|binding| binding.reference)
         .collect::<std::collections::BTreeSet<_>>();

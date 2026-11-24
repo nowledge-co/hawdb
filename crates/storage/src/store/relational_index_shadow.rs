@@ -674,6 +674,9 @@ impl GraphStore {
         if std::mem::take(&mut self.pending_commit_changes_graph) {
             self.graph_change_commit_epoch = next_commit_epoch;
         }
+        if std::mem::take(&mut self.pending_commit_changes_adjacency) {
+            self.adjacency_change_commit_epoch = next_commit_epoch;
+        }
         self.version_index.apply_database_barrier(next_commit_epoch);
         self.publish_relational_index_live_view(index_publication);
         self.publish_relational_row_live_view(row_publication);

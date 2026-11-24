@@ -315,6 +315,7 @@ pub(super) fn validate_backup_files(
             .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
     }
     if let Some(binding) = manifest.canonical_adjacency_generation_artifacts {
+        let graph_generation = binding.generation;
         let adjacency_artifact_name =
             canonical_adjacency_artifact_generation_file(graph_generation);
         let descriptor_page_name =
