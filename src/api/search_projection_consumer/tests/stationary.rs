@@ -178,6 +178,7 @@ fn registered_stationary_completed_ledger_rows_allow_more_than_256_catch_ups() {
 
 /// Search artifact reads beside a paused immutable-object retirement of the
 /// same project (#1959).
+#[cfg(feature = "test-support")]
 #[test]
 fn search_artifact_reads_survive_a_paused_immutable_retirement() {
     use crate::api::tests::immutable_retirement_reads::{evict, project, read_while_retiring};

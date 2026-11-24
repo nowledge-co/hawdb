@@ -87,6 +87,7 @@ mod graph_meta;
 mod graph_rag_schema_guidance;
 mod hidden_row_id;
 mod identity_group_keys;
+#[cfg(feature = "test-support")]
 pub(super) mod immutable_retirement_reads;
 mod induced_edge_reads;
 mod joint_ndv_statistics;
