@@ -50,5 +50,9 @@
     "groups": 2,
     "measured_pairs_per_group": 60,
     "purpose": "quantify protocol/host variation with identical baseline code, not no-regression acceptance"
-  }
+  },
+  "prepared_impact_revision": "6a378114156967f45972b49d0bc29ee25ed7874b",
+  "prepared_impact_ordinary_suite": "paired-prepared-impact-idle-suite",
+  "prepared_impact_acceptance": "ordinary foreground medians no longer show previous 1%-2% increases; tail acceptance remains open",
+  "prepared_impact_observations": "host-prepared-impact.json"
 }

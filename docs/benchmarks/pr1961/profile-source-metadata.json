@@ -1,0 +1,23 @@
+{
+  "pre_fix_runtime": "990f87b56d14755664680cca94035fa0421a038c",
+  "fixed_runtime": "6a378114156967f45972b49d0bc29ee25ed7874b",
+  "baseline": "5efcc9a2692fb7682b80093141588b2a741d52bf",
+  "pre_fix_harness_sha256": "f77224d0eea80246191fe8850054e6b8374d14cda72f03ca9d05f596eac7a961",
+  "fixed_harness_sha256": "cf1fb7bacac76e95a90ae456c1f6927947e04b21d0ccba86afd8b2daf3ccd269",
+  "pre_fix_harness_difference": "The final harness adds a no-op let _ = telemetry for non-Unix compilation; macOS observation behavior is unchanged.",
+  "smoke_status": "Functional preflight only, under concurrent host compilation; not performance acceptance",
+  "fixed_release_build_elapsed": "8m40s under concurrent host compilation",
+  "acceptance": "Both phase-decomposition suites were under host load and are diagnostic only. Not a no-regression or causal before/after experiment.",
+  "published_script_identity": {
+    "run_profile.py": {
+      "executed_source_sha256": "e483b1d8497e524ff01b1e432b44449bc9f062e0a6290b2f44a2f3f2d3284b21",
+      "published_source_sha256": "b89d98ea00be5a3fc13fb6e8f25afe0fe03eb3cb4de91f1d5b052dc3cb4eacd1",
+      "change": "Black 24.8 formatting only; AST equality verified"
+    },
+    "sample_checkpoint.py": {
+      "executed_source_sha256": "a538c5fd5e2048a8c50b4799d874f2ffbd24335c5d8cb3c7221728db05042f47",
+      "published_source_sha256": "cf972e5d65a6b9ed25bc45dedd1ff716837e24de94dd17b2df320c3f4098b036",
+      "change": "Black 24.8 formatting only; AST equality verified"
+    }
+  }
+}

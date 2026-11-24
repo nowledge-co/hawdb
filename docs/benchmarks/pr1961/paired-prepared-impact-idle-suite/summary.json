@@ -1,0 +1,578 @@
+[
+  {
+    "nodes": 128,
+    "edges": 512,
+    "workload": "node_property",
+    "measured_pairs": 60,
+    "distributions": {
+      "baseline": {
+        "checkpoint_ns": {
+          "p50": 462859250.0,
+          "p95": 501769834,
+          "p99": 586960875,
+          "minimum": 416761042,
+          "maximum": 586960875
+        },
+        "mutation_ns": {
+          "p50": 4601645.5,
+          "p95": 5194708,
+          "p99": 5418292,
+          "minimum": 3347334,
+          "maximum": 5418292
+        },
+        "total_ns": {
+          "p50": 467845083.0,
+          "p95": 506804167,
+          "p99": 591195875,
+          "minimum": 421366625,
+          "maximum": 591195875
+        },
+        "new_graph_bytes": {
+          "p50": 167927.5,
+          "p95": 167931,
+          "p99": 167931,
+          "minimum": 167923,
+          "maximum": 167931
+        },
+        "new_adjacency_bytes": {
+          "p50": 107154.0,
+          "p95": 107154,
+          "p99": 107154,
+          "minimum": 107154,
+          "maximum": 107154
+        }
+      },
+      "candidate": {
+        "checkpoint_ns": {
+          "p50": 416041979.0,
+          "p95": 512795500,
+          "p99": 780091750,
+          "minimum": 371924041,
+          "maximum": 780091750
+        },
+        "mutation_ns": {
+          "p50": 4512687.5,
+          "p95": 5084166,
+          "p99": 5215000,
+          "minimum": 3636042,
+          "maximum": 5215000
+        },
+        "total_ns": {
+          "p50": 420633145.5,
+          "p95": 517430958,
+          "p99": 784337542,
+          "minimum": 375693041,
+          "maximum": 784337542
+        },
+        "new_graph_bytes": {
+          "p50": 60773.5,
+          "p95": 60777,
+          "p99": 60777,
+          "minimum": 60769,
+          "maximum": 60777
+        },
+        "new_adjacency_bytes": {
+          "p50": 0.0,
+          "p95": 0,
+          "p99": 0,
+          "minimum": 0,
+          "maximum": 0
+        }
+      }
+    },
+    "paired_changes": {
+      "checkpoint_ns": {
+        "percent": {
+          "p50": -10.918727436045277,
+          "p95": 14.153186369768523,
+          "p99": 71.85519267960956,
+          "minimum": -20.902670984072692,
+          "maximum": 71.85519267960956
+        },
+        "absolute_ns": {
+          "p50": -50604375.0,
+          "p95": 60980000,
+          "p99": 326167875,
+          "minimum": -107589749,
+          "maximum": 326167875
+        },
+        "baseline_first_median_percent": -9.56413326905265,
+        "candidate_first_median_percent": -11.108352617854061,
+        "first_half_median_percent": -9.801099694581005,
+        "second_half_median_percent": -11.474071901141002
+      },
+      "mutation_ns": {
+        "percent": {
+          "p50": -1.2396868847218911,
+          "p95": 22.067816880218103,
+          "p99": 40.877038263884025,
+          "minimum": -20.34851573152573,
+          "maximum": 40.877038263884025
+        },
+        "absolute_ns": {
+          "p50": -54542.0,
+          "p95": 919667,
+          "p99": 1368291,
+          "minimum": -1102542,
+          "maximum": 1368291
+        },
+        "baseline_first_median_percent": -4.379081231858873,
+        "candidate_first_median_percent": -0.06557544473073662,
+        "first_half_median_percent": -2.5372282043667482,
+        "second_half_median_percent": -0.8662607627957231
+      },
+      "total_ns": {
+        "percent": {
+          "p50": -10.890965636066085,
+          "p95": 14.293938304038445,
+          "p99": 71.06875249059372,
+          "minimum": -20.822284399150213,
+          "maximum": 71.06875249059372
+        },
+        "absolute_ns": {
+          "p50": -50930292.5,
+          "p95": 62105792,
+          "p99": 325844959,
+          "minimum": -108205916,
+          "maximum": 325844959
+        },
+        "baseline_first_median_percent": -9.552160798100834,
+        "candidate_first_median_percent": -11.069563858935112,
+        "first_half_median_percent": -9.696826033457334,
+        "second_half_median_percent": -11.379589068269265
+      }
+    }
+  },
+  {
+    "nodes": 128,
+    "edges": 512,
+    "workload": "relationship_property",
+    "measured_pairs": 60,
+    "distributions": {
+      "baseline": {
+        "checkpoint_ns": {
+          "p50": 463833083.0,
+          "p95": 489948084,
+          "p99": 502174250,
+          "minimum": 423434792,
+          "maximum": 502174250
+        },
+        "mutation_ns": {
+          "p50": 7097708.0,
+          "p95": 8177667,
+          "p99": 8687666,
+          "minimum": 5354375,
+          "maximum": 8687666
+        },
+        "total_ns": {
+          "p50": 471673562.5,
+          "p95": 497103375,
+          "p99": 509914667,
+          "minimum": 429639876,
+          "maximum": 509914667
+        },
+        "new_graph_bytes": {
+          "p50": 167927.0,
+          "p95": 167930,
+          "p99": 167932,
+          "minimum": 167922,
+          "maximum": 167932
+        },
+        "new_adjacency_bytes": {
+          "p50": 107154.0,
+          "p95": 107154,
+          "p99": 107154,
+          "minimum": 107154,
+          "maximum": 107154
+        }
+      },
+      "candidate": {
+        "checkpoint_ns": {
+          "p50": 464942375.0,
+          "p95": 488343917,
+          "p99": 505284583,
+          "minimum": 435138458,
+          "maximum": 505284583
+        },
+        "mutation_ns": {
+          "p50": 6954270.5,
+          "p95": 8274291,
+          "p99": 8490167,
+          "minimum": 5281875,
+          "maximum": 8490167
+        },
+        "total_ns": {
+          "p50": 471779229.0,
+          "p95": 495323333,
+          "p99": 511832958,
+          "minimum": 440461875,
+          "maximum": 511832958
+        },
+        "new_graph_bytes": {
+          "p50": 167927.0,
+          "p95": 167930,
+          "p99": 167932,
+          "minimum": 167922,
+          "maximum": 167932
+        },
+        "new_adjacency_bytes": {
+          "p50": 107154.0,
+          "p95": 107154,
+          "p99": 107154,
+          "minimum": 107154,
+          "maximum": 107154
+        }
+      }
+    },
+    "paired_changes": {
+      "checkpoint_ns": {
+        "percent": {
+          "p50": 0.05810495124098369,
+          "p95": 7.0783376956721655,
+          "p99": 16.448947231733246,
+          "minimum": -10.80931295983224,
+          "maximum": 16.448947231733246
+        },
+        "absolute_ns": {
+          "p50": 286395.5,
+          "p95": 32752834,
+          "p99": 70779916,
+          "minimum": -54084500,
+          "maximum": 70779916
+        },
+        "baseline_first_median_percent": 0.05810495124098369,
+        "candidate_first_median_percent": 0.12085051929996982,
+        "first_half_median_percent": -0.32311537254598455,
+        "second_half_median_percent": 0.6508798517284031
+      },
+      "mutation_ns": {
+        "percent": {
+          "p50": -1.179623391064083,
+          "p95": 22.605077296949226,
+          "p99": 30.162250496089648,
+          "minimum": -35.41097968405904,
+          "maximum": 30.162250496089648
+        },
+        "absolute_ns": {
+          "p50": -84166.5,
+          "p95": 1346042,
+          "p99": 1781875,
+          "minimum": -2895792,
+          "maximum": 1781875
+        },
+        "baseline_first_median_percent": 7.12066398756096,
+        "candidate_first_median_percent": -2.081147217457091,
+        "first_half_median_percent": -3.1643812824831477,
+        "second_half_median_percent": 3.7457751751228563
+      },
+      "total_ns": {
+        "percent": {
+          "p50": 0.0945543713841479,
+          "p95": 6.512043562193992,
+          "p99": 16.34942862001352,
+          "minimum": -10.637261783254415,
+          "maximum": 16.34942862001352
+        },
+        "absolute_ns": {
+          "p50": 452021.0,
+          "p95": 30621208,
+          "p99": 71285791,
+          "minimum": -54240958,
+          "maximum": 71285791
+        },
+        "baseline_first_median_percent": 0.19385444701111032,
+        "candidate_first_median_percent": -0.01590185741764949,
+        "first_half_median_percent": -0.36827027828003067,
+        "second_half_median_percent": 0.43248055122604434
+      }
+    }
+  },
+  {
+    "nodes": 512,
+    "edges": 4096,
+    "workload": "node_property",
+    "measured_pairs": 60,
+    "distributions": {
+      "baseline": {
+        "checkpoint_ns": {
+          "p50": 448554063.0,
+          "p95": 499690042,
+          "p99": 689366292,
+          "minimum": 429196208,
+          "maximum": 689366292
+        },
+        "mutation_ns": {
+          "p50": 5572187.5,
+          "p95": 6455041,
+          "p99": 7297708,
+          "minimum": 5016500,
+          "maximum": 7297708
+        },
+        "total_ns": {
+          "p50": 454105750.5,
+          "p95": 506083708,
+          "p99": 695084542,
+          "minimum": 435299250,
+          "maximum": 695084542
+        },
+        "new_graph_bytes": {
+          "p50": 1109565.0,
+          "p95": 1109568,
+          "p99": 1109569,
+          "minimum": 1109560,
+          "maximum": 1109569
+        },
+        "new_adjacency_bytes": {
+          "p50": 685458.0,
+          "p95": 685458,
+          "p99": 685458,
+          "minimum": 685458,
+          "maximum": 685458
+        }
+      },
+      "candidate": {
+        "checkpoint_ns": {
+          "p50": 393503167.0,
+          "p95": 426532917,
+          "p99": 591780417,
+          "minimum": 370684833,
+          "maximum": 591780417
+        },
+        "mutation_ns": {
+          "p50": 5608771.0,
+          "p95": 6683084,
+          "p99": 9168083,
+          "minimum": 5064291,
+          "maximum": 9168083
+        },
+        "total_ns": {
+          "p50": 400083375.0,
+          "p95": 432084876,
+          "p99": 597213625,
+          "minimum": 376089667,
+          "maximum": 597213625
+        },
+        "new_graph_bytes": {
+          "p50": 424107.0,
+          "p95": 424110,
+          "p99": 424111,
+          "minimum": 424102,
+          "maximum": 424111
+        },
+        "new_adjacency_bytes": {
+          "p50": 0.0,
+          "p95": 0,
+          "p99": 0,
+          "minimum": 0,
+          "maximum": 0
+        }
+      }
+    },
+    "paired_changes": {
+      "checkpoint_ns": {
+        "percent": {
+          "p50": -12.223144051437107,
+          "p95": -2.756409353088274,
+          "p99": 31.294099362948515,
+          "minimum": -43.48623692206871,
+          "maximum": 31.294099362948515
+        },
+        "absolute_ns": {
+          "p50": -54818395.5,
+          "p95": -12090250,
+          "p99": 141051542,
+          "minimum": -299779459,
+          "maximum": 141051542
+        },
+        "baseline_first_median_percent": -12.223144051437107,
+        "candidate_first_median_percent": -12.122961504899227,
+        "first_half_median_percent": -12.223144051437107,
+        "second_half_median_percent": -12.223302494741327
+      },
+      "mutation_ns": {
+        "percent": {
+          "p50": 0.011129876198473498,
+          "p95": 14.205584144701344,
+          "p99": 66.8301592278279,
+          "minimum": -14.251977074267241,
+          "maximum": 66.8301592278279
+        },
+        "absolute_ns": {
+          "p50": 437.0,
+          "p95": 797875,
+          "p99": 3672624,
+          "minimum": -925749,
+          "maximum": 3672624
+        },
+        "baseline_first_median_percent": -0.48319373308589597,
+        "candidate_first_median_percent": 1.3408969365971912,
+        "first_half_median_percent": -0.6968090040080699,
+        "second_half_median_percent": 1.508056712819017
+      },
+      "total_ns": {
+        "percent": {
+          "p50": -12.136735272918209,
+          "p95": -2.738898261686762,
+          "p99": 30.916951992579712,
+          "minimum": -43.15919242525753,
+          "maximum": 30.916951992579712
+        },
+        "absolute_ns": {
+          "p50": -54357042.0,
+          "p95": -12167624,
+          "p99": 141036166,
+          "minimum": -299992875,
+          "maximum": 141036166
+        },
+        "baseline_first_median_percent": -12.136735272918209,
+        "candidate_first_median_percent": -12.016994242265056,
+        "first_half_median_percent": -12.136735272918209,
+        "second_half_median_percent": -12.016994242265056
+      }
+    }
+  },
+  {
+    "nodes": 512,
+    "edges": 4096,
+    "workload": "relationship_property",
+    "measured_pairs": 60,
+    "distributions": {
+      "baseline": {
+        "checkpoint_ns": {
+          "p50": 467321791.5,
+          "p95": 622076333,
+          "p99": 810841208,
+          "minimum": 434907625,
+          "maximum": 810841208
+        },
+        "mutation_ns": {
+          "p50": 23591750.0,
+          "p95": 27564916,
+          "p99": 28473166,
+          "minimum": 18598791,
+          "maximum": 28473166
+        },
+        "total_ns": {
+          "p50": 492487645.5,
+          "p95": 640736500,
+          "p99": 830678208,
+          "minimum": 453747583,
+          "maximum": 830678208
+        },
+        "new_graph_bytes": {
+          "p50": 1109565.0,
+          "p95": 1109568,
+          "p99": 1109570,
+          "minimum": 1109560,
+          "maximum": 1109570
+        },
+        "new_adjacency_bytes": {
+          "p50": 685458.0,
+          "p95": 685458,
+          "p99": 685458,
+          "minimum": 685458,
+          "maximum": 685458
+        }
+      },
+      "candidate": {
+        "checkpoint_ns": {
+          "p50": 471341604.0,
+          "p95": 662294542,
+          "p99": 977947292,
+          "minimum": 433011250,
+          "maximum": 977947292
+        },
+        "mutation_ns": {
+          "p50": 23208312.5,
+          "p95": 27453208,
+          "p99": 37821417,
+          "minimum": 18369709,
+          "maximum": 37821417
+        },
+        "total_ns": {
+          "p50": 496400979.0,
+          "p95": 688138417,
+          "p99": 1000966001,
+          "minimum": 451859208,
+          "maximum": 1000966001
+        },
+        "new_graph_bytes": {
+          "p50": 1109565.0,
+          "p95": 1109568,
+          "p99": 1109570,
+          "minimum": 1109560,
+          "maximum": 1109570
+        },
+        "new_adjacency_bytes": {
+          "p50": 685458.0,
+          "p95": 685458,
+          "p99": 685458,
+          "minimum": 685458,
+          "maximum": 685458
+        }
+      }
+    },
+    "paired_changes": {
+      "checkpoint_ns": {
+        "percent": {
+          "p50": 0.6858005594145067,
+          "p95": 25.580709113860966,
+          "p99": 118.23876887062323,
+          "minimum": -42.38961397235745,
+          "maximum": 118.23876887062323
+        },
+        "absolute_ns": {
+          "p50": 3359792.0,
+          "p95": 118748583,
+          "p99": 529838417,
+          "minimum": -343712458,
+          "maximum": 529838417
+        },
+        "baseline_first_median_percent": 1.0584360222314793,
+        "candidate_first_median_percent": 0.5859683093112467,
+        "first_half_median_percent": -0.29855814586172147,
+        "second_half_median_percent": 1.7589204051247975
+      },
+      "mutation_ns": {
+        "percent": {
+          "p50": 0.10733486958941496,
+          "p95": 22.230001400252043,
+          "p99": 34.65049838932779,
+          "minimum": -25.395432313032508,
+          "maximum": 34.65049838932779
+        },
+        "absolute_ns": {
+          "p50": 27896.0,
+          "p95": 4167375,
+          "p99": 9732834,
+          "minimum": -6438250,
+          "maximum": 9732834
+        },
+        "baseline_first_median_percent": 0.8174785688440878,
+        "candidate_first_median_percent": -0.12154152528263684,
+        "first_half_median_percent": 0.27856328016959697,
+        "second_half_median_percent": 0.027050584919047216
+      },
+      "total_ns": {
+        "percent": {
+          "p50": 0.7709984711798512,
+          "p95": 24.70345068274751,
+          "p99": 112.84830927633371,
+          "minimum": -41.53846780581488,
+          "maximum": 112.84830927633371
+        },
+        "absolute_ns": {
+          "p50": 3583145.5,
+          "p95": 119270792,
+          "p99": 530694001,
+          "minimum": -345051000,
+          "maximum": 530694001
+        },
+        "baseline_first_median_percent": 1.106967717368268,
+        "candidate_first_median_percent": 0.7080488977750821,
+        "first_half_median_percent": -0.4766526880181865,
+        "second_half_median_percent": 1.610427777229273
+      }
+    }
+  }
+]

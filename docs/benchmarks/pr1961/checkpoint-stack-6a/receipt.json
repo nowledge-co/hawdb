@@ -1,0 +1,17 @@
+{
+  "command": [
+    "/Users/hawkingrei/devel/opensource/skein/.context/perf-recovery-20261124/evidence/incremental-adjacency/profile-fixed-bin/embedded-paired-candidate",
+    "/Users/hawkingrei/devel/opensource/skein/.context/perf-recovery-20261124/evidence/incremental-adjacency/checkpoint-stack-6a/fixture",
+    "512",
+    "4096",
+    "22",
+    "carry",
+    "step-relationship",
+    "cpu-profile"
+  ],
+  "worker_pid": 38533,
+  "worker_exit": 0,
+  "sampler_exit": 0,
+  "binary_sha256": "dcae1ed367aef60f6f60e874767a2927633293974bad94f20651d24b587b62bf",
+  "purpose": "under-load stack attribution only; not comparative acceptance"
+}

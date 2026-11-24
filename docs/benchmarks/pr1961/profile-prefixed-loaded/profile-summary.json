@@ -1,0 +1,1242 @@
+[
+  {
+    "nodes": 128,
+    "edges": 512,
+    "workload": "node_property",
+    "measured_pairs": 18,
+    "distributions": {
+      "baseline": {
+        "mutation": {
+          "wall_ns": {
+            "median": 4219667.0,
+            "mean": 4366391.333333333,
+            "maximum": 5113250
+          },
+          "cpu_ns": {
+            "median": 837500.0,
+            "mean": 866944.4444444445,
+            "maximum": 1165000
+          },
+          "input_blocks": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "involuntary_switches": {
+            "median": 2.0,
+            "mean": 2.0555555555555554,
+            "maximum": 5
+          },
+          "major_faults": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "minor_faults": {
+            "median": 0.0,
+            "mean": 0.05555555555555555,
+            "maximum": 1
+          },
+          "output_blocks": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "system_ns": {
+            "median": 139000.0,
+            "mean": 149222.22222222222,
+            "maximum": 246000
+          },
+          "user_ns": {
+            "median": 693000.0,
+            "mean": 717722.2222222222,
+            "maximum": 972000
+          },
+          "voluntary_switches": {
+            "median": 4.0,
+            "mean": 4.111111111111111,
+            "maximum": 5
+          },
+          "wal_appends": {
+            "median": 1.0,
+            "mean": 1,
+            "maximum": 1
+          },
+          "wal_bytes": {
+            "median": 1956.0,
+            "mean": 1956,
+            "maximum": 1956
+          },
+          "wal_elapsed_micros": {
+            "median": 3586.5,
+            "mean": 3649.8333333333335,
+            "maximum": 4446
+          },
+          "wal_fsync_micros": {
+            "median": 3512.5,
+            "mean": 3552.1666666666665,
+            "maximum": 4344
+          },
+          "outside_wal_fsync_ns": {
+            "median": 772750.0,
+            "mean": 814224.6666666666,
+            "maximum": 1133375
+          }
+        },
+        "checkpoint": {
+          "wall_ns": {
+            "median": 456587000.0,
+            "mean": 462862037.1111111,
+            "maximum": 543935375
+          },
+          "cpu_ns": {
+            "median": 59227000.0,
+            "mean": 58681111.11111111,
+            "maximum": 64492000
+          },
+          "input_blocks": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "involuntary_switches": {
+            "median": 123.0,
+            "mean": 119.77777777777777,
+            "maximum": 178
+          },
+          "major_faults": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "minor_faults": {
+            "median": 1.0,
+            "mean": 4.388888888888889,
+            "maximum": 56
+          },
+          "output_blocks": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "system_ns": {
+            "median": 52308000.0,
+            "mean": 51680222.222222224,
+            "maximum": 56964000
+          },
+          "user_ns": {
+            "median": 6987000.0,
+            "mean": 7000888.888888889,
+            "maximum": 7669000
+          },
+          "voluntary_switches": {
+            "median": 359.0,
+            "mean": 365.6111111111111,
+            "maximum": 454
+          },
+          "wal_appends": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "wal_bytes": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "wal_elapsed_micros": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "wal_fsync_micros": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          }
+        }
+      },
+      "candidate": {
+        "mutation": {
+          "wall_ns": {
+            "median": 4217916.5,
+            "mean": 4295622.555555556,
+            "maximum": 5237625
+          },
+          "cpu_ns": {
+            "median": 846500.0,
+            "mean": 845111.1111111111,
+            "maximum": 1188000
+          },
+          "input_blocks": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "involuntary_switches": {
+            "median": 2.0,
+            "mean": 2.0555555555555554,
+            "maximum": 7
+          },
+          "major_faults": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "minor_faults": {
+            "median": 0.0,
+            "mean": 0.16666666666666666,
+            "maximum": 1
+          },
+          "output_blocks": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "system_ns": {
+            "median": 136000.0,
+            "mean": 142000,
+            "maximum": 217000
+          },
+          "user_ns": {
+            "median": 702500.0,
+            "mean": 703111.1111111111,
+            "maximum": 1007000
+          },
+          "voluntary_switches": {
+            "median": 4.0,
+            "mean": 4.055555555555555,
+            "maximum": 5
+          },
+          "wal_appends": {
+            "median": 1.0,
+            "mean": 1,
+            "maximum": 1
+          },
+          "wal_bytes": {
+            "median": 1956.0,
+            "mean": 1956,
+            "maximum": 1956
+          },
+          "wal_elapsed_micros": {
+            "median": 3520.5,
+            "mean": 3595.1666666666665,
+            "maximum": 4207
+          },
+          "wal_fsync_micros": {
+            "median": 3446.5,
+            "mean": 3500.3888888888887,
+            "maximum": 4087
+          },
+          "outside_wal_fsync_ns": {
+            "median": 790854.0,
+            "mean": 795233.6666666666,
+            "maximum": 1150625
+          }
+        },
+        "checkpoint": {
+          "wall_ns": {
+            "median": 404454500.0,
+            "mean": 409223159.7777778,
+            "maximum": 442023125
+          },
+          "cpu_ns": {
+            "median": 51113000.0,
+            "mean": 51972166.666666664,
+            "maximum": 57664000
+          },
+          "input_blocks": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "involuntary_switches": {
+            "median": 98.5,
+            "mean": 103.38888888888889,
+            "maximum": 155
+          },
+          "major_faults": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "minor_faults": {
+            "median": 0.0,
+            "mean": 0.7777777777777778,
+            "maximum": 3
+          },
+          "output_blocks": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "system_ns": {
+            "median": 45250500.0,
+            "mean": 46005444.44444445,
+            "maximum": 51228000
+          },
+          "user_ns": {
+            "median": 5862500.0,
+            "mean": 5966722.222222222,
+            "maximum": 6581000
+          },
+          "voluntary_switches": {
+            "median": 320.5,
+            "mean": 323.6111111111111,
+            "maximum": 351
+          },
+          "wal_appends": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "wal_bytes": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "wal_elapsed_micros": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "wal_fsync_micros": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          }
+        }
+      }
+    }
+  },
+  {
+    "nodes": 128,
+    "edges": 512,
+    "workload": "relationship_property",
+    "measured_pairs": 18,
+    "distributions": {
+      "baseline": {
+        "mutation": {
+          "wall_ns": {
+            "median": 6262083.5,
+            "mean": 6399039.5,
+            "maximum": 7175000
+          },
+          "cpu_ns": {
+            "median": 2634500.0,
+            "mean": 2646611.111111111,
+            "maximum": 3281000
+          },
+          "input_blocks": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "involuntary_switches": {
+            "median": 4.0,
+            "mean": 4.666666666666667,
+            "maximum": 9
+          },
+          "major_faults": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "minor_faults": {
+            "median": 1.0,
+            "mean": 1.5555555555555556,
+            "maximum": 4
+          },
+          "output_blocks": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "system_ns": {
+            "median": 240000.0,
+            "mean": 241555.55555555556,
+            "maximum": 322000
+          },
+          "user_ns": {
+            "median": 2402500.0,
+            "mean": 2405055.5555555555,
+            "maximum": 2959000
+          },
+          "voluntary_switches": {
+            "median": 4.0,
+            "mean": 4,
+            "maximum": 4
+          },
+          "wal_appends": {
+            "median": 1.0,
+            "mean": 1,
+            "maximum": 1
+          },
+          "wal_bytes": {
+            "median": 8612.0,
+            "mean": 8612,
+            "maximum": 8612
+          },
+          "wal_elapsed_micros": {
+            "median": 3841.0,
+            "mean": 3960.8888888888887,
+            "maximum": 4898
+          },
+          "wal_fsync_micros": {
+            "median": 3720.5,
+            "mean": 3842.5,
+            "maximum": 4798
+          },
+          "outside_wal_fsync_ns": {
+            "median": 2505979.5,
+            "mean": 2556539.5,
+            "maximum": 3176000
+          }
+        },
+        "checkpoint": {
+          "wall_ns": {
+            "median": 481246041.5,
+            "mean": 501703462.8888889,
+            "maximum": 638809792
+          },
+          "cpu_ns": {
+            "median": 57932500.0,
+            "mean": 58400555.55555555,
+            "maximum": 66467000
+          },
+          "input_blocks": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "involuntary_switches": {
+            "median": 97.0,
+            "mean": 114.11111111111111,
+            "maximum": 190
+          },
+          "major_faults": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "minor_faults": {
+            "median": 6.0,
+            "mean": 5.722222222222222,
+            "maximum": 9
+          },
+          "output_blocks": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "system_ns": {
+            "median": 50880500.0,
+            "mean": 51250111.11111111,
+            "maximum": 58476000
+          },
+          "user_ns": {
+            "median": 7121500.0,
+            "mean": 7150444.444444444,
+            "maximum": 8020000
+          },
+          "voluntary_switches": {
+            "median": 378.5,
+            "mean": 399.44444444444446,
+            "maximum": 534
+          },
+          "wal_appends": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "wal_bytes": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "wal_elapsed_micros": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "wal_fsync_micros": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          }
+        }
+      },
+      "candidate": {
+        "mutation": {
+          "wall_ns": {
+            "median": 6109229.0,
+            "mean": 6200682.944444444,
+            "maximum": 7141625
+          },
+          "cpu_ns": {
+            "median": 2507000.0,
+            "mean": 2605611.111111111,
+            "maximum": 3064000
+          },
+          "input_blocks": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "involuntary_switches": {
+            "median": 4.0,
+            "mean": 5.222222222222222,
+            "maximum": 19
+          },
+          "major_faults": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "minor_faults": {
+            "median": 2.0,
+            "mean": 2.7222222222222223,
+            "maximum": 6
+          },
+          "output_blocks": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "system_ns": {
+            "median": 224000.0,
+            "mean": 234833.33333333334,
+            "maximum": 341000
+          },
+          "user_ns": {
+            "median": 2309000.0,
+            "mean": 2370777.777777778,
+            "maximum": 2809000
+          },
+          "voluntary_switches": {
+            "median": 4.0,
+            "mean": 4,
+            "maximum": 4
+          },
+          "wal_appends": {
+            "median": 1.0,
+            "mean": 1,
+            "maximum": 1
+          },
+          "wal_bytes": {
+            "median": 8612.0,
+            "mean": 8612,
+            "maximum": 8612
+          },
+          "wal_elapsed_micros": {
+            "median": 3798.0,
+            "mean": 3785.777777777778,
+            "maximum": 4322
+          },
+          "wal_fsync_micros": {
+            "median": 3696.0,
+            "mean": 3665.5,
+            "maximum": 4167
+          },
+          "outside_wal_fsync_ns": {
+            "median": 2447958.0,
+            "mean": 2535182.9444444445,
+            "maximum": 2991625
+          }
+        },
+        "checkpoint": {
+          "wall_ns": {
+            "median": 456703667.0,
+            "mean": 481293354.2222222,
+            "maximum": 644564584
+          },
+          "cpu_ns": {
+            "median": 57891500.0,
+            "mean": 58065444.44444445,
+            "maximum": 65697000
+          },
+          "input_blocks": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "involuntary_switches": {
+            "median": 95.5,
+            "mean": 105.66666666666667,
+            "maximum": 179
+          },
+          "major_faults": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "minor_faults": {
+            "median": 4.0,
+            "mean": 4.277777777777778,
+            "maximum": 10
+          },
+          "output_blocks": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "system_ns": {
+            "median": 50798000.0,
+            "mean": 51045388.88888889,
+            "maximum": 57896000
+          },
+          "user_ns": {
+            "median": 6922000.0,
+            "mean": 7020055.555555556,
+            "maximum": 7801000
+          },
+          "voluntary_switches": {
+            "median": 362.0,
+            "mean": 383.44444444444446,
+            "maximum": 534
+          },
+          "wal_appends": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "wal_bytes": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "wal_elapsed_micros": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "wal_fsync_micros": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          }
+        }
+      }
+    }
+  },
+  {
+    "nodes": 512,
+    "edges": 4096,
+    "workload": "node_property",
+    "measured_pairs": 18,
+    "distributions": {
+      "baseline": {
+        "mutation": {
+          "wall_ns": {
+            "median": 5750437.5,
+            "mean": 5882305.444444444,
+            "maximum": 6600792
+          },
+          "cpu_ns": {
+            "median": 2326000.0,
+            "mean": 2325888.888888889,
+            "maximum": 2497000
+          },
+          "input_blocks": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "involuntary_switches": {
+            "median": 3.0,
+            "mean": 3.611111111111111,
+            "maximum": 7
+          },
+          "major_faults": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "minor_faults": {
+            "median": 0.0,
+            "mean": 0.2777777777777778,
+            "maximum": 1
+          },
+          "output_blocks": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "system_ns": {
+            "median": 208500.0,
+            "mean": 209833.33333333334,
+            "maximum": 306000
+          },
+          "user_ns": {
+            "median": 2100500.0,
+            "mean": 2116055.5555555555,
+            "maximum": 2259000
+          },
+          "voluntary_switches": {
+            "median": 4.0,
+            "mean": 4,
+            "maximum": 4
+          },
+          "wal_appends": {
+            "median": 1.0,
+            "mean": 1,
+            "maximum": 1
+          },
+          "wal_bytes": {
+            "median": 8100.0,
+            "mean": 8100,
+            "maximum": 8100
+          },
+          "wal_elapsed_micros": {
+            "median": 3674.5,
+            "mean": 3747.8888888888887,
+            "maximum": 4347
+          },
+          "wal_fsync_micros": {
+            "median": 3573.0,
+            "mean": 3631.4444444444443,
+            "maximum": 4266
+          },
+          "outside_wal_fsync_ns": {
+            "median": 2257083.5,
+            "mean": 2250861,
+            "maximum": 2424792
+          }
+        },
+        "checkpoint": {
+          "wall_ns": {
+            "median": 460857708.5,
+            "mean": 465473701.3333333,
+            "maximum": 537729250
+          },
+          "cpu_ns": {
+            "median": 69615500.0,
+            "mean": 70581000,
+            "maximum": 77741000
+          },
+          "input_blocks": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "involuntary_switches": {
+            "median": 118.0,
+            "mean": 123.44444444444444,
+            "maximum": 193
+          },
+          "major_faults": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "minor_faults": {
+            "median": 0.5,
+            "mean": 2.611111111111111,
+            "maximum": 14
+          },
+          "output_blocks": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "system_ns": {
+            "median": 51729500.0,
+            "mean": 52482388.88888889,
+            "maximum": 59116000
+          },
+          "user_ns": {
+            "median": 18027000.0,
+            "mean": 18098611.111111112,
+            "maximum": 19073000
+          },
+          "voluntary_switches": {
+            "median": 351.5,
+            "mean": 356.55555555555554,
+            "maximum": 429
+          },
+          "wal_appends": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "wal_bytes": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "wal_elapsed_micros": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "wal_fsync_micros": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          }
+        }
+      },
+      "candidate": {
+        "mutation": {
+          "wall_ns": {
+            "median": 6187562.5,
+            "mean": 6140465.388888889,
+            "maximum": 6556750
+          },
+          "cpu_ns": {
+            "median": 2350500.0,
+            "mean": 2389277.777777778,
+            "maximum": 2620000
+          },
+          "input_blocks": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "involuntary_switches": {
+            "median": 5.0,
+            "mean": 5.888888888888889,
+            "maximum": 14
+          },
+          "major_faults": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "minor_faults": {
+            "median": 1.0,
+            "mean": 1.2777777777777777,
+            "maximum": 3
+          },
+          "output_blocks": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "system_ns": {
+            "median": 229000.0,
+            "mean": 225000,
+            "maximum": 284000
+          },
+          "user_ns": {
+            "median": 2123000.0,
+            "mean": 2164277.777777778,
+            "maximum": 2390000
+          },
+          "voluntary_switches": {
+            "median": 4.0,
+            "mean": 4,
+            "maximum": 4
+          },
+          "wal_appends": {
+            "median": 1.0,
+            "mean": 1,
+            "maximum": 1
+          },
+          "wal_bytes": {
+            "median": 8100.0,
+            "mean": 8100,
+            "maximum": 8100
+          },
+          "wal_elapsed_micros": {
+            "median": 4020.0,
+            "mean": 3936,
+            "maximum": 4306
+          },
+          "wal_fsync_micros": {
+            "median": 3895.0,
+            "mean": 3817.8333333333335,
+            "maximum": 4172
+          },
+          "outside_wal_fsync_ns": {
+            "median": 2293354.0,
+            "mean": 2322632.0555555555,
+            "maximum": 2548292
+          }
+        },
+        "checkpoint": {
+          "wall_ns": {
+            "median": 408003104.5,
+            "mean": 418777428.3333333,
+            "maximum": 562481583
+          },
+          "cpu_ns": {
+            "median": 59641500.0,
+            "mean": 60078777.777777776,
+            "maximum": 67306000
+          },
+          "input_blocks": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "involuntary_switches": {
+            "median": 104.0,
+            "mean": 108.5,
+            "maximum": 139
+          },
+          "major_faults": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "minor_faults": {
+            "median": 0.0,
+            "mean": 3,
+            "maximum": 29
+          },
+          "output_blocks": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "system_ns": {
+            "median": 45388000.0,
+            "mean": 45724833.333333336,
+            "maximum": 51957000
+          },
+          "user_ns": {
+            "median": 14296000.0,
+            "mean": 14353944.444444444,
+            "maximum": 15349000
+          },
+          "voluntary_switches": {
+            "median": 313.0,
+            "mean": 325.8888888888889,
+            "maximum": 479
+          },
+          "wal_appends": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "wal_bytes": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "wal_elapsed_micros": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "wal_fsync_micros": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          }
+        }
+      }
+    }
+  },
+  {
+    "nodes": 512,
+    "edges": 4096,
+    "workload": "relationship_property",
+    "measured_pairs": 18,
+    "distributions": {
+      "baseline": {
+        "mutation": {
+          "wall_ns": {
+            "median": 24175375.0,
+            "mean": 25258481.388888888,
+            "maximum": 29807000
+          },
+          "cpu_ns": {
+            "median": 20540000.0,
+            "mean": 21337666.666666668,
+            "maximum": 25462000
+          },
+          "input_blocks": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "involuntary_switches": {
+            "median": 35.0,
+            "mean": 40.77777777777778,
+            "maximum": 147
+          },
+          "major_faults": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "minor_faults": {
+            "median": 8.5,
+            "mean": 10.5,
+            "maximum": 38
+          },
+          "output_blocks": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "system_ns": {
+            "median": 472500.0,
+            "mean": 521611.1111111111,
+            "maximum": 1222000
+          },
+          "user_ns": {
+            "median": 20003000.0,
+            "mean": 20816055.555555556,
+            "maximum": 24822000
+          },
+          "voluntary_switches": {
+            "median": 4.0,
+            "mean": 4.055555555555555,
+            "maximum": 5
+          },
+          "wal_appends": {
+            "median": 1.0,
+            "mean": 1,
+            "maximum": 1
+          },
+          "wal_bytes": {
+            "median": 69570.0,
+            "mean": 69570,
+            "maximum": 69570
+          },
+          "wal_elapsed_micros": {
+            "median": 3870.0,
+            "mean": 3892.6666666666665,
+            "maximum": 4458
+          },
+          "wal_fsync_micros": {
+            "median": 3702.5,
+            "mean": 3718.6111111111113,
+            "maximum": 4303
+          },
+          "outside_wal_fsync_ns": {
+            "median": 20728021.0,
+            "mean": 21539870.277777776,
+            "maximum": 25980042
+          }
+        },
+        "checkpoint": {
+          "wall_ns": {
+            "median": 495696270.5,
+            "mean": 502703835.6111111,
+            "maximum": 607833625
+          },
+          "cpu_ns": {
+            "median": 82493500.0,
+            "mean": 83372444.44444445,
+            "maximum": 96966000
+          },
+          "input_blocks": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "involuntary_switches": {
+            "median": 170.0,
+            "mean": 169.27777777777777,
+            "maximum": 400
+          },
+          "major_faults": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "minor_faults": {
+            "median": 23.0,
+            "mean": 25.166666666666668,
+            "maximum": 57
+          },
+          "output_blocks": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "system_ns": {
+            "median": 61073500.0,
+            "mean": 61649333.333333336,
+            "maximum": 71739000
+          },
+          "user_ns": {
+            "median": 21423000.0,
+            "mean": 21723111.111111112,
+            "maximum": 25227000
+          },
+          "voluntary_switches": {
+            "median": 374.5,
+            "mean": 378.1666666666667,
+            "maximum": 469
+          },
+          "wal_appends": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "wal_bytes": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "wal_elapsed_micros": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "wal_fsync_micros": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          }
+        }
+      },
+      "candidate": {
+        "mutation": {
+          "wall_ns": {
+            "median": 24896271.0,
+            "mean": 24794182.944444444,
+            "maximum": 28559500
+          },
+          "cpu_ns": {
+            "median": 20969500.0,
+            "mean": 20833611.111111112,
+            "maximum": 24601000
+          },
+          "input_blocks": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "involuntary_switches": {
+            "median": 39.0,
+            "mean": 34.27777777777778,
+            "maximum": 70
+          },
+          "major_faults": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "minor_faults": {
+            "median": 6.0,
+            "mean": 9.722222222222221,
+            "maximum": 34
+          },
+          "output_blocks": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "system_ns": {
+            "median": 481000.0,
+            "mean": 468500,
+            "maximum": 883000
+          },
+          "user_ns": {
+            "median": 20562000.0,
+            "mean": 20365111.111111112,
+            "maximum": 24060000
+          },
+          "voluntary_switches": {
+            "median": 4.0,
+            "mean": 4.055555555555555,
+            "maximum": 5
+          },
+          "wal_appends": {
+            "median": 1.0,
+            "mean": 1,
+            "maximum": 1
+          },
+          "wal_bytes": {
+            "median": 69570.0,
+            "mean": 69570,
+            "maximum": 69570
+          },
+          "wal_elapsed_micros": {
+            "median": 3944.0,
+            "mean": 4027.5,
+            "maximum": 4666
+          },
+          "wal_fsync_micros": {
+            "median": 3784.5,
+            "mean": 3865.3333333333335,
+            "maximum": 4481
+          },
+          "outside_wal_fsync_ns": {
+            "median": 20986271.0,
+            "mean": 20928849.611111112,
+            "maximum": 24773500
+          }
+        },
+        "checkpoint": {
+          "wall_ns": {
+            "median": 479097229.0,
+            "mean": 477938921.1666667,
+            "maximum": 521045625
+          },
+          "cpu_ns": {
+            "median": 84790500.0,
+            "mean": 82845555.55555555,
+            "maximum": 97122000
+          },
+          "input_blocks": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "involuntary_switches": {
+            "median": 156.5,
+            "mean": 165.38888888888889,
+            "maximum": 378
+          },
+          "major_faults": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "minor_faults": {
+            "median": 24.5,
+            "mean": 31.333333333333332,
+            "maximum": 77
+          },
+          "output_blocks": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "system_ns": {
+            "median": 62520000.0,
+            "mean": 61002222.222222224,
+            "maximum": 72180000
+          },
+          "user_ns": {
+            "median": 22192500.0,
+            "mean": 21843333.333333332,
+            "maximum": 24942000
+          },
+          "voluntary_switches": {
+            "median": 362.0,
+            "mean": 363.05555555555554,
+            "maximum": 407
+          },
+          "wal_appends": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "wal_bytes": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "wal_elapsed_micros": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          },
+          "wal_fsync_micros": {
+            "median": 0.0,
+            "mean": 0,
+            "maximum": 0
+          }
+        }
+      }
+    }
+  }
+]

@@ -4,7 +4,9 @@ Issue: https://github.com/nowledge-co/hawdb/issues/1960. PR: https://github.com/
 
 ## Qualification status
 
-The implementation remains Draft. The latest packed revision was measured at `612cb32ceb778b2200b37bb8eee38980625b56ae` with the same 56-byte reader identity as the baseline. Node-property checkpoint medians improve, but foreground medians and some tails still increase. This does not satisfy no-regression acceptance. Older unpacked measurements remain below as separate evidence; no result is substituted or discarded because it is unfavorable.
+The implementation remains Draft. The current prepared-WAL follow-up is `6a378114156967f45972b49d0bc29ee25ed7874b`. It removes a confirmed extra operation-array scan and passes source-bound CI. Its ordinary 60-pair-per-group foreground medians are -1.24%, -1.18%, +0.01% and +0.11%, while some mutation/checkpoint maxima still increase. The earlier 1%-2% median increases did not recur, but this does not establish a causal fix or clear no-regression/tail acceptance. Full results and limits are in the [cause investigation](CAUSE_INVESTIGATION.md). Earlier packed/unpacked datasets below are preserved separately and must not be attributed to the current follow-up.
+
+[Follow-up cause investigation and attempted fix](CAUSE_INVESTIGATION.md) documents the newly removed prepared-WAL operation scan, phase CPU/fsync counters, checkpoint synchronization stacks and source-bound CI at `6a3781141`. Its under-load diagnostic runs are separate from ordinary acceptance and do not clear the Draft gate.
 
 ## Sources and protocol
 
@@ -16,7 +18,7 @@ The implementation remains Draft. The latest packed revision was measured at `61
 - Checkpoint time includes immutable sealed-root closure validation/publication. New graph bytes count freshly created canonical/spill/projection/adjacency files, including descriptors; they are not total filesystem writes or allocated disk blocks. No CPU-time or RSS improvement is inferred.
 - This is a shared workstation, without pinned CPU/I/O isolation. Mem Bazel activity was observed after the older suite. Before and after the packed suite, no such compilation or test processes were observed; ordinary desktop load remained. Do not infer production p99, foreground throughput or LDBC/TPC-C acceptance from these samples. With 60 samples per variant/group, reported p99 is the observed maximum.
 
-## Latest packed revision
+## Earlier packed revision
 
 The isolated candidate release rebuild took 5m39s. LLVM IR inspection of the actual release library confirmed a 56-byte reader identity, matching the baseline; no link-time size inference was used. Both variants used the same harness and protocol. All four groups completed, including value/count verification, scrub and reopen.
 
