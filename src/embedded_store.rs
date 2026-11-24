@@ -2451,12 +2451,12 @@ impl EmbeddedStore {
         // Project metadata can open without recovering main's data runtime.
         // Readiness requires data admission before any host schema mutation.
         graph.database().commit_epoch()?;
-        for registry in &options.system_schema_registries {
-            report.system_schema_upgrades.push(
-                graph
-                    .database_mut()
-                    .apply_system_schema_registry(registry)?,
-            );
+        // One commit for every registered owner: each schema commit forces a
+        // canonical row checkpoint, so per-owner commits would pay N (#1942).
+        if !options.system_schema_registries.is_empty() {
+            report.system_schema_upgrades = graph
+                .database_mut()
+                .apply_system_schema_registries(&options.system_schema_registries)?;
         }
         report.graph_opened = true;
         let default_search_range_read_config = SearchRangeReadConfig {

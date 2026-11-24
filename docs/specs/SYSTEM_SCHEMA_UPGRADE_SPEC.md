@@ -29,6 +29,21 @@ The protocol follows the useful local subset of TiDB bootstrap upgrades:
 8. Durable `Database::open` applies the engine-owned registry before returning.
    An embedding host registers its application-owned registries in open
    options, and those upgrades also finish before the handle becomes visible.
+10. `Database::apply_system_schema_registries` verifies several owners'
+    registries before any write, then stages every owner's pending suffix in
+    one transaction and one WAL commit. Either every owner reaches its current
+    version or none advances. Embedded open applies its registered owners
+    this way.
+
+A commit that creates or alters a relational table requires a canonical row
+checkpoint before an out-of-core read may serve the changed tables, so it runs
+a synchronous checkpoint before returning. The row-page base and its live
+overlay bind a fixed table set with schema digests; a new or changed table,
+even an empty one, cannot be served from them. The WAL alone already makes the
+schema durable: crash recovery replays it and checkpoints before the writable
+handle returns. Committing N owners together therefore pays one checkpoint
+instead of N (#1942). One owner per call keeps paying one checkpoint per
+owner.
 9. Ordinary SQL may read `hawdb_schema_migrations` for diagnostics but cannot
    create, alter, index, insert, update, or delete it. The `hawdb.engine` owner
    is reserved.
@@ -61,10 +76,11 @@ exclusive database open, so a second bootstrap election would add no safety.
 
 Application schema definitions remain in the owning adapter. HawDB provides
 `SystemSchemaRegistry`, `SystemSchemaMigration`, and
-`Database::apply_system_schema_registry`; it does not compile Nowledge table
-definitions into the default database facade. `EmbeddedStoreOpenOptions` accepts
-one registry per owner so an embedded runtime applies them before becoming
-available to the host.
+`Database::apply_system_schema_registry` (one owner) and
+`Database::apply_system_schema_registries` (several owners, one commit); it does
+not compile Nowledge table definitions into the default database facade.
+`EmbeddedStoreOpenOptions` accepts one registry per owner so an embedded runtime
+applies them together before becoming available to the host.
 
 Route-specific behavior remains parameterized SQL. Schema registration is a
 typed API because it coordinates ordered DDL, checksum validation, WAL commit,
@@ -97,6 +113,9 @@ bounded check only when producing retained release evidence.
 Focused HawDB tests must prove:
 
 - fresh version 1 bootstrap and version 2 upgrade;
+- several owners publish one commit and one checkpoint, fail together, and
+  recover whole or absent after a crash or power loss at each publication
+  step;
 - restart idempotency without an extra commit;
 - checksum and future-version rejection;
 - failed DDL does not publish a migration version;

@@ -4821,3 +4821,30 @@ checkpoint reopened with defaults. FFI
 `error_tests::newer_relational_checkpoint_layout_reports_unsupported_storage_format`
 continues to check the `unsupported_storage_format` kind mapping.
 No fixture, configuration, lane, profile, feature or timeout was removed.
+
+## Batched system schema registries (#1942)
+
+Root unit owner `api::tests::system_schema_registry`
+(`cargo test --locked -p hawdb --lib batched_system_schema`).
+`batched_system_schema_registries_publish_one_commit_and_one_checkpoint`
+applies six owners, each creating an empty table and an index on it, with
+`Database::apply_system_schema_registries`. It requires one commit epoch and
+one canonical row checkpoint, measured as the row-page generation advance of
+one explicit checkpoint, while two owners applied one at a time cost two. A
+current batch neither commits nor checkpoints, and indexed reads serve rows
+inserted after the DDL across a reopen.
+`batched_system_schema_registries_index_existing_rows_and_skip_current_owners`
+indexes an existing non-empty table in the same batch and applies only the
+pending owners of a partly current batch.
+`failed_batched_system_schema_registry_publishes_no_owner` fails one owner's
+DDL and checks that no owner advances; duplicate and engine-owner claims are
+rejected before any write.
+`batched_system_schema_crash_recovers_every_owner_or_none` kills a child
+process at each commit and checkpoint failpoint and requires every owner or
+none after reopen, usable recovered indexes and an idempotent reapply.
+`api::tests::power_loss::batched_system_schema_registries_are_whole_or_absent_across_power_loss`
+cuts the batch's schema checkpoint at the branch-head replacement under every
+publication fault plan, in `Materialized` and `OutOfCore` residency with both
+durability policies, and checks that rows committed after the batch survive
+whole or not at all. Fsync counts are measured with a local profiling harness,
+not in CI. No new lane, fixture, feature or timeout.
