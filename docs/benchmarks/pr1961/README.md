@@ -42,6 +42,24 @@ Node-property checkpoints again produced zero new adjacency bytes and reduced ne
 
 **Acceptance remains open.** All four foreground paired medians increased (+2.08%, +1.12%, +1.51%, +0.82%). The larger node-property mutation maximum was 43.721 ms versus 7.172 ms, and its checkpoint maximum was 713.574 ms versus 564.393 ms. Smaller node-property checkpoint p99 also increased. With 60 samples these are observed maxima, not production percentile estimates. No sample is removed, and no improvement in combined mutation/checkpoint time waives these failures. The packed representation has not established the cause of the variation. Further foreground-path diagnosis and controlled tail qualification are required before marking ready.
 
+## Identical-binary diagnostic
+
+After the packed comparison, both A/B roles ran the same frozen baseline executable (`e108839fa0a782fd9cbc3d14a2269a56f612e1e68b790db43032ce6c60456ca8`), with separate fixtures, v2 readiness and rebuild expectations. [The exact diagnostic controller](run_null.py) limits the original protocol to node-property workloads; it changes binary/version/expectation selection only. Each size completed 60 pairs plus two warmups, including scrub and reopen. [Raw records and receipts](paired-null-suite/run-receipts.json) preserve both identical hashes.
+
+| Nodes / relationships | Checkpoint median paired change | Mutation median paired change | Mutation A / B p99 (ms) |
+|---|---:|---:|---:|
+| 128 / 512 | +0.04% | +0.03% | 5.170 / 8.563 |
+| 512 / 4096 | +0.67% | +1.57% | 6.679 / 9.624 |
+
+This demonstrates nonzero variation even with identical code. It does not explain every difference in the packed comparison, establish an error bar for future measurements, prove the candidate unchanged, or clear tail acceptance. It is a separate diagnostic, not a replacement dataset or a reason to discard unfavorable samples. [Complete diagnostic statistics](paired-null-suite/summary.json) retain order/half splits and all tails.
+
+To replay the diagnostic with the same frozen binary directory:
+
+```sh
+python3 docs/benchmarks/pr1961/run_null.py "$task_dir/bin" "$task_dir/null-samples" 60
+python3 docs/benchmarks/pr1961/analyze.py "$task_dir/null-samples"
+```
+
 ## Earlier paired checkpoint results (unpacked revision)
 
 | Nodes / relationships | Mutation | Baseline p50 / p95 / p99 (ms) | Candidate p50 / p95 / p99 (ms) | Median paired change | New graph bytes, median |

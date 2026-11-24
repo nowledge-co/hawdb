@@ -44,5 +44,11 @@
   "packed_producer_revision": "612cb32ceb778b2200b37bb8eee38980625b56ae",
   "packed_build_elapsed": "5m39s, existing isolated candidate target",
   "packed_host_observation": "No Mem compiler/test processes observed before or after this suite. Normal desktop load remained. Unrelated Codex/npm startup appeared after timing; no causal attribution to outliers.",
-  "packed_read_identity_bytes": 56
+  "packed_read_identity_bytes": 56,
+  "identical_binary_diagnostic": {
+    "binary_sha256": "e108839fa0a782fd9cbc3d14a2269a56f612e1e68b790db43032ce6c60456ca8",
+    "groups": 2,
+    "measured_pairs_per_group": 60,
+    "purpose": "quantify protocol/host variation with identical baseline code, not no-regression acceptance"
+  }
 }
