@@ -206,8 +206,12 @@ pub enum BinaryWalRecordDecode<E = WalEntry> {
 #[derive(Debug)]
 pub(crate) struct PreparedWalBatch {
     bytes: Vec<u8>,
-    operation_count: usize,
+    operation_count: u32,
+    changes_adjacency: bool,
 }
+
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(std::mem::size_of::<PreparedWalBatch>() == 32);
 
 impl PreparedWalBatch {
     pub(crate) fn prepare(ops: &[WalOp]) -> Result<Self> {
@@ -219,17 +223,26 @@ impl PreparedWalBatch {
         bytes.push(RECORD_KIND_BATCH);
         bytes.extend_from_slice(&0u64.to_le_bytes());
         bytes.extend_from_slice(&count.to_le_bytes());
+        let mut changes_adjacency = false;
         for op in ops {
             encode_op_frame(op, &mut bytes)?;
+            // Classify while each operation is already resident for encoding.
+            // A node-property batch otherwise needs another full scan at commit.
+            changes_adjacency = changes_adjacency || op.changes_adjacency();
         }
         Ok(Self {
             bytes,
-            operation_count: ops.len(),
+            operation_count: count,
+            changes_adjacency,
         })
     }
 
     pub(crate) fn operation_count(&self) -> usize {
-        self.operation_count
+        self.operation_count as usize
+    }
+
+    pub(crate) fn changes_adjacency(&self) -> bool {
+        self.changes_adjacency
     }
 
     pub(crate) fn bind(mut self, lsn: u64, commit_epoch: u64) -> Vec<u8> {
@@ -1410,6 +1423,10 @@ mod tests {
             for (lsn, epoch) in [(1, 2), (u64::MAX, u64::MAX)] {
                 let prepared = PreparedWalBatch::prepare(&ops[..len]).unwrap();
                 assert_eq!(prepared.operation_count(), len);
+                assert_eq!(
+                    prepared.changes_adjacency(),
+                    ops[..len].iter().any(WalOp::changes_adjacency)
+                );
                 let ordinary = encode_binary_wal_record(
                     &WalEntry {
                         lsn,
@@ -1420,6 +1437,42 @@ mod tests {
                 .unwrap();
                 assert_eq!(prepared.bind(lsn, epoch), ordinary);
             }
+        }
+    }
+
+    #[test]
+    fn prepared_adjacency_impact_retains_node_only_and_relationship_controls() {
+        let node = WalOp::SetNodeProperty {
+            id: NodeId(1),
+            property: "value".into(),
+            value: Value::Int(2),
+        };
+        let relationship = WalOp::SetRelationshipProperty {
+            id: RelId(1),
+            property: "weight".into(),
+            value: Value::Int(3),
+        };
+        let marker = WalOp::MarkInitialImportSource {
+            source_fingerprint: "fixture".into(),
+        };
+        for (ops, expected) in [
+            (Vec::new(), false),
+            (vec![node.clone(); 128], false),
+            (vec![node.clone(), marker], false),
+            (vec![relationship.clone(), node.clone()], true),
+            (vec![node, relationship], true),
+        ] {
+            let prepared = PreparedWalBatch::prepare(&ops).unwrap();
+            assert_eq!(prepared.changes_adjacency(), expected);
+            let ordinary = encode_binary_wal_record(
+                &WalEntry {
+                    lsn: 3,
+                    op: WalOp::Batch(ops),
+                },
+                4,
+            )
+            .unwrap();
+            assert_eq!(prepared.bind(3, 4), ordinary);
         }
     }
 

@@ -5120,6 +5120,22 @@ scrub/reopen. Initialize both fixtures before timing and allow only one active
 worker. Record order and per-pair durations; keep full-run and paired evidence
 separate. This remains manual-only and introduces no CI execution lane.
 
+For manual Unix diagnosis, append `cpu-profile` after the step mode. Resource
+snapshots outside both wall timers report process-wide user/system CPU, faults,
+context switches and block counters. The existing typed telemetry sink supplies
+cumulative WAL append/flush durations and bytes. Subtract before/after counters
+per phase; process CPU includes all threads, and wall time minus CPU is not an
+I/O-only measurement. Telemetry and sampling overhead make these diagnostic
+runs distinct from ordinary acceptance measurements. Default runs install no
+sink and retain their existing JSONL schema and timing boundaries.
+
+The existing storage WAL binary unit owner also checks pre-encoded adjacency
+impact for empty, node-only, mixed and relationship-property batches, together
+with exact ordinary/prepared WAL byte parity. Its cached classification must
+not change success-only publication or replay invalidation. The manual paired
+benchmark remains the foreground-performance acceptance owner; a removed
+operation scan alone does not establish an end-to-end improvement.
+
 The same storage unit owner includes `read_view::generation_identity_tests`:
 compact physical-origin representation must distinguish an absent checkpoint
 from generation zero and retain independent canonical/adjacency pins. A 64-bit

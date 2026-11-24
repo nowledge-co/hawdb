@@ -2716,7 +2716,10 @@ impl GraphStore {
         self.pending_commit_changes_graph = false;
         self.pending_commit_changes_adjacency = false;
         let changes_graph = ops.iter().any(WalOp::changes_graph);
-        let changes_adjacency = ops.iter().any(WalOp::changes_adjacency);
+        let changes_adjacency = prepared.as_ref().map_or_else(
+            || ops.iter().any(WalOp::changes_adjacency),
+            crate::wal::binary::PreparedWalBatch::changes_adjacency,
+        );
         let rebuild = search_projection_capture::projection_wal_requires_rebuild(ops);
         let result = (|| {
             if self.durable.is_none() {

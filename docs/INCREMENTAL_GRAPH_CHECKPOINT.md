@@ -25,6 +25,15 @@ its entries can inline complete relationship records, so unchanged topology
 alone is insufficient. Unknown future graph changes must be classified
 conservatively by `changes_graph`.
 
+Pre-encoded graph commits cache adjacency impact while encoding each operation,
+then consume that immutable classification with the prepared bytes. This avoids
+an additional full operation-array scan in the serialized append path. The
+count uses the same checked u32 domain as the encoded envelope, so the cached
+flag does not grow the 32-byte prepared owner on 64-bit targets. Ordinary and
+mixed commits retain conservative classification; replay always derives impact
+from the recovered WAL operation. The cache changes no WAL byte or publication
+barrier, and is not evidence of an end-to-end latency improvement by itself.
+
 The foreground path records the classification only after successful WAL
 append, and advances its constant-space adjacency fence when the transaction
 is installed. Failed appends clear pending classification. Replay classifies
