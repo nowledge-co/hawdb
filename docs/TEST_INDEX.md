@@ -5111,3 +5111,11 @@ Cypher and the public `Database::checkpoint` API. Timed work excludes queries
 and record assertions; output labels the API explicitly. Keep these results
 separate from the low-level GraphStore measurement. Both preserve the default
 SyncOnEveryWrite policy and verify records, scrub and reopen outside timing.
+
+The same embedded example supports optional `step-node` / `step-relationship`
+stdin pacing for immediate A/B and B/A operation pairs. Workers announce
+`hawdb-checkpoint-pair-v1`, manifest version and background-maintenance state,
+wait for `step` before each mutation/checkpoint, and wait for `finish` before
+scrub/reopen. Initialize both fixtures before timing and allow only one active
+worker. Record order and per-pair durations; keep full-run and paired evidence
+separate. This remains manual-only and introduces no CI execution lane.

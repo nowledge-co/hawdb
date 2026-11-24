@@ -47,7 +47,9 @@ checkpoint to rebuild, even when the candidate carried adjacency successfully.
 retains adjacency independently, including when A differs from both C and G.
 Reclamation protects current A, previous A and reader-owned A. Retaining an
 adjacency origin does not retain unrelated canonical/spill/projection files
-from that generation. Candidate staging cleanup removes only its new
+from that generation. Inline entries encode owned relationship values; larger
+entries retain a relationship ID for resolution through the current canonical
+base, rather than an old spill-file offset. Candidate staging cleanup removes only its new
 checkpoint generation. Durable branches continue to retain their sealed
 closures regardless of runtime leases; their root bindings already enumerate
 every physical path and immutable reference.
@@ -107,3 +109,14 @@ foreground commit throughput, tail-latency acceptance or full LDBC/TPC-C.
 Later stages replace canonical/spill blocks with copy-on-write and then update
 local adjacency/projection blocks. They depend on these ownership and recovery
 contracts but require separate implementation, validation and performance data.
+
+For measurements on a shared host, the embedded example also accepts
+`step-node` or `step-relationship` as its final argument. It announces its
+manifest version and configuration, then waits for a `step` line on stdin before
+each mutation/checkpoint pair. After the last sample it waits for `finish`
+before scrub/reopen. A manual controller can initialize both variants first and
+alternate A/B and B/A each round, allowing only one worker to run at a time.
+Keep per-round order and foreground mutation times, and retain whole-run
+measurements separately; a lower overall median cannot hide a regressed
+control or tail. The controller is a developer measurement tool, not a host
+production integration path.

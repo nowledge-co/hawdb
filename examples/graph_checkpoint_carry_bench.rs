@@ -5,16 +5,21 @@
 use hawdb::{BranchSelector, Database, DatabaseConfig, StorageResidencyMode, Value};
 use hawdb_storage::durable_manifest::DurableManifest;
 use serde_json::json;
+use std::io::{BufRead, Write};
 use std::path::Path;
 use std::time::Instant;
 
 fn main() {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
-    assert_eq!(
-        args.len(),
-        5,
-        "usage: graph_checkpoint_carry_bench <new-root> <nodes> <edges> <rounds> <carry|rebuild>"
-    );
+    assert!(matches!(args.len(), 5 | 6),
+        "usage: graph_checkpoint_carry_bench <new-root> <nodes> <edges> <rounds> <carry|rebuild> [step-node|step-relationship]");
+    let selected = args.get(5).map(|mode| match mode.as_str() {
+        "step-node" => "node_property",
+        "step-relationship" => "relationship_property",
+        _ => panic!("unknown step mode"),
+    });
+    let stdin = std::io::stdin();
+    let mut input = stdin.lock();
     let root = Path::new(&args[0]);
     assert!(!root.exists(), "fixture path must be new");
     let nodes: usize = args[1].parse().unwrap();
@@ -23,6 +28,9 @@ fn main() {
     assert!(nodes > 1 && edges > 0 && rounds > 0);
     assert!(matches!(args[4].as_str(), "carry" | "rebuild"));
     for workload in ["node_property", "relationship_property"] {
+        if selected.is_some_and(|selected| selected != workload) {
+            continue;
+        }
         let path = root.join(workload);
         let mut config = DatabaseConfig {
             storage_residency_mode: StorageResidencyMode::OutOfCore,
@@ -50,7 +58,17 @@ fn main() {
             .unwrap()
             .canonical_adjacency_generation_artifacts
             .unwrap();
+        if selected.is_some() {
+            println!(
+                "{}",
+                json!({"protocol":"hawdb-checkpoint-pair-v1","ready":workload,"storage_version":db.storage_version().unwrap(),"automatic_checkpoint":false})
+            );
+            std::io::stdout().flush().unwrap();
+        }
         for round in 0..rounds + 2 {
+            if selected.is_some() {
+                command(&mut input, "step");
+            }
             let value = round as i64 + 1;
             let (update, verify, count) = if workload == "node_property" {
                 (
@@ -100,6 +118,12 @@ fn main() {
                 "{}",
                 json!({"api":"Database::checkpoint","automatic_checkpoint":false,"workload":workload,"nodes":nodes,"edges":edges,"round":round,"warmup":round<2,"checkpoint_ns":elapsed.as_nanos(),"mutation_ns":mutation_elapsed.as_nanos(),"new_graph_bytes":graph_bytes,"new_adjacency_bytes":adjacency_bytes,"durability":"SyncOnEveryWrite","residency":"OutOfCore"})
             );
+            if selected.is_some() {
+                std::io::stdout().flush().unwrap();
+            }
+        }
+        if selected.is_some() {
+            command(&mut input, "finish");
         }
         db.scrub_storage().unwrap();
         drop(db);
@@ -122,4 +146,13 @@ fn main() {
         );
         reopened.scrub_storage().unwrap();
     }
+}
+
+fn command(input: &mut impl BufRead, expected: &str) {
+    let mut command = String::new();
+    assert!(
+        input.read_line(&mut command).unwrap() > 0,
+        "step controller closed input"
+    );
+    assert_eq!(command.trim(), expected);
 }
