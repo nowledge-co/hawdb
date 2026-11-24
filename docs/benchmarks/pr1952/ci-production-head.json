@@ -1,0 +1,20 @@
+{
+  "pull_request": 1952,
+  "head": "b49f12018b805da45bdb1ad7ced9dd75e0d8e72e",
+  "base": "6357a4f4c97c477d8b14dfdbf23e0646f73f5866",
+  "integration_sha": "d368e8c012f3b2a182c67626e0e5ca8693cecfb5",
+  "runner_binding": "clone-records.json in crates Prow run",
+  "crates": {
+    "status": "success",
+    "targets_passed": 106,
+    "executed": 69,
+    "cached": 37,
+    "url": "https://prow.nowledge.co/view/gs/ci-cd-503413-prow-public/artifacts/native/pr-logs/pull/nowledge-co_hawdb/1952/pull-skein-bazel-test-crates/2125107383037333504"
+  },
+  "process_crash_recovery": {
+    "status": "success",
+    "cases": 10,
+    "url": "https://prow.nowledge.co/view/gs/ci-cd-503413-prow-public/artifacts/native/pr-logs/pull/nowledge-co_hawdb/1952/pull-skein-storage-crash-recovery/2125107380621414400"
+  },
+  "limits": "This receipt is for the production-change head, not a later documentation commit. Process interruption is not device power-loss qualification."
+}

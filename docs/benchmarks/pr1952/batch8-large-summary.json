@@ -1,0 +1,21 @@
+[
+  {
+    "case": "nodes2000-priorTrue",
+    "pairs": 101,
+    "baseline_p50_ms": 489.615208,
+    "candidate_p50_ms": 413.744292,
+    "baseline_p95_ms": 852.732333,
+    "candidate_p95_ms": 599.614708,
+    "baseline_p99_ms": 969.7635,
+    "candidate_p99_ms": 769.726084,
+    "paired_median_ratio": 0.8434514856799349,
+    "paired_median_ratio_bootstrap_95": [
+      0.8228045779675284,
+      0.853775987072589
+    ],
+    "lexical_bytes": [
+      0,
+      0
+    ]
+  }
+]

@@ -198,6 +198,7 @@ impl SearchOutOfCoreReader {
             let scored = segment.lexical_projection.score_terms_accounted(
                 &terms.terms,
                 ScoringInputs {
+                    posting_cache: None,
                     complete_candidate_limit: complete
                         .then_some(max_candidates.saturating_sub(report.matching_document_count)),
                     delta: &delta,

@@ -9,8 +9,8 @@ use crate::build_memory::{
     checked_add, SCORE_MAP_ENTRY_BYTES, SCORE_MAP_ROOT_BYTES, SET_ENTRY_BYTES,
 };
 use crate::lexical_projection::{
-    retain_most_selective_terms, AccountedCorpusStatistics, QueryContext, QueryTermSelection,
-    ScoringInputs,
+    retain_most_selective_terms, AccountedCorpusStatistics, PostingBlockCache, QueryContext,
+    QueryTermSelection, ScoringInputs,
 };
 use hawdb_executor::{QueryMemoryAccount, QueryMemoryClass, QueryMemoryLease, QueryMemoryLedger};
 use hawdb_optimizer_predicate::{SearchPredicateConstructionError, SearchPredicateSet};
@@ -218,20 +218,22 @@ impl SearchOutOfCoreReader {
         &self,
         terms: &BTreeSet<String>,
         context: Option<QueryContext<'_>>,
+        cache: Option<&PostingBlockCache>,
     ) -> Result<QueryStatistics> {
         let mut accounted = context
             .map(|context| {
-                AccountedCorpusStatistics::aggregate(
+                AccountedCorpusStatistics::aggregate_cached(
                     self.segments
                         .iter()
                         .map(|segment| &segment.lexical_projection),
                     terms,
                     self.lexical_term_policy.max_term_bytes(),
                     context,
+                    cache,
                 )
             })
             .transpose()?;
-        let mut ordinary = if context.is_none() {
+        let mut ordinary = if context.is_none() && cache.is_none() {
             Some(LexicalCorpusStatistics::aggregate(
                 self.segments
                     .iter()
@@ -239,6 +241,17 @@ impl SearchOutOfCoreReader {
                 terms,
                 self.lexical_term_policy.max_term_bytes(),
             )?)
+        } else if context.is_none() {
+            let mut statistics = LexicalCorpusStatistics::default();
+            for segment in &self.segments {
+                statistics.merge(&segment.lexical_projection.query_statistics_cached(
+                    terms,
+                    self.lexical_term_policy.max_term_bytes(),
+                    None,
+                    cache,
+                )?)?;
+            }
+            Some(statistics)
         } else {
             None
         };
@@ -284,7 +297,7 @@ impl SearchOutOfCoreReader {
                 .lexical_projection
                 .query_term_policy(),
         )?;
-        let statistics = self.query_statistics(terms, context)?;
+        let statistics = self.query_statistics(terms, context, None)?;
         let statistics = statistics.get();
         retain_most_selective_terms(
             terms,
@@ -306,7 +319,18 @@ impl SearchOutOfCoreReader {
         metrics: &mut SearchOutOfCoreMetrics,
         context: Option<QueryContext<'_>>,
     ) -> Result<TextScores> {
-        let statistics = self.query_statistics(terms, context)?;
+        let cache_budget = context.map_or(
+            self.config.max_vector_search_working_bytes.get(),
+            |context| context.memory.available_bytes(),
+        );
+        // A spilled predicate cache can grow while scoring. Keep its original
+        // admission and single-read behavior instead of competing for memory.
+        let cache = PostingBlockCache::new(if matches!(candidates, CandidateSet::All(_)) {
+            cache_budget
+        } else {
+            0
+        });
+        let statistics = self.query_statistics(terms, context, Some(&cache))?;
         let statistics = statistics.get();
         let mut output = TextScores {
             values: BTreeMap::new(),
@@ -316,17 +340,34 @@ impl SearchOutOfCoreReader {
             blocks_skipped: 0,
             // The complete score map's root node; entries add their nodes.
             _memory: context
-                .map(|context| context.memory.reserve(SCORE_MAP_ROOT_BYTES))
+                .map(|context| {
+                    PostingBlockCache::reclaim_on_refusal(Some(&cache), || {
+                        context.memory.reserve(SCORE_MAP_ROOT_BYTES)
+                    })
+                })
                 .transpose()?,
         };
+        // These frequencies are exact over the pinned live corpus. No segment
+        // can contribute a visible hit, so stream workspaces are unnecessary.
+        if terms
+            .iter()
+            .all(|term| statistics.document_frequency(term) == 0)
+        {
+            if let Some(context) = context {
+                context.checkpoint()?;
+            }
+            return Ok(output);
+        }
         let mut retained = retained_limit
             .map(|limit| {
-                BoundedScoreCollector::with_context(
-                    Some(limit),
-                    self.config.max_score_entries.get(),
-                    MAX_SCORE_ENTRIES_OPTION,
-                    context,
-                )
+                PostingBlockCache::reclaim_on_refusal(Some(&cache), || {
+                    BoundedScoreCollector::with_context(
+                        Some(limit),
+                        self.config.max_score_entries.get(),
+                        MAX_SCORE_ENTRIES_OPTION,
+                        context,
+                    )
+                })
             })
             .transpose()?;
         for segment in &self.segments {
@@ -342,6 +383,7 @@ impl SearchOutOfCoreReader {
                 .score_terms_with_stable_filter_and_floor(
                     terms,
                     ScoringInputs {
+                        posting_cache: Some(&cache),
                         complete_candidate_limit: None,
                         delta: &crate::lexical_projection::LexicalMiniDelta::default(),
                         max_term_bytes: self.lexical_term_policy.max_term_bytes(),
@@ -353,6 +395,7 @@ impl SearchOutOfCoreReader {
                     retained.as_ref().and_then(BoundedScoreCollector::floor),
                     allowed,
                 )?;
+            cache.release_reader(&segment.lexical_projection);
             output.matching_count = output
                 .matching_count
                 .checked_add(report.report.matching_document_count)
@@ -388,7 +431,7 @@ impl SearchOutOfCoreReader {
                     }
                     // Only global K and the current segment's K remain
                     // resident together, including admission during transfer.
-                    retained.push(id, score)?;
+                    retained.push_cached(id, score, &cache)?;
                     continue;
                 }
                 if output.values.contains_key(&id) {
@@ -397,11 +440,14 @@ impl SearchOutOfCoreReader {
                     )));
                 }
                 if let Some(memory) = &mut output._memory {
-                    memory.grow(checked_add(SCORE_MAP_ENTRY_BYTES, id.capacity())?)?;
+                    PostingBlockCache::reclaim_on_refusal(Some(&cache), || {
+                        memory.grow(checked_add(SCORE_MAP_ENTRY_BYTES, id.capacity())?)
+                    })?;
                 }
                 output.values.insert(id, score);
             }
         }
+        cache.clear();
         if let Some(retained) = retained {
             let scores = retained.finish()?;
             output.values = scores.values;

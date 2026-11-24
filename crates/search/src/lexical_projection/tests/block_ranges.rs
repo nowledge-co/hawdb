@@ -21,7 +21,7 @@ use hawdb_executor::{QueryMemoryClass, QueryMemoryLedger};
 
 /// Many small posting blocks: unique per-document terms, plus terms whose
 /// postings span several blocks.
-fn many_block_reader(root: &Path) -> Arc<LexicalProjectionReader> {
+pub(super) fn many_block_reader(root: &Path) -> Arc<LexicalProjectionReader> {
     let analyzer = SearchAnalyzerLexicon::default();
     let documents = (0..1024u32)
         .map(|index| {

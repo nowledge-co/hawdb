@@ -4934,6 +4934,49 @@ durability policies, and checks that rows committed after the batch survive
 whole or not at all. Fsync counts are measured with a local profiling harness,
 not in CI. No new lane, fixture, feature or timeout.
 
+
+### Query-local posting reuse and multi-term merge (#1940)
+
+`lexical_projection::tests::posting_cache` and `posting_merge` stay in the
+existing Search feature matrix (`//crates/search:hawdb_search_tests`,
+`full-text-search`). The 1,024-document fixture spans many physical blocks and
+covers identical score bits, top-k ties and full match counts, independent
+single-term score accumulation, filtered hits, cache release at the former
+exact working budget, reader/checksum identity and cancellation on a cache hit.
+No feature, lane, timeout or fixture-size increase is applied to existing cases.
+The manual `crates/search/examples/bm25_query_profile.rs` driver compares complete
+ScoresOnly queries on the same deterministic generation, including sparse and
+dense multi-term queries, repeated terms, Chinese, metadata filters and offsets.
+Build both revisions under the repository release profile with
+`cargo build --locked -p hawdb-search --release --example bm25_query_profile`;
+create a new fixture with `bm25_query_profile build NEW_ROOT 16384 4096`, then
+import an ID-sorted BEIR corpus with
+`bm25_query_profile import NEW_ROOT CORPUS_JSONL SEGMENT_ROWS`, then
+send JSON lines containing `query` and optional `scope`/`offset` to
+`bm25_query_profile worker ROOT`. Compare every hit ID, rank, score bit and total
+before interpreting interleaved warm-query latency. This is manual measurement,
+not a CI performance gate; opening/building and serialization are outside timing.
+
+### Manual performance evidence (#1940 / #1942)
+
+The source-bound paired comparison is in
+[BM25 and namespace measurements](benchmarks/pr1952/README.md). Synthetic
+Search covers 13 request shapes; SciFact covers all 300 test queries. The
+manual `compare.py` driver freezes/hashes executables and verifies complete
+query outputs before accepting timing receipts. This adds no CI lane or profile.
+
+The directory-barrier implementation was withdrawn from PR #1952 because its
+checkpoint p99 non-regression was not qualified. Its complete historical small
+and bulk distributions remain in the report, including adverse tails. The
+manual `crates/storage/examples/checkpoint_namespace_profile.rs` driver uses
+ordinary embedded `GraphStore::checkpoint` with strict default durability and
+checks every node before/after and after reopen. Build with
+`cargo build --locked -p hawdb-storage --release --example checkpoint_namespace_profile`;
+run `checkpoint_namespace_profile NEW_PARENT_DIRECTORY`, sending JSON lines
+with `rows`, optional `precheckpoint` and `branch`. This manual graph-only probe
+adds no Storage regression cases or CI lane and does not qualify device power
+loss, relational/DDL registry startup or transaction throughput.
+
 ## Carried graph bundles (issue 1641)
 
 Integrity follow-up: https://github.com/nowledge-co/hawdb/issues/1955.

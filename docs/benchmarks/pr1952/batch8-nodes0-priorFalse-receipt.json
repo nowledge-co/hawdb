@@ -1,0 +1,7 @@
+{
+  "phase": "checkpoint",
+  "pairs": 51,
+  "warmup_pairs": 3,
+  "elapsed_s": 221.18497920036316,
+  "all_results_equal": true
+}

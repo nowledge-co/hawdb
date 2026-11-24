@@ -1,0 +1,68 @@
+[
+  {
+    "step": "main-requalification-fmt",
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--",
+      "--check"
+    ],
+    "elapsed_s": 5.894787788391113,
+    "exit_code": 0
+  },
+  {
+    "step": "main-requalification-clippy",
+    "command": [
+      "cargo",
+      "clippy",
+      "--locked",
+      "--workspace",
+      "--all-targets",
+      "--all-features",
+      "-j",
+      "1",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "elapsed_s": 48.65525197982788,
+    "exit_code": 0
+  },
+  {
+    "step": "build-main-baseline-main",
+    "command": [
+      "cargo",
+      "build",
+      "--locked",
+      "-p",
+      "hawdb-search",
+      "-p",
+      "hawdb-storage",
+      "--release",
+      "--examples",
+      "-j",
+      "1"
+    ],
+    "elapsed_s": 287.08900713920593,
+    "exit_code": 0
+  },
+  {
+    "step": "build-main-repo",
+    "command": [
+      "cargo",
+      "build",
+      "--locked",
+      "-p",
+      "hawdb-search",
+      "-p",
+      "hawdb-storage",
+      "--release",
+      "--examples",
+      "-j",
+      "1"
+    ],
+    "elapsed_s": 236.64823722839355,
+    "exit_code": 0
+  }
+]

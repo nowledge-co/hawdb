@@ -1,0 +1,38 @@
+[
+  [
+    {
+      "arm": 0,
+      "max_rss_bytes": 14565376,
+      "queries": 300
+    },
+    {
+      "arm": 1,
+      "max_rss_bytes": 15024128,
+      "queries": 300
+    }
+  ],
+  [
+    {
+      "arm": 0,
+      "max_rss_bytes": 14712832,
+      "queries": 300
+    },
+    {
+      "arm": 1,
+      "max_rss_bytes": 15089664,
+      "queries": 300
+    }
+  ],
+  [
+    {
+      "arm": 0,
+      "max_rss_bytes": 14630912,
+      "queries": 300
+    },
+    {
+      "arm": 1,
+      "max_rss_bytes": 15040512,
+      "queries": 300
+    }
+  ]
+]

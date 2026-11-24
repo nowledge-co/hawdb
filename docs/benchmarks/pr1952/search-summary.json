@@ -1,0 +1,249 @@
+[
+  {
+    "case": "sparse-1",
+    "pairs": 51,
+    "baseline_p50_ms": 1.137209,
+    "candidate_p50_ms": 1.098083,
+    "baseline_p95_ms": 1.212083,
+    "candidate_p95_ms": 1.219667,
+    "baseline_p99_ms": 1.381208,
+    "candidate_p99_ms": 1.489375,
+    "paired_median_ratio": 0.9677227112676057,
+    "paired_median_ratio_bootstrap_95": [
+      0.9555568965385358,
+      0.9839674060660932
+    ],
+    "lexical_bytes": [
+      24654012,
+      21896748
+    ]
+  },
+  {
+    "case": "sparse-4",
+    "pairs": 51,
+    "baseline_p50_ms": 2.376375,
+    "candidate_p50_ms": 1.792917,
+    "baseline_p95_ms": 2.634125,
+    "candidate_p95_ms": 1.932042,
+    "baseline_p99_ms": 3.767292,
+    "candidate_p99_ms": 2.637958,
+    "paired_median_ratio": 0.7480543611721919,
+    "paired_median_ratio_bootstrap_95": [
+      0.7342635333613092,
+      0.7577218528319322
+    ],
+    "lexical_bytes": [
+      34640067,
+      26538717
+    ]
+  },
+  {
+    "case": "sparse-8",
+    "pairs": 51,
+    "baseline_p50_ms": 3.943083,
+    "candidate_p50_ms": 2.951417,
+    "baseline_p95_ms": 4.90225,
+    "candidate_p95_ms": 3.691792,
+    "baseline_p99_ms": 5.827208,
+    "candidate_p99_ms": 7.470958,
+    "paired_median_ratio": 0.7595396984078966,
+    "paired_median_ratio_bootstrap_95": [
+      0.7422682294879703,
+      0.7663140773817491
+    ],
+    "lexical_bytes": [
+      48511965,
+      37388865
+    ]
+  },
+  {
+    "case": "sparse-16",
+    "pairs": 51,
+    "baseline_p50_ms": 7.238292,
+    "candidate_p50_ms": 5.439625,
+    "baseline_p95_ms": 13.488208,
+    "candidate_p95_ms": 7.455125,
+    "baseline_p99_ms": 17.607208,
+    "candidate_p99_ms": 7.840875,
+    "paired_median_ratio": 0.7464675233320427,
+    "paired_median_ratio_bootstrap_95": [
+      0.7410756597388227,
+      0.7600917126741883
+    ],
+    "lexical_bytes": [
+      76319970,
+      64970787
+    ]
+  },
+  {
+    "case": "dense-1",
+    "pairs": 51,
+    "baseline_p50_ms": 1.573541,
+    "candidate_p50_ms": 1.393458,
+    "baseline_p95_ms": 1.674,
+    "candidate_p95_ms": 1.456,
+    "baseline_p99_ms": 1.738417,
+    "candidate_p99_ms": 1.594916,
+    "paired_median_ratio": 0.8907232853029318,
+    "paired_median_ratio_bootstrap_95": [
+      0.8766690674699792,
+      0.9014257447572851
+    ],
+    "lexical_bytes": [
+      28740744,
+      23940216
+    ]
+  },
+  {
+    "case": "dense-4",
+    "pairs": 51,
+    "baseline_p50_ms": 4.197625,
+    "candidate_p50_ms": 3.667167,
+    "baseline_p95_ms": 4.313459,
+    "candidate_p95_ms": 3.774417,
+    "baseline_p99_ms": 4.386875,
+    "candidate_p99_ms": 3.891084,
+    "paired_median_ratio": 0.8765826219261011,
+    "paired_median_ratio_bootstrap_95": [
+      0.8658765373276555,
+      0.8874262609568219
+    ],
+    "lexical_bytes": [
+      56270544,
+      47271696
+    ]
+  },
+  {
+    "case": "dense-8",
+    "pairs": 51,
+    "baseline_p50_ms": 7.664875,
+    "candidate_p50_ms": 6.9115,
+    "baseline_p95_ms": 7.878625,
+    "candidate_p95_ms": 7.124333,
+    "baseline_p99_ms": 8.08875,
+    "candidate_p99_ms": 7.27275,
+    "paired_median_ratio": 0.9020783129515006,
+    "paired_median_ratio_bootstrap_95": [
+      0.8923028216432772,
+      0.9090821145679946
+    ],
+    "lexical_bytes": [
+      93520587,
+      84264597
+    ]
+  },
+  {
+    "case": "dense-16",
+    "pairs": 51,
+    "baseline_p50_ms": 14.715458,
+    "candidate_p50_ms": 13.377125,
+    "baseline_p95_ms": 14.938459,
+    "candidate_p95_ms": 13.536833,
+    "baseline_p99_ms": 15.067875,
+    "candidate_p99_ms": 13.638083,
+    "paired_median_ratio": 0.9064633893870746,
+    "paired_median_ratio_bootstrap_95": [
+      0.9016645757739326,
+      0.9127771303754653
+    ],
+    "lexical_bytes": [
+      168009096,
+      158746425
+    ]
+  },
+  {
+    "case": "repeated",
+    "pairs": 51,
+    "baseline_p50_ms": 0.403292,
+    "candidate_p50_ms": 0.37675,
+    "baseline_p95_ms": 0.433958,
+    "candidate_p95_ms": 0.410708,
+    "baseline_p99_ms": 0.442958,
+    "candidate_p99_ms": 0.411333,
+    "paired_median_ratio": 0.941591784338896,
+    "paired_median_ratio_bootstrap_95": [
+      0.9259314516332962,
+      0.9491634308272956
+    ],
+    "lexical_bytes": [
+      21496500,
+      20229660
+    ]
+  },
+  {
+    "case": "chinese",
+    "pairs": 51,
+    "baseline_p50_ms": 0.431041,
+    "candidate_p50_ms": 0.392709,
+    "baseline_p95_ms": 0.464292,
+    "candidate_p95_ms": 0.434459,
+    "baseline_p99_ms": 0.492417,
+    "candidate_p99_ms": 0.445833,
+    "paired_median_ratio": 0.9089345315091495,
+    "paired_median_ratio_bootstrap_95": [
+      0.9022997401097315,
+      0.9208938194375054
+    ],
+    "lexical_bytes": [
+      22314540,
+      20462322
+    ]
+  },
+  {
+    "case": "filtered",
+    "pairs": 51,
+    "baseline_p50_ms": 11.118666,
+    "candidate_p50_ms": 10.756125,
+    "baseline_p95_ms": 11.688708,
+    "candidate_p95_ms": 11.114958,
+    "baseline_p99_ms": 11.710042,
+    "candidate_p99_ms": 11.398625,
+    "paired_median_ratio": 0.9783173454951646,
+    "paired_median_ratio_bootstrap_95": [
+      0.9615539527437528,
+      0.986023441440862
+    ],
+    "lexical_bytes": [
+      28435050,
+      28435050
+    ]
+  },
+  {
+    "case": "absent",
+    "pairs": 51,
+    "baseline_p50_ms": 0.031584,
+    "candidate_p50_ms": 0.024709,
+    "baseline_p95_ms": 0.043167,
+    "candidate_p95_ms": 0.034,
+    "baseline_p99_ms": 0.047667,
+    "candidate_p99_ms": 0.040125,
+    "paired_median_ratio": 0.775166341156609,
+    "paired_median_ratio_bootstrap_95": [
+      0.7024096773155745,
+      0.8356900096504847
+    ],
+    "lexical_bytes": [
+      261324,
+      261324
+    ]
+  },
+  {
+    "case": "mixed",
+    "pairs": 51,
+    "baseline_p50_ms": 3.073,
+    "candidate_p50_ms": 2.130334,
+    "baseline_p95_ms": 3.746917,
+    "candidate_p95_ms": 2.7375,
+    "baseline_p99_ms": 3.800041,
+    "candidate_p99_ms": 2.769875,
+    "paired_median_ratio": 0.695911041279757,
+    "paired_median_ratio_bootstrap_95": [
+      0.6861778810411325,
+      0.7095297757013393
+    ],
+    "lexical_bytes": [
+      42695925,
+      31642593
+    ]
+  }
+]
