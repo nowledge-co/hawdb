@@ -201,6 +201,7 @@ impl GraphExecutionRead for Fixture {
     fn projected_node_owned_admitted(
         &self,
         id: NodeId,
+        label_ids: Option<&[LabelId]>,
         required_properties: &BTreeSet<String>,
         admit: &mut dyn FnMut(usize) -> Result<()>,
     ) -> Result<Option<ProjectedNodeRecord>> {
@@ -212,6 +213,9 @@ impl GraphExecutionRead for Fixture {
         let Some(node) = self.nodes.iter().find(|node| node.id == id) else {
             return Ok(None);
         };
+        if !crate::predicate::node_matches_label_pattern(node, label_ids) {
+            return Ok(None);
+        }
         admit(hawdb_core::ids::projected_node_allocation_bytes(
             node,
             required_properties,

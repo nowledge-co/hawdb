@@ -166,6 +166,115 @@ fn explain_analyze_reports_storage_scan_pruning_profile() {
 }
 
 #[test]
+fn projected_node_id_seek_respects_residency_labels_and_snapshot() {
+    const QUERY: &str =
+        "MATCH (n:Item) WHERE id(n) = $id AND n.score > $min RETURN n.score AS score";
+    let path = unique_test_dir("projected-node-id-seek");
+    let mut config = DatabaseConfig {
+        storage_residency_mode: crate::StorageResidencyMode::OutOfCore,
+        segment_cache_capacity_bytes: 16 * 1024,
+        ..DatabaseConfig::default()
+    };
+    let mut db = Database::open_with_config(&path, config.clone()).unwrap();
+    db.query("CREATE (:Item {score: 1})").unwrap();
+    db.query("CREATE (:Item {score: 2})").unwrap();
+    db.query_with_params(
+        "CREATE (:Other {score: 3, body: $body})",
+        &BTreeMap::from([("body".into(), Value::String("x".repeat(64 * 1024)))]),
+    )
+    .unwrap();
+    let nodes = db
+        .query("MATCH (n) RETURN id(n) AS id, n.score AS score ORDER BY score")
+        .unwrap();
+    let first = nodes.rows[0]["id"].clone();
+    let second = nodes.rows[1]["id"].clone();
+    let other = nodes.rows[2]["id"].clone();
+    db.checkpoint().unwrap();
+    drop(db);
+
+    config.execution_memory.query_memory_bytes = std::num::NonZeroUsize::new(16 * 1024).unwrap();
+    let mut db = Database::open_with_config(&path, config).unwrap();
+    let report = db.storage_residency_report().unwrap();
+    assert!(report.out_of_core);
+    assert_eq!(report.segment_cache_capacity_bytes, 16 * 1024);
+    let params =
+        |id: Value, min| BTreeMap::from([("id".into(), id), ("min".into(), Value::Int(min))]);
+    let first_params = params(first.clone(), 0);
+    let output = db
+        .explain_analyze_query_with_params(QUERY, &first_params)
+        .unwrap();
+    assert!(output.physical_plan.explain(0).contains("NodeIdSeek"));
+    assert_eq!(output.output.rows[0]["score"], Value::Int(1));
+    let [scan] = output.execution_profile.scan_pruning_reports.as_slice() else {
+        panic!("expected one node scan report");
+    };
+    assert_eq!(
+        scan.strategy,
+        hawdb_storage::scan::ScanPruningStrategy::IdEq
+    );
+    assert_eq!(scan.candidate_count_before_pruning, 2);
+    assert_eq!(scan.candidate_count_before_filter, 1);
+    assert_eq!(scan.output_count, 1);
+
+    let second_params = params(second, 0);
+    let rebound = db.query_with_params(QUERY, &second_params).unwrap();
+    assert_eq!(rebound.rows[0]["score"], Value::Int(2));
+    for parameters in [
+        params(first.clone(), 1),
+        params(other.clone(), 0),
+        params(Value::Int(i64::MAX), 0),
+    ] {
+        assert!(db
+            .query_with_params(QUERY, &parameters)
+            .unwrap()
+            .rows
+            .is_empty());
+    }
+    for invalid_id in [
+        Value::Null,
+        Value::Int(-1),
+        Value::String("wrong type".into()),
+    ] {
+        assert!(matches!(
+            db.query_with_params(QUERY, &params(invalid_id, 0)),
+            Err(HawDBError::Semantic(_))
+        ));
+    }
+
+    let wide = BTreeMap::from([("id".into(), other)]);
+    assert!(db
+        .query_with_params(
+            "MATCH (n:Item) WHERE id(n) = $id RETURN n.body AS body",
+            &wide
+        )
+        .unwrap()
+        .rows
+        .is_empty());
+    assert!(db
+        .query_with_params(
+            "MATCH (n:Other) WHERE id(n) = $id RETURN n.body AS body",
+            &wide
+        )
+        .is_err());
+
+    let mut pinned = db.begin_read_transaction().unwrap();
+    db.query_with_params("MATCH (n:Item) WHERE id(n) = $id DELETE n", &first_params)
+        .unwrap();
+    assert!(db
+        .query_with_params(QUERY, &first_params)
+        .unwrap()
+        .rows
+        .is_empty());
+    assert_eq!(
+        pinned.query_with_params(QUERY, &first_params).unwrap().rows[0]["score"],
+        Value::Int(1)
+    );
+    drop(pinned);
+    drop(db);
+    std::fs::remove_dir_all(&path).unwrap();
+}
+
+#[test]
 fn explain_analyze_reports_durable_source_segment_pruning() {
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
