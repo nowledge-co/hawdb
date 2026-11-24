@@ -69,7 +69,7 @@ fn competing_publication_reuses_object_without_leaking_staging() {
                 written,
                 &staging,
                 &destination,
-                BlockWork::default()
+                BlockWork::default().into()
             )
             .unwrap(),
         PublishOutcome::Reused

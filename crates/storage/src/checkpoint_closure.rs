@@ -325,6 +325,7 @@ fn publish_checkpoint_closure_inner(
     let mut references = BTreeSet::new();
     let mut published = Vec::with_capacity(inputs.len());
     let mut total_bytes = 0_u64;
+    let mut batch = crate::immutable_object::SealedPublicationBatch::new(inputs.len());
 
     for input in inputs {
         if !matches!(
@@ -342,7 +343,7 @@ fn publish_checkpoint_closure_inner(
         let unique = references.insert(input.reference);
         if unique || sealed {
             let result = if sealed {
-                store.publish_sealed_file_with_work(input.reference, &input.path, work)
+                store.publish_sealed_file_in_batch(input.reference, &input.path, work, &mut batch)
             } else {
                 store.publish_file_with_work(input.reference, &input.path, work)
             };
@@ -363,6 +364,11 @@ fn publish_checkpoint_closure_inner(
         } else if !retain_duplicate_bindings {
             return Err(CheckpointClosureError::DuplicateReference(input.reference));
         }
+    }
+    if sealed {
+        store
+            .finish_sealed_publication(batch, work)
+            .map_err(CheckpointClosureError::Publish)?;
     }
     published.sort_unstable();
     Ok(PublishedCheckpointClosure {

@@ -29,13 +29,16 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod publication;
 mod published;
 mod sealed;
+use publication::{NamespaceBatch, PublicationWork};
 pub(crate) use published::skip_rehash as skip_published_rehash;
 pub(crate) use published::WrittenStamp as ObjectStamp;
 #[doc(hidden)]
 pub use published::{forget_published_object, published_object_skipped_rehashes};
 pub use published::{record_verified_file, verified_file_unchanged, VerifiedFileStamp};
+pub(crate) use sealed::SealedPublicationBatch;
 
 const OBJECTS_DIRECTORY: &str = "objects";
 const STAGING_DIRECTORY: &str = ".staging";
@@ -1329,7 +1332,7 @@ impl ImmutableObjectStore {
                 reference,
                 Some(payload),
                 &destination,
-                BlockWork::default(),
+                BlockWork::default().into(),
             );
         }
 
@@ -1340,7 +1343,7 @@ impl ImmutableObjectStore {
             None,
             &staging,
             &destination,
-            BlockWork::default(),
+            BlockWork::default().into(),
         )
     }
 
@@ -1380,11 +1383,18 @@ impl ImmutableObjectStore {
         }
         let destination = self.prepare_kind_directory(reference)?;
         if destination.exists() {
-            return self.validate_existing(reference, None, &destination, work);
+            return self.validate_existing(reference, None, &destination, work.into());
         }
 
         let (staging, written) = self.stage_file(reference, source, work)?;
-        self.install_staged(reference, None, written, &staging, &destination, work)
+        self.install_staged(
+            reference,
+            None,
+            written,
+            &staging,
+            &destination,
+            work.into(),
+        )
     }
 
     /// Establishes the object namespace and kind directory name barriers and
@@ -1509,7 +1519,7 @@ impl ImmutableObjectStore {
         written: Option<published::WrittenStamp>,
         staging: &Path,
         destination: &Path,
-        work: BlockWork<'_>,
+        mut work: PublicationWork<'_, '_>,
     ) -> Result<PublishOutcome, ImmutableObjectError> {
         let written = written.filter(|stamp| {
             payload.is_none()
@@ -1524,7 +1534,7 @@ impl ImmutableObjectStore {
                 reference,
                 payload,
                 self.payload_limit(reference, payload),
-                work,
+                work.block,
             )?;
         }
         match fs::hard_link(staging, destination) {
@@ -1533,19 +1543,28 @@ impl ImmutableObjectStore {
                     self.poisoned = true;
                     return Err(ImmutableObjectError::PublicationUncertain { source: error });
                 }
-                if let Err(error) = sync_publication_directories(destination, staging.parent()) {
+                if let Err(error) = work.complete(
+                    destination,
+                    staging.parent(),
+                    written.map(|stamp| (reference, stamp)),
+                ) {
                     self.poisoned = true;
                     return Err(ImmutableObjectError::PublicationUncertain { source: error });
-                }
-                if let Some(stamp) = written {
-                    published::record(reference, stamp);
                 }
                 Ok(PublishOutcome::Published)
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                self.validate_existing(reference, payload, destination, work)?;
-                if let Err(source) = fs::remove_file(staging)
-                    .and_then(|_| crate::durability::sync_parent_directory(staging))
+                self.validate_existing(
+                    reference,
+                    payload,
+                    destination,
+                    PublicationWork {
+                        block: work.block,
+                        namespace: work.namespace.as_deref_mut(),
+                    },
+                )?;
+                if let Err(source) =
+                    fs::remove_file(staging).and_then(|_| work.removed_staging(staging))
                 {
                     self.poisoned = true;
                     return Err(ImmutableObjectError::PublicationUncertain { source });
@@ -1564,7 +1583,7 @@ impl ImmutableObjectStore {
         reference: ObjectReference,
         payload: Option<&[u8]>,
         path: &Path,
-        work: BlockWork<'_>,
+        mut work: PublicationWork<'_, '_>,
     ) -> Result<PublishOutcome, ImmutableObjectError> {
         let metadata = map_io("read immutable object metadata", fs::symlink_metadata(path))?;
         if !metadata.file_type().is_file() {
@@ -1577,11 +1596,11 @@ impl ImmutableObjectStore {
             reference,
             payload,
             self.payload_limit(reference, payload),
-            work,
+            work.block,
         )?;
         // A previous publisher may have installed complete bytes but failed its
         // final namespace barrier. Acknowledging reuse must close that window.
-        if let Err(source) = sync_publication_directories(path, None) {
+        if let Err(source) = work.complete(path, None, None) {
             self.poisoned = true;
             return Err(ImmutableObjectError::PublicationUncertain { source });
         }
@@ -1776,6 +1795,22 @@ fn sync_publication_directories(
     destination: &Path,
     staging_directory: Option<&Path>,
 ) -> io::Result<()> {
+    let parent = destination.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "object has no parent directory",
+        )
+    })?;
+    sync_publication_directory(parent)?;
+    if let Some(staging_directory) = staging_directory {
+        sync_publication_directory(staging_directory)?;
+    }
+    Ok(())
+}
+
+fn sync_publication_directory(directory: &Path) -> io::Result<()> {
+    #[cfg(test)]
+    PUBLICATION_DIRECTORY_SYNCS.with(|count| count.set(count.get() + 1));
     #[cfg(test)]
     if FAIL_NEXT_PUBLICATION_SYNC.with(|failure| failure.replace(false)) {
         return Err(io::Error::new(
@@ -1783,16 +1818,13 @@ fn sync_publication_directories(
             "injected immutable object directory sync failure",
         ));
     }
-    crate::durability::sync_parent_directory(destination)?;
-    if let Some(staging_directory) = staging_directory {
-        crate::durability::sync_directory(staging_directory)?;
-    }
-    Ok(())
+    crate::durability::sync_directory(directory)
 }
 
 #[cfg(test)]
 thread_local! {
     static FAIL_NEXT_PUBLICATION_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static PUBLICATION_DIRECTORY_SYNCS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -1815,6 +1847,9 @@ fn fail_next_publication_sync() -> PublicationSyncFailureGuard {
 
 #[cfg(test)]
 mod work_tests;
+
+#[cfg(test)]
+mod publication_profile;
 
 #[cfg(test)]
 mod published_tests;

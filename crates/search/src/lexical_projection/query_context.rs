@@ -54,6 +54,7 @@ pub(crate) struct ScoringInputs<'a> {
     pub global_statistics: Option<&'a LexicalCorpusStatistics>,
     pub prune_blocks: bool,
     pub context: Option<QueryContext<'a>>,
+    pub posting_cache: Option<&'a super::PostingBlockCache>,
 }
 
 pub(crate) struct AccountedQueryReport {

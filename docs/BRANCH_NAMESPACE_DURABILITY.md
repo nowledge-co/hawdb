@@ -48,9 +48,22 @@ through `hawdb_core::error::file_descriptor_error`.
 An immutable store establishes its ancestry on its first publication, rather
 than on read-only open. It remembers only successful object-kind name barriers
 (at most five kinds); each new object's contents and final name still require
-their own barriers. Reopening or reclamation invalidates that knowledge. Reuse
-of a complete object repeats the final directory barrier because an earlier
-publisher may have failed after installing the bytes.
+a contents barrier and a final-name barrier. Reopening or reclamation
+invalidates that knowledge. Reuse of a complete object repeats the final
+directory barrier because an earlier publisher may have failed after
+installing the bytes.
+
+GraphStore's private, closed checkpoint producers batch final-name barriers
+for at most 64 files at a time (#1942). Each file is still hashed and synchronized
+before installation. The batch retains every destination and staging directory,
+then synchronizes each directory once before recording process-local publication
+proofs and physically mounting producer aliases. Producer aliases are bound for
+COW immediately after installation, including when a later input or barrier
+fails. The final partial batch completes before the closure can build or publish
+a head. A failed directory barrier poisons that publisher and refuses closure
+completion; reopening must fully verify and synchronize reuse. Public caller-owned
+object publication retains its immediate barriers. This changes no object bytes,
+reference, WAL, checkpoint format or durability configuration.
 
 Child WAL/head publication establishes the containing ancestry before success.
 An uncertain directory barrier retains the Creating receipt and complete files.

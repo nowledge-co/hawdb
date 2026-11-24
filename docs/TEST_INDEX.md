@@ -4848,3 +4848,59 @@ publication fault plan, in `Materialized` and `OutOfCore` residency with both
 durability policies, and checks that rows committed after the batch survive
 whole or not at all. Fsync counts are measured with a local profiling harness,
 not in CI. No new lane, fixture, feature or timeout.
+
+
+### Query-local posting reuse and multi-term merge (#1940)
+
+`lexical_projection::tests::posting_cache` and `posting_merge` stay in the
+existing Search feature matrix (`//crates/search:hawdb_search_tests`,
+`full-text-search`). The 1,024-document fixture spans many physical blocks and
+covers identical score bits, top-k ties and full match counts, independent
+single-term score accumulation, filtered hits, cache release at the former
+exact working budget, reader/checksum identity and cancellation on a cache hit.
+No feature, lane, timeout or fixture-size increase is applied to existing cases.
+The manual `crates/search/examples/bm25_query_profile.rs` driver compares complete
+ScoresOnly queries on the same deterministic generation, including sparse and
+dense multi-term queries, repeated terms, Chinese, metadata filters and offsets.
+Build both revisions under the repository release profile with
+`cargo build --locked -p hawdb-search --release --example bm25_query_profile`;
+create a new fixture with `bm25_query_profile build NEW_ROOT 16384 4096`, then
+import an ID-sorted BEIR corpus with
+`bm25_query_profile import NEW_ROOT CORPUS_JSONL SEGMENT_ROWS`, then
+send JSON lines containing `query` and optional `scope`/`offset` to
+`bm25_query_profile worker ROOT`. Compare every hit ID, rank, score bit and total
+before interpreting interleaved warm-query latency. This is manual measurement,
+not a CI performance gate; opening/building and serialization are outside timing.
+
+### Sealed checkpoint namespace batches (#1942)
+
+The existing Storage unit owner (`//crates/storage:hawdb_storage_tests`) owns
+`immutable_object::publication_profile::batch_closes_directory_barriers_once_per_namespace`:
+eight new/reused artifacts retain byte and COW checks while publishing once per
+namespace rather than once per file. The 64/65/129-file boundary test covers the
+bounded publication windows and their final partial tails. Existing power-loss owners retain the new
+`power_loss::tests::sealed_batch_*` cases: unsynchronized producer bytes and
+unacknowledged names before completion, complete names after the barrier,
+failed directory synchronization, publisher poisoning, deferred publication
+records, COW custody and a fresh publisher closing an uncertain reuse barrier.
+These use the existing loss/reordering image model, not process-kill evidence.
+Replay the explicitly ignored, manual-only component profile with
+`cargo test --locked -p hawdb-storage --release --lib sealed_publication_batch_profile -- --ignored --nocapture --test-threads=1`.
+It alternates separate and batched barriers over 31 samples each of 1/8/64 new/reused
+8 KiB files, checks all bytes and later producer writes, and reports synchronized
+publication latency and directory-barrier counts. It does not measure full
+checkpoint/commit throughput, does not replace device qualification, and adds no
+CI lane, target-specific profile, timeout or production dependency.
+
+
+The manual `crates/storage/examples/checkpoint_namespace_profile.rs` driver
+compares complete `GraphStore::checkpoint` calls between revisions under the
+same repository release profile and strict default durability. It creates fresh
+bounded fixtures from JSON lines (`rows` <= 10,000, optional `precheckpoint`),
+verifies every node before/after checkpoint and reopen, and excludes fixture
+creation, commit, reopen and cleanup from checkpoint timing. Build with
+`cargo build --locked -p hawdb-storage --release --example checkpoint_namespace_profile`;
+run `checkpoint_namespace_profile NEW_PARENT_DIRECTORY` and compare interleaved
+fresh-reader processes. This is manual only; ordinary CI compiles the example
+but does not run latency campaigns. Graph-only fixtures do not qualify the full
+relational/DDL schema-registry workload or device power-loss behavior.

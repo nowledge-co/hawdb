@@ -28,6 +28,16 @@ impl AccountedCorpusStatistics {
         max_term_bytes: NonZeroU64,
         context: QueryContext<'_>,
     ) -> Result<Self> {
+        Self::aggregate_cached(projections, query_terms, max_term_bytes, context, None)
+    }
+
+    pub(crate) fn aggregate_cached<'a, T: Borrow<str> + Ord>(
+        projections: impl IntoIterator<Item = &'a LexicalProjectionReader>,
+        query_terms: &BTreeSet<T>,
+        max_term_bytes: NonZeroU64,
+        context: QueryContext<'_>,
+        cache: Option<&PostingBlockCache>,
+    ) -> Result<Self> {
         context.checkpoint()?;
         let mut map_bytes = 0;
         for term in query_terms.iter().map(query_term) {
@@ -35,7 +45,8 @@ impl AccountedCorpusStatistics {
             let entry = checked_add(MAP_ENTRY_BYTES, term.len())?;
             map_bytes = checked_add(map_bytes, checked_add(entry, entry)?)?;
         }
-        let memory = context.memory.reserve(map_bytes)?;
+        let memory =
+            PostingBlockCache::reclaim_on_refusal(cache, || context.memory.reserve(map_bytes))?;
         let mut statistics = LexicalCorpusStatistics::default();
         for projection in projections {
             context.checkpoint()?;
@@ -47,12 +58,15 @@ impl AccountedCorpusStatistics {
                 usize::try_from(projection.statistics_block_bytes(&ranges)).map_err(|_| {
                     HawDBError::Execution("lexical statistics block exceeds address space".into())
                 })?;
-            let _block = context.memory.reserve(block_bytes)?;
-            let local = projection.query_statistics_in_ranges(
+            let _block = PostingBlockCache::reclaim_on_refusal(cache, || {
+                context.memory.reserve(block_bytes)
+            })?;
+            let local = projection.query_statistics_in_ranges_cached(
                 query_terms,
                 &ranges,
                 max_term_bytes,
                 Some(context),
+                cache,
             )?;
             statistics.merge(&local)?;
             context.checkpoint()?;

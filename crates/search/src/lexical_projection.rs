@@ -72,7 +72,10 @@ use spill_control::Control as SpillControl;
 mod spill_memory;
 use spill_memory::{PendingPostings, RunPosting};
 mod manifest_encoding;
+mod posting_cache;
+mod posting_merge;
 mod posting_ranges;
+pub(crate) use posting_cache::PostingBlockCache;
 mod reader_admission;
 pub(super) use reader_admission::{Identity as ReaderIdentity, OpenContext as ReaderOpenContext};
 mod posting_codec;
@@ -1570,6 +1573,28 @@ impl LexicalProjectionReader {
         max_term_bytes: NonZeroU64,
         context: Option<QueryContext<'_>>,
     ) -> Result<LexicalCorpusStatistics> {
+        self.query_statistics_in_ranges_cached(query_terms, ranges, max_term_bytes, context, None)
+    }
+
+    pub(crate) fn query_statistics_cached<T: Borrow<str> + Ord>(
+        &self,
+        query_terms: &BTreeSet<T>,
+        max_term_bytes: NonZeroU64,
+        context: Option<QueryContext<'_>>,
+        cache: Option<&PostingBlockCache>,
+    ) -> Result<LexicalCorpusStatistics> {
+        let ranges = self.posting_block_ranges(query_terms);
+        self.query_statistics_in_ranges_cached(query_terms, &ranges, max_term_bytes, context, cache)
+    }
+
+    fn query_statistics_in_ranges_cached<T: Borrow<str> + Ord>(
+        &self,
+        query_terms: &BTreeSet<T>,
+        ranges: &[std::ops::Range<usize>],
+        max_term_bytes: NonZeroU64,
+        context: Option<QueryContext<'_>>,
+        cache: Option<&PostingBlockCache>,
+    ) -> Result<LexicalCorpusStatistics> {
         debug_assert_eq!(ranges.len(), query_terms.len());
         query_context::check(context)?;
         self.validate_term_limit(max_term_bytes)?;
@@ -1601,15 +1626,21 @@ impl LexicalProjectionReader {
         // Ranges are ordered by both bounds. A block below `visited` was read
         // for an earlier term together with every later term covering it.
         let mut visited = 0usize;
+        let mut buffer = PostingReadBuffer::default();
         for (first_term, range) in ranges.iter().enumerate() {
             for index in range.start.max(visited)..range.end {
                 query_context::check(context)?;
                 let block = &self.manifest.blocks[index];
-                let bytes =
-                    self.read_block_with_task(block, context.map(|context| context.task))?;
-                bytes_read = bytes_read.saturating_add(bytes.len() as u64);
-                let posting_block = split_posting_block(&bytes, self.manifest.generation, block)?;
-                dictionary_map(posting_block.dictionary, |dictionary| {
+                let (dictionary, read) = buffer.read_cached(
+                    self,
+                    block,
+                    context.map(|context| context.task),
+                    cache,
+                    context,
+                )?;
+                bytes_read = bytes_read.saturating_add(read);
+                let count = dictionary.as_fst().as_inner().count;
+                catch_dictionary_panic(|| {
                     for (term, _) in terms[first_term..]
                         .iter()
                         .zip(&ranges[first_term..])
@@ -1620,7 +1651,7 @@ impl LexicalProjectionReader {
                             continue;
                         };
                         let (_, document_frequency) = unpack_dictionary_value(value)?;
-                        if document_frequency > posting_block.count {
+                        if document_frequency > count {
                             return Err(HawDBError::Storage(
                                 "lexical term dictionary count exceeds its block".to_string(),
                             ));
@@ -1659,6 +1690,7 @@ impl LexicalProjectionReader {
         self.score_terms_with_stable_filter(
             query_terms,
             ScoringInputs {
+                posting_cache: None,
                 complete_candidate_limit: None,
                 delta,
                 max_term_bytes: self.config.max_term_bytes,
@@ -1749,6 +1781,7 @@ impl LexicalProjectionReader {
         self.score_accounted(
             query_terms,
             ScoringInputs {
+                posting_cache: None,
                 complete_candidate_limit: None,
                 delta,
                 max_term_bytes,
@@ -1818,6 +1851,7 @@ impl LexicalProjectionReader {
             global_statistics,
             prune_blocks,
             context,
+            posting_cache,
         } = inputs;
         query_context::check(context)?;
         self.validate_term_limit(max_term_bytes)?;
@@ -1898,6 +1932,9 @@ impl LexicalProjectionReader {
                 ),
             ));
         }
+        if let Some(cache) = posting_cache {
+            cache.prepare_scoring(admitted_stream_bytes, self.config.query_memory_bytes.get());
+        }
         let _working = context
             .map(|context| {
                 let mut bytes = usize::try_from(admitted_stream_bytes).map_err(|_| {
@@ -1914,12 +1951,22 @@ impl LexicalProjectionReader {
                 for _ in query_terms {
                     bytes = checked_add(bytes, 4 * MAP_ENTRY_BYTES)?;
                 }
-                context.memory.reserve(bytes)
+                PostingBlockCache::reclaim_on_refusal(posting_cache, || {
+                    context.memory.reserve(bytes)
+                })
             })
             .transpose()?;
         let local_statistics = global_statistics
             .is_none()
-            .then(|| self.query_statistics_in_ranges(query_terms, &ranges, max_term_bytes, context))
+            .then(|| {
+                self.query_statistics_in_ranges_cached(
+                    query_terms,
+                    &ranges,
+                    max_term_bytes,
+                    context,
+                    posting_cache,
+                )
+            })
             .transpose()?;
         let (document_count, total_document_len) = global_statistics.map_or_else(
             || {
@@ -1963,11 +2010,14 @@ impl LexicalProjectionReader {
             );
         }
         let average_document_len = (total_document_len as f64 / document_count as f64).max(1.0);
-        let mut collector = ScoreCollector::new(
-            retained_score_limit,
-            self.config.max_query_score_entries.get(),
-            context,
-        )?
+        let mut collector = PostingBlockCache::reclaim_on_refusal(posting_cache, || {
+            ScoreCollector::new(
+                retained_score_limit,
+                self.config.max_query_score_entries.get(),
+                context,
+            )
+        })?
+        .with_posting_cache(posting_cache)
         .with_complete_candidate_limit(complete_candidate_limit);
         let mut streams = Vec::new();
         let encoded = RefCell::new(PostingReadBuffer::default());
@@ -1977,23 +2027,29 @@ impl LexicalProjectionReader {
             let df = document_frequency.get(term).copied().unwrap_or(0);
             candidate_postings = candidate_postings.saturating_add(df as u64);
             if df > 0 {
-                streams.push(TermPostingStream::with_context(
-                    self,
-                    term,
-                    self.posting_blocks_in(range.clone()),
-                    context,
-                    &encoded,
-                ));
+                streams.push(
+                    TermPostingStream::with_context(
+                        self,
+                        term,
+                        self.posting_blocks_in(range.clone()),
+                        context,
+                        &encoded,
+                    )
+                    .with_cache(posting_cache),
+                );
                 stream_idf.push(idf(document_count, df));
             }
         }
         let mut documents = DocumentLookup::new(self, context.map(|context| context.task));
         let mut group: Vec<(usize, QueryPosting)> = Vec::new();
-        let mut order: Vec<(u64, usize)> = Vec::with_capacity(streams.len());
         let mut blocks_skipped = 0u64;
         let prune = prune_blocks
             && collector.has_floor()
             && candidate_postings >= self.config.pruning_min_postings;
+        let mut frontier = (!prune && streams.len() >= 8)
+            .then(|| posting_merge::OrdinalFrontier::new(streams.len()));
+        let mut order: Vec<(u64, usize)> =
+            Vec::with_capacity(if prune { streams.len() } else { 0 });
         loop {
             query_context::check(context)?;
             let floor = if prune {
@@ -2004,24 +2060,29 @@ impl LexicalProjectionReader {
             } else {
                 None
             };
-            order.clear();
-            let mut next_ordinal: Option<u64> = None;
-            for (index, stream) in streams.iter_mut().enumerate() {
-                if let Some(ordinal) = stream.peek_ordinal()? {
-                    if floor.is_some() {
-                        order.push((ordinal, index));
-                    } else {
-                        // Exhaustive scoring and WAND warmup only need the
-                        // next ID, without storing or sorting the cursors.
-                        next_ordinal = Some(next_ordinal.map_or(ordinal, |next| next.min(ordinal)));
+            let ordinal = if let Some(frontier) = &mut frontier {
+                frontier.next_group(&mut streams, &mut group)?
+            } else {
+                order.clear();
+                let mut next_ordinal: Option<u64> = None;
+                for (index, stream) in streams.iter_mut().enumerate() {
+                    if let Some(ordinal) = stream.peek_ordinal()? {
+                        if floor.is_some() {
+                            order.push((ordinal, index));
+                        } else {
+                            // Exhaustive scoring and WAND warmup only need the
+                            // next ID, without storing or sorting the cursors.
+                            next_ordinal =
+                                Some(next_ordinal.map_or(ordinal, |next| next.min(ordinal)));
+                        }
                     }
                 }
-            }
-            let ordinal = if floor.is_some() {
-                order.sort_unstable();
-                order.first().map(|&(ordinal, _)| ordinal)
-            } else {
-                next_ordinal
+                if floor.is_some() {
+                    order.sort_unstable();
+                    order.first().map(|&(ordinal, _)| ordinal)
+                } else {
+                    next_ordinal
+                }
             };
             let Some(ordinal) = ordinal else {
                 break;
@@ -2096,11 +2157,13 @@ impl LexicalProjectionReader {
                     continue;
                 }
             }
-            group.clear();
-            for (index, stream) in streams.iter_mut().enumerate() {
-                if stream.peek_ordinal()? == Some(ordinal) {
-                    let posting = stream.take().expect("peeked lexical posting exists");
-                    group.push((index, posting));
+            if frontier.is_none() {
+                group.clear();
+                for (index, stream) in streams.iter_mut().enumerate() {
+                    if stream.peek_ordinal()? == Some(ordinal) {
+                        let posting = stream.take().expect("peeked lexical posting exists");
+                        group.push((index, posting));
+                    }
                 }
             }
             let (document_id, document_len) = documents.get(ordinal)?;
@@ -2232,7 +2295,7 @@ fn validate_posting_length(posting: &QueryPosting, document_len: u32) -> Result<
 struct PostingReadBuffer {
     block: Option<(u64, u64, u64)>,
     bytes: Vec<u8>,
-    dictionary: Option<fst::Map<PostingDictionaryBytes>>,
+    dictionary: Option<posting_cache::DictionaryStorage>,
 }
 
 /// Own the physical block while exposing only its dictionary to FST. This
@@ -2251,11 +2314,23 @@ impl AsRef<[u8]> for PostingDictionaryBytes {
 }
 
 impl PostingReadBuffer {
+    #[cfg(test)]
     fn read(
         &mut self,
         projection: &LexicalProjectionReader,
         block: &BlockDescriptor,
         task: Option<&RuntimeTaskContext>,
+    ) -> Result<(&fst::Map<PostingDictionaryBytes>, u64)> {
+        self.read_cached(projection, block, task, None, None)
+    }
+
+    fn read_cached(
+        &mut self,
+        projection: &LexicalProjectionReader,
+        block: &BlockDescriptor,
+        task: Option<&RuntimeTaskContext>,
+        cache: Option<&PostingBlockCache>,
+        context: Option<QueryContext<'_>>,
     ) -> Result<(&fst::Map<PostingDictionaryBytes>, u64)> {
         if let Some(task) = task {
             query_context::checkpoint(task)?;
@@ -2266,8 +2341,15 @@ impl PostingReadBuffer {
             // Invalidate before reading or verifying. Recover the allocation
             // only after dropping the dictionary that interpreted its bytes.
             self.block = None;
-            if let Some(dictionary) = self.dictionary.take() {
-                self.bytes = dictionary.into_fst().into_inner().bytes;
+            if let Some(dictionary) = self.dictionary.take()
+                && let Some(bytes) = dictionary.into_bytes()
+            {
+                self.bytes = bytes;
+            }
+            if let Some(dictionary) = cache.and_then(|cache| cache.get(projection, block)) {
+                self.dictionary = Some(posting_cache::DictionaryStorage::Shared(dictionary));
+                self.block = Some(identity);
+                return Ok((self.dictionary.as_deref().expect("cached dictionary"), 0));
             }
             projection.read_block_into(block, task, &mut self.bytes)?;
             bytes_read = self.bytes.len() as u64;
@@ -2282,7 +2364,11 @@ impl PostingReadBuffer {
                 payload_start,
                 count,
             };
-            self.dictionary = Some(catch_dictionary_panic(|| verified_dictionary(bytes))?);
+            let dictionary = catch_dictionary_panic(|| verified_dictionary(bytes))?;
+            self.dictionary = Some(match cache {
+                Some(cache) => cache.retain(projection, block, dictionary, context),
+                None => posting_cache::DictionaryStorage::Owned(dictionary),
+            });
             self.block = Some(identity);
         }
         Ok((
@@ -2310,6 +2396,7 @@ struct TermPostingStream<'a> {
     postings_visited: u64,
     bytes_read: u64,
     blocks_skipped: u64,
+    posting_cache: Option<&'a PostingBlockCache>,
 }
 
 impl<'a> TermPostingStream<'a> {
@@ -2344,7 +2431,13 @@ impl<'a> TermPostingStream<'a> {
             postings_visited: 0,
             bytes_read: 0,
             blocks_skipped: 0,
+            posting_cache: None,
         }
+    }
+
+    fn with_cache(mut self, cache: Option<&'a PostingBlockCache>) -> Self {
+        self.posting_cache = cache;
+        self
     }
 
     /// Cooperative cancellation runs where a stream does new work: before
@@ -2437,10 +2530,12 @@ impl<'a> TermPostingStream<'a> {
             };
             self.block_index = self.block_index.saturating_add(1);
             let mut buffer = self.encoded.borrow_mut();
-            let (dictionary, bytes_read) = buffer.read(
+            let (dictionary, bytes_read) = buffer.read_cached(
                 self.projection,
                 block,
                 self.context.map(|context| context.task),
+                self.posting_cache,
+                self.context,
             )?;
             self.bytes_read = self.bytes_read.saturating_add(bytes_read);
             let storage = dictionary.as_fst().as_inner();
@@ -2528,6 +2623,7 @@ pub(super) struct ScoreCollector<'a> {
     complete_candidate_limit: Option<usize>,
     context: Option<QueryContext<'a>>,
     memory: Option<QueryMemoryLease>,
+    posting_cache: Option<&'a PostingBlockCache>,
 }
 
 impl<'a> ScoreCollector<'a> {
@@ -2574,7 +2670,13 @@ impl<'a> ScoreCollector<'a> {
             complete_candidate_limit: None,
             context,
             memory,
+            posting_cache: None,
         })
+    }
+
+    fn with_posting_cache(mut self, cache: Option<&'a PostingBlockCache>) -> Self {
+        self.posting_cache = cache;
+        self
     }
 
     fn with_complete_candidate_limit(mut self, limit: Option<usize>) -> Self {
@@ -2617,7 +2719,9 @@ impl<'a> ScoreCollector<'a> {
                     .into());
                 }
                 if let Some(memory) = memory {
-                    memory.grow(checked_add(id.len(), SCORE_MAP_ENTRY_BYTES)?)?;
+                    PostingBlockCache::reclaim_on_refusal(self.posting_cache, || {
+                        memory.grow(checked_add(id.len(), SCORE_MAP_ENTRY_BYTES)?)
+                    })?;
                 }
                 scores.insert(id.to_owned(), score);
             }
@@ -2637,7 +2741,9 @@ impl<'a> ScoreCollector<'a> {
                     return Ok(());
                 }
                 if let Some(memory) = memory {
-                    memory.grow(checked_add(id.len(), SCORE_MAP_ENTRY_BYTES)?)?;
+                    PostingBlockCache::reclaim_on_refusal(self.posting_cache, || {
+                        memory.grow(checked_add(id.len(), SCORE_MAP_ENTRY_BYTES)?)
+                    })?;
                 }
                 // Admission covers both IDs until the evicted owner drops.
                 let candidate = ScoredDocument {
@@ -3765,6 +3871,7 @@ fn split_posting_block<'a>(
     })
 }
 
+#[cfg(test)]
 fn dictionary_map<T>(
     bytes: &[u8],
     consume: impl FnOnce(&fst::Map<&[u8]>) -> Result<T>,
@@ -4160,6 +4267,10 @@ mod tests {
     #[cfg(feature = "full-text-search")]
     mod checkpoint;
     mod cursor_selection;
+    #[cfg(feature = "full-text-search")]
+    mod posting_cache;
+    #[cfg(feature = "full-text-search")]
+    mod posting_merge;
     mod pruning;
     mod query_context;
     mod robustness;

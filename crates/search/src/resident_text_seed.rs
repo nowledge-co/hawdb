@@ -183,6 +183,7 @@ impl SearchIndex {
             let scored = projection.score_terms_with_stable_filter(
                 &terms,
                 ScoringInputs {
+                    posting_cache: None,
                     complete_candidate_limit: complete.then_some(max_candidates),
                     delta: &delta,
                     max_term_bytes: self.lexical_config.max_term_bytes,
