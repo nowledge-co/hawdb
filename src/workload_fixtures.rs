@@ -718,7 +718,9 @@ fn error_class(error: &crate::HawDBError) -> String {
         | crate::HawDBError::SearchProjectionOwnershipMismatch { .. }
         | crate::HawDBError::SearchProjectionEpochAdvanceRefused { .. }
         | crate::HawDBError::SearchProjectionPrefixBehindSource { .. }
-        | crate::HawDBError::SearchProjectionBatchBudgetExceeded { .. } => "execution",
+        | crate::HawDBError::SearchProjectionBatchBudgetExceeded { .. }
+        | crate::HawDBError::SearchProductionQualificationGraphEpochMismatch { .. }
+        | crate::HawDBError::SearchProductionQualificationRefused { .. } => "execution",
         crate::HawDBError::Storage(_)
         | crate::HawDBError::Constraint {
             surface: RelationalErrorSurface::Storage,

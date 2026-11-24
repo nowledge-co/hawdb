@@ -294,7 +294,7 @@ impl GraphStore {
         let plan = durable.checkpoint_closure_plan_with_work(manifest, work)?;
         let checkpoint_bindings = checkpoint_artifact_bindings(&durable.root_path, plan.inputs())?;
         let closure = plan
-            .publish_with_work(&mut objects, work)
+            .publish_sealed_with_work(&mut objects, work)
             .map_err(HawDBError::from_storage_error)?;
         let root = SealedRoot {
             checkpoint_epoch: manifest.checkpoint_commit_epoch,
@@ -2545,7 +2545,7 @@ fn publish_sealed_root(
         let plan = durable.checkpoint_closure_plan(manifest)?;
         let bindings = checkpoint_artifact_bindings(&durable.root_path, plan.inputs())?;
         let closure = plan
-            .publish(objects)
+            .publish_sealed_with_work(objects, crate::immutable_object::BlockWork::default())
             .map_err(HawDBError::from_storage_error)?;
         // A new manifest includes its checkpoint replay boundary. Previously
         // sealed intervals are covered and must not be replayed a second time.
@@ -2586,24 +2586,31 @@ fn publish_sealed_root(
     Ok(root)
 }
 
+pub(in crate::store) fn checkpoint_artifact_relative_path<'path>(
+    database_root: &Path,
+    artifact: &'path Path,
+) -> Result<&'path str> {
+    let relative_path = artifact.strip_prefix(database_root).map_err(|_| {
+        HawDBError::Storage(format!(
+            "checkpoint closure artifact {} is outside the database directory",
+            artifact.display()
+        ))
+    })?;
+    relative_path.to_str().ok_or_else(|| {
+        HawDBError::Storage(format!(
+            "checkpoint closure artifact {} has a non-UTF-8 path",
+            artifact.display()
+        ))
+    })
+}
+
 fn checkpoint_artifact_bindings(
     database_root: &Path,
     inputs: &[CheckpointArtifactInput],
 ) -> Result<Vec<CheckpointArtifactBinding>> {
     let mut bindings = Vec::with_capacity(inputs.len());
     for input in inputs {
-        let relative_path = input.path.strip_prefix(database_root).map_err(|_| {
-            HawDBError::Storage(format!(
-                "checkpoint closure artifact {} is outside the database directory",
-                input.path.display()
-            ))
-        })?;
-        let relative_path = relative_path.to_str().ok_or_else(|| {
-            HawDBError::Storage(format!(
-                "checkpoint closure artifact {} has a non-UTF-8 path",
-                input.path.display()
-            ))
-        })?;
+        let relative_path = checkpoint_artifact_relative_path(database_root, &input.path)?;
         bindings.push(CheckpointArtifactBinding {
             relative_path: relative_path.to_string(),
             reference: input.reference,
@@ -2851,7 +2858,11 @@ fn mount_branch_runtime(
         objects,
         artifact_directory,
         &root.checkpoint_bindings,
-        derived_repair.then_some(manifest.checkpoint_epoch),
+        derived_repair.then(|| {
+            manifest
+                .graph_generation()
+                .expect("checkpoint has graph identity")
+        }),
     )?;
     // The manifest names the checkpoint's original WAL generation. A seal
     // can omit that empty generation and begin at a newer private generation.
@@ -3016,7 +3027,7 @@ fn copy_recovery_container(source: &Path, destination: &Path) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::checkpoint_closure::{build_sealed_root, CheckpointClosurePlan};
     use crate::relational::{
@@ -3118,15 +3129,15 @@ mod tests {
         fs::remove_dir_all(path).unwrap();
     }
 
-    struct BranchFixture {
+    pub(in crate::store) struct BranchFixture {
         project: PathBuf,
         objects: PathBuf,
         catalog_path: PathBuf,
-        main: branch_catalog::BranchId,
+        pub(in crate::store) main: branch_catalog::BranchId,
     }
 
     impl BranchFixture {
-        fn new() -> Self {
+        pub(in crate::store) fn new() -> Self {
             Self::new_with_index_mode(crate::config::RelationalIndexMode::Materialized)
         }
 
@@ -3217,7 +3228,7 @@ mod tests {
                 .join("branch.head")
         }
 
-        fn admit(
+        pub(in crate::store) fn admit(
             &self,
             id: branch_catalog::BranchId,
             durability: DurabilityPolicy,
@@ -4559,7 +4570,9 @@ mod tests {
             write_row(&mut source, "checkpoint-candidate");
             let source_epoch = source.store().commit_epoch();
             let old_head = *source.head();
-            let pinned_generation = source.store().durable.as_ref().unwrap().checkpoint_epoch;
+            let pinned_generations = crate::read_view::PhysicalGenerationPins::from_views([source
+                .store()
+                .published_read_view()]);
             let captured = source.store().checkpoint_source();
             let mut candidate = captured
                 .prepare_checkpoint_candidate(source.catalog())
@@ -4594,7 +4607,7 @@ mod tests {
                 .publish_checkpoint_candidate(
                     &mut candidate,
                     Some(source_epoch),
-                    &BTreeSet::from([pinned_generation]),
+                    &pinned_generations,
                 )
                 .unwrap();
             assert_eq!(source.head().sealed_root, candidate_root);
@@ -4655,6 +4668,10 @@ mod tests {
                 let original_wal =
                     fs::read(&branch.store().durable.as_ref().unwrap().wal_path).unwrap();
                 let pinned_generation = branch.store().durable.as_ref().unwrap().checkpoint_epoch;
+                let pinned_generations =
+                    crate::read_view::PhysicalGenerationPins::from_views([branch
+                        .store()
+                        .published_read_view()]);
                 let orphan_generation =
                     pinned_generation.max(branch.head().active_wal.generation) + 1;
                 let orphan_path = fixture.head_path(fixture.main).parent().unwrap().join(
@@ -4712,7 +4729,7 @@ mod tests {
                         .publish_checkpoint_candidate(
                             &mut candidate,
                             Some(source_epoch),
-                            &std::collections::BTreeSet::from([pinned_generation]),
+                            &pinned_generations,
                         )
                         .unwrap();
                 }
@@ -5466,6 +5483,20 @@ mod tests {
         let prepared = store
             .prepare_immutable_root_handoff(&objects)
             .expect("prepare immutable root");
+        #[cfg(unix)]
+        {
+            let immutable = ImmutableObjectStore::open(&objects).unwrap();
+            for binding in &prepared.root.checkpoint_bindings {
+                let source = database.join(&binding.relative_path);
+                let object = immutable.object_path(binding.reference);
+                assert_eq!(
+                    crate::native_file_identity::of_metadata(&std::fs::metadata(&source).unwrap()),
+                    crate::native_file_identity::of_metadata(&std::fs::metadata(&object).unwrap()),
+                    "initial handoff must share {}",
+                    source.display(),
+                );
+            }
+        }
         prepared.root.validate().expect("valid root");
         assert!(!prepared.root.checkpoint_references.is_empty());
         assert!(

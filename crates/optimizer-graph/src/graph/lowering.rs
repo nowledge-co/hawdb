@@ -1695,7 +1695,7 @@ fn select_node_projection_scan(
         PhysicalPlan::FilterExec { predicate, input } => (input.as_ref(), Some(predicate)),
         source => (source, None),
     };
-    let (variable, label, access) = node_projection_access(source)?;
+    let (variable, label, access) = node_projection_access(source, predicate)?;
     let mut required_properties = BTreeSet::new();
     if !items.iter().all(|item| {
         collect_projection_properties(&item.expression, variable, &mut required_properties)
@@ -1734,7 +1734,7 @@ fn select_node_aggregate_required_scan(
         PhysicalPlan::FilterExec { predicate, input } => (input.as_ref(), Some(predicate)),
         source => (source, None),
     };
-    let (variable, label, access) = node_projection_access(source)?;
+    let (variable, label, access) = node_projection_access(source, predicate)?;
     let mut required_properties = BTreeSet::new();
     if !group_keys.iter().all(|item| {
         collect_projection_properties(&item.expression, variable, &mut required_properties)
@@ -1796,10 +1796,20 @@ fn collect_aggregate_properties(
     }
 }
 
-fn node_projection_access(plan: &PhysicalPlan) -> Option<(&String, &String, NodeProjectionAccess)> {
+fn node_projection_access<'a>(
+    plan: &'a PhysicalPlan,
+    predicate: Option<&Predicate>,
+) -> Option<(&'a String, &'a String, NodeProjectionAccess)> {
     match plan {
         PhysicalPlan::SeqNodeScan { variable, label } => {
-            Some((variable, label, NodeProjectionAccess::LabelScan))
+            let access = if predicate
+                .is_some_and(|predicate| predicate.required_identity_equality(variable).is_some())
+            {
+                NodeProjectionAccess::IdSeek
+            } else {
+                NodeProjectionAccess::LabelScan
+            };
+            Some((variable, label, access))
         }
         PhysicalPlan::IndexNodeSeek {
             variable,
@@ -1892,7 +1902,7 @@ fn node_projection_access(plan: &PhysicalPlan) -> Option<(&String, &String, Node
 
 fn collect_access_properties(access: &NodeProjectionAccess, required: &mut BTreeSet<String>) {
     match access {
-        NodeProjectionAccess::LabelScan => {}
+        NodeProjectionAccess::LabelScan | NodeProjectionAccess::IdSeek => {}
         NodeProjectionAccess::PropertyValues { property, .. }
         | NodeProjectionAccess::PropertyRange { property, .. }
         | NodeProjectionAccess::FullText { property, .. } => {

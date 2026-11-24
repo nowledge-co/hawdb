@@ -35,6 +35,9 @@ impl ArtifactObject {
             sha256: Sha256Digest::from_bytes(self.sha256),
         }
     }
+    pub(super) fn sha256(self) -> [u8; 32] {
+        self.sha256
+    }
     pub(super) fn for_bytes(bytes: &[u8]) -> Self {
         let reference = ObjectReference::for_bytes(ObjectKind::CheckpointArtifact, 1, bytes);
         Self {

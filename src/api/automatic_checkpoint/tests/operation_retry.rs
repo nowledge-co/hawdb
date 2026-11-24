@@ -49,6 +49,89 @@ fn assert_ids(db: &mut Database, total: i64) {
     );
 }
 
+fn assert_carried_source_invalidates_snapshot(manifest_case: bool) {
+    let fixture = Fixture::new();
+    let mut db = Database::open_with_config(
+        &fixture.0,
+        DatabaseConfig {
+            automatic_checkpoint_max_age: Duration::from_millis(20),
+            storage_residency_mode: crate::StorageResidencyMode::OutOfCore,
+            ..DatabaseConfig::default()
+        },
+    )
+    .unwrap();
+    let suspension = db.runtime.suspend_automatic_checkpoint().unwrap().unwrap();
+    db.query("CREATE (:Memory {id: 1, body: 'retained'})")
+        .unwrap();
+    db.query_sql("CREATE TABLE integrity_probe (id BIGINT PRIMARY KEY)")
+        .unwrap();
+    db.checkpoint().unwrap();
+    let view = db.published_read_view().unwrap();
+    let graph = view.graph_generation().unwrap().0;
+    assert!(graph < view.physical_generation().unwrap().0);
+    let root = db
+        .runtime
+        .get()
+        .unwrap()
+        .store
+        .durable_root_path()
+        .unwrap()
+        .to_path_buf();
+    let snapshot = db.begin_read_transaction().unwrap();
+    snapshot
+        .query_sql("SELECT id FROM integrity_probe")
+        .unwrap();
+    db.query_sql("INSERT INTO integrity_probe VALUES (1)")
+        .unwrap();
+    let name = if manifest_case {
+        hawdb_storage::artifact_files::canonical_manifest_generation_file(graph)
+    } else {
+        format!("canonical.{graph}.hawdb")
+    };
+    let manifest = root.join(name);
+    let modified = std::fs::metadata(&manifest).unwrap().modified().unwrap();
+    let mut bytes = std::fs::read(&manifest).unwrap();
+    *bytes.last_mut().unwrap() ^= 1;
+    std::fs::write(&manifest, bytes).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&manifest)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+    let control = db.runtime.checkpoint_control_for_test();
+    let (sender, errors) = std::sync::mpsc::channel();
+    control.lock().unwrap().preparation_error_probe = Some(sender);
+    drop(suspension);
+    let error = errors.recv_timeout(Duration::from_secs(15)).unwrap();
+    assert!(
+        error.contains(if manifest_case {
+            "CRC32C mismatch"
+        } else {
+            "previously published artifact"
+        }),
+        "{error}"
+    );
+    let refusal = snapshot
+        .query_sql("SELECT id FROM integrity_probe")
+        .unwrap_err();
+    assert!(matches!(refusal, HawDBError::Storage(_)), "{refusal}");
+    assert!(
+        refusal.to_string().contains("close and reopen"),
+        "{refusal}"
+    );
+}
+
+#[test]
+fn carried_source_corruption_invalidates_a_captured_sql_snapshot() {
+    assert_carried_source_invalidates_snapshot(true);
+}
+
+#[test]
+fn carried_payload_corruption_invalidates_a_captured_sql_snapshot() {
+    assert_carried_source_invalidates_snapshot(false);
+}
+
 #[test]
 fn persistent_preparation_io_failure_stops_and_manual_checkpoint_rearms_the_owner() {
     let fixture = Fixture::new();

@@ -624,7 +624,7 @@ fn background_derived_artifact_job_uses_qos_admission() {
             .run_next_background_derived_artifact_job(&policy, &LocalQosState::default(), 2)
             .unwrap_err();
 
-        assert!(error.to_string().contains("deferred"));
+        assert_background_refusal(&error, 2, 1, false);
         let jobs = db.derived_artifact_jobs();
         assert_eq!(jobs[0].status, DerivedArtifactJobStatus::Pending);
         assert_eq!(jobs[0].attempts, 0);
@@ -728,7 +728,7 @@ fn scheduled_background_derived_artifact_job_defers_when_scheduler_is_full() {
             .run_next_scheduled_background_derived_artifact_job(4)
             .unwrap_err();
 
-        assert!(error.to_string().contains("deferred"));
+        assert_background_refusal(&error, 4, 2, true);
         assert_eq!(scheduler.state().running_background_operations, 6);
         assert_eq!(
             db.derived_artifact_jobs()[0].status,

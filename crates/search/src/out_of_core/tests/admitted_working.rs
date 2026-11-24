@@ -63,7 +63,14 @@ fn reader_with(documents: usize) -> SearchOutOfCoreReader {
             .unwrap();
     }
     writer.finish().unwrap();
-    SearchOutOfCoreReader::open(&path).unwrap()
+    SearchOutOfCoreReader::open_with_config(
+        &path,
+        SearchOutOfCoreConfig {
+            content_cache_bytes: 0,
+            ..Default::default()
+        },
+    )
+    .unwrap()
 }
 
 fn governor() -> RuntimeGovernor {
@@ -168,7 +175,7 @@ fn hybrid_without_rank_window_is_charged_and_refused_below_its_working_set() {
     // vector-only, and hybrid with a rank window. Default vector stages size
     // their working set to the account's remaining bytes, so they fit any
     // admission that leaves room for the rest of the query.
-    let small = [
+    let measured = [
         charged(SearchMode::Text, false, None),
         charged(SearchMode::Vector, true, None),
         charged(SearchMode::Hybrid, true, Some(LIMIT)),
@@ -176,6 +183,24 @@ fn hybrid_without_rank_window_is_charged_and_refused_below_its_working_set() {
     .into_iter()
     .max()
     .unwrap();
+    // A default vector stage sizes its uniqueness check to the remaining
+    // bytes, so its need under a tight admission can exceed its peak under a
+    // large one. Since #1917 hit hydration no longer reserves whole-segment
+    // decode buffers, so the text peak no longer hides that margin: grow the
+    // admission until every page-bounded read is served.
+    let unwindowed = charged(SearchMode::Hybrid, true, None);
+    let serves = |budget| {
+        [false, true].into_iter().all(|exact| {
+            [SearchMode::Text, SearchMode::Vector]
+                .into_iter()
+                .all(|mode| search(&reader, mode, exact, None, budget).result.is_ok())
+        })
+    };
+    let mut small = measured;
+    while !serves(small) {
+        small += 64 << 10;
+        assert!(small < unwindowed, "page-bounded reads need {small} bytes");
+    }
     for exact in [false, true] {
         // Text and vector-only reads fit the small admission.
         for mode in [SearchMode::Text, SearchMode::Vector] {

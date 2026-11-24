@@ -214,23 +214,21 @@ fn value_summary_selector_is_refused_by_older_readers_and_checked_against_descri
     let bytes = fs::read(&path).unwrap();
     // A reader that predates the V4 descriptor refuses the selector with the
     // typed error instead of failing on the descriptor as `Storage`.
-    let error = SearchOutOfCoreManifestBody::decode_for_reader_version(
-        &bytes,
-        None,
-        manifest_version::CONTENT_EPOCH_VERSION,
-    )
-    .unwrap_err();
-    let HawDBError::UnsupportedStorageFormat(refusal) = &error else {
-        panic!("{error:?}");
-    };
-    assert_eq!(
-        refusal.format(),
-        hawdb_core::SEARCH_PROJECTION_MANIFEST_FORMAT
-    );
-    assert_eq!(
-        error.to_string(),
-        "unsupported search projection manifest version 3; this reader supports version 2"
-    );
+    for supported in 1..=3 {
+        let error = SearchOutOfCoreManifestBody::decode_for_reader_version(&bytes, None, supported)
+            .unwrap_err();
+        let HawDBError::UnsupportedStorageFormat(refusal) = &error else {
+            panic!("{error:?}");
+        };
+        assert_eq!(
+            refusal.format(),
+            hawdb_core::SEARCH_PROJECTION_MANIFEST_FORMAT
+        );
+        assert_eq!(
+            error.to_string(),
+            format!("unsupported search projection manifest version 4; this reader supports version {supported}")
+        );
+    }
 
     // A selector whose descriptor version disagrees with the descriptor
     // grammar is a storage failure.

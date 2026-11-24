@@ -92,20 +92,39 @@ fn steady_relational_updates_on_one_handle_never_exhaust_the_live_overlay() {
     // Each round rewrites every row. Without a drain, main rejects round 97
     // with the #1438 live-overlay admission error.
     let rounds = 400;
-    for round in 0..rounds {
-        update_round(&mut db, round).unwrap_or_else(|error| {
-            panic!(
-                "round {round} failed after {admitted_entries} admitted entries: {error}; {:?}",
+    let mut round = 0;
+    let mut busy_retries = 0;
+    while round < rounds {
+        match update_round(&mut db, round) {
+            Ok(()) => {}
+            // The total capacity wait is bounded even while the owner makes
+            // progress. This pre-WAL refusal applies no update; retry exactly
+            // the same round without counting it as an admitted commit.
+            Err(HawDBError::BranchBusy {
+                resource: "automatic checkpoint capacity",
+            }) if busy_retries < 32 => {
+                busy_retries += 1;
+                eprintln!(
+                    "steady relational update round={round}, capacity_retry={busy_retries}; {:?}",
+                    db.automatic_checkpoint_report()
+                );
+                continue;
+            }
+            Err(error) => panic!(
+                "round {round} failed after {admitted_entries} admitted entries and \
+                 {busy_retries} capacity retries: {error}; {:?}",
                 db.automatic_checkpoint_report()
-            )
-        });
+            ),
+        }
         admitted_entries += ROWS as usize;
         let live = live_rows(&db);
         peak = (peak.0.max(live.0), peak.1.max(live.1));
         // Adopting a published drain empties the serving overlay.
         drains += usize::from(live.0 < previous_entries);
         previous_entries = live.0;
+        round += 1;
     }
+    eprintln!("steady relational updates: rounds={round}, capacity_retries={busy_retries}");
     // Payload bytes alone, before per-row allocation overhead, exceed the
     // default resident-byte envelope three times over.
     assert!(
@@ -128,6 +147,65 @@ fn steady_relational_updates_on_one_handle_never_exhaust_the_live_overlay() {
     drop(db);
     let mut reopened = Database::open(&fixture.0).unwrap();
     assert_round(reopened.query_sql(query).unwrap().rows, rounds - 1);
+}
+
+#[test]
+fn relational_update_capacity_refusal_preserves_rows_and_can_retry() {
+    let fixture = Fixture::new();
+    let mut db = Database::open_with_config(&fixture.0, config()).unwrap();
+    load(&mut db);
+    let suspension = db.runtime.suspend_automatic_checkpoint().unwrap().unwrap();
+    let control = db.runtime.checkpoint_control_for_test();
+    let mut round = 0;
+    while !preparation_needs_capacity(&control.lock().unwrap()) {
+        assert!(round < 100, "fixture must reach capacity pressure");
+        update_round(&mut db, round).unwrap();
+        round += 1;
+    }
+    let (sealed, observed) = std::sync::mpsc::channel();
+    let (resume, continuation) = std::sync::mpsc::channel();
+    control.lock().unwrap().prefix_seal_probe = Some(Arc::new(PrefixSealProbe {
+        sealed,
+        resume: Mutex::new(continuation),
+    }));
+    drop(suspension);
+    observed.recv_timeout(Duration::from_secs(15)).unwrap();
+    let before = db
+        .runtime
+        .peek()
+        .unwrap()
+        .store
+        .checkpoint_source_identity();
+    let live_before = live_rows(&db);
+    // The real owner is parked, so the production capacity deadline must refuse
+    // this update independently of how quickly the host normally checkpoints.
+    let result = update_round(&mut db, round);
+    let after = db
+        .runtime
+        .peek()
+        .unwrap()
+        .store
+        .checkpoint_source_identity();
+    let live_after = live_rows(&db);
+    // Release the owner before assertions or cleanup can wait on it.
+    control.lock().unwrap().prefix_seal_probe = None;
+    resume.send(()).unwrap();
+    assert!(matches!(
+        result,
+        Err(HawDBError::BranchBusy {
+            resource: "automatic checkpoint capacity",
+        })
+    ));
+    assert_eq!(before, after, "refusal must not append WAL or publish data");
+    assert_eq!(live_before, live_after, "refusal must not grow the overlay");
+    db.checkpoint().unwrap();
+    let query = "SELECT id, round, body FROM hot ORDER BY id";
+    assert_round(db.query_sql(query).unwrap().rows, round - 1);
+    update_round(&mut db, round).unwrap();
+    assert_round(db.query_sql(query).unwrap().rows, round);
+    drop(db);
+    let mut reopened = Database::open(&fixture.0).unwrap();
+    assert_round(reopened.query_sql(query).unwrap().rows, round);
 }
 
 fn debt(db: &Database) -> CheckpointDebtSnapshot {

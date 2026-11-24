@@ -921,7 +921,7 @@ fn background_external_content_artifact_job_uses_qos_admission() {
         )
         .unwrap_err();
 
-    assert!(error.to_string().contains("deferred"));
+    assert_background_refusal(&error, 1, 0, false);
     let jobs = db.derived_artifact_jobs();
     assert_eq!(jobs[0].status, DerivedArtifactJobStatus::Pending);
     assert_eq!(jobs[0].attempts, 0);
@@ -986,7 +986,7 @@ fn background_external_content_artifact_job_for_action_uses_qos_admission() {
         )
         .unwrap_err();
 
-    assert!(error.to_string().contains("deferred"));
+    assert_background_refusal(&error, 1, 0, false);
     let jobs = db.derived_artifact_jobs();
     assert_eq!(jobs[0].status, DerivedArtifactJobStatus::Pending);
     assert_eq!(jobs[0].attempts, 0);
@@ -1064,7 +1064,8 @@ fn scheduled_background_external_content_artifact_job_defers_when_import_lane_is
         )
         .unwrap_err();
 
-    assert!(error.to_string().contains("class limit 4"));
+    // Three of the Import lane's four operations are running.
+    assert_background_refusal(&error, 2, 1, true);
     assert_eq!(
         scheduler.state().running_background_operations_by_class
             [crate::WorkClass::Import.as_index()],
@@ -1164,7 +1165,8 @@ fn scheduled_background_external_content_artifact_job_defers_specific_pending_jo
         .run_scheduled_background_external_content_artifact_job_with(job.id, |_| unreachable!(), 2)
         .unwrap_err();
 
-    assert!(error.to_string().contains("class limit 4"));
+    // Three of the Import lane's four operations are running.
+    assert_background_refusal(&error, 2, 1, true);
     assert_eq!(
         scheduler.state().running_background_operations_by_class
             [crate::WorkClass::Import.as_index()],
@@ -1403,7 +1405,7 @@ fn background_content_artifact_completion_uses_qos_admission() {
         )
         .unwrap_err();
 
-    assert!(error.to_string().contains("deferred"));
+    assert_background_refusal(&error, 1, 0, false);
     let jobs = db.derived_artifact_jobs();
     assert_eq!(jobs[0].status, DerivedArtifactJobStatus::Pending);
     assert_eq!(jobs[0].attempts, 0);
@@ -1440,7 +1442,7 @@ fn background_content_artifact_completion_for_runtime_uses_manifest_claim_and_qo
         )
         .unwrap_err();
 
-    assert!(error.to_string().contains("deferred"));
+    assert_background_refusal(&error, 5, 4, false);
     let jobs = db.derived_artifact_jobs();
     assert_eq!(jobs[0].id, missing.id);
     assert_eq!(jobs[0].status, DerivedArtifactJobStatus::Pending);

@@ -35,6 +35,7 @@ STORAGE_MODELS = [
     "HawDBGossipDelivery",
     "HawDBGovernedConflictRetry",
     "HawDBGovernedWriterProgress",
+    "HawDBGraphBundleCarry",
     "HawDBGraphDescriptorPaging",
     "HawDBGraphIndexQualification",
     "HawDBHeldGenerationSpool",

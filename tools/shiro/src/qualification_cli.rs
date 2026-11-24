@@ -1,14 +1,17 @@
 // Copyright 2026 Nowledge
 // SPDX-License-Identifier: Apache-2.0
 
-use shiro_core::{qualify_generated_optimizer_case, FuzzError, OptimizerQualificationVariant};
+use shiro_core::{
+    qualify_bounded_order_case, qualify_generated_optimizer_case, FuzzError,
+    OptimizerQualificationVariant,
+};
 use shiro_core::{
     OptimizerCostPerturbation, OptimizerQualificationOptions, OptimizerRuleAssertion,
     OptimizerSearchDirective, OptionalOptimizerRule,
 };
 use std::process::ExitCode;
 
-const USAGE: &str = "Usage: shiro qualify [--seed N] [--case-index N] [--disable-rule NAME] [--require-rule NAME] [--forbid-rule NAME] [--cost-seed N] [--cost-percent 0..25]\nRule NAME is a full transformation:proof_* identifier. Compares baseline memo with direct fallback and the configured memo variant on one snapshot. Emits replay JSON; matching errors fail.";
+const USAGE: &str = "Usage: shiro qualify [bounded-order] [--seed N] [--case-index N] [--disable-rule NAME] [--require-rule NAME] [--forbid-rule NAME] [--cost-seed N] [--cost-percent 0..25]\nRule NAME is a full transformation:proof_* identifier. Compares baseline memo with direct fallback and the configured memo variant on one snapshot. The bounded-order family also requires a distinct executable pagination plan. Emits replay JSON; matching errors fail.";
 
 fn rule(value: &str) -> Result<OptionalOptimizerRule, FuzzError> {
     OptionalOptimizerRule::ALL
@@ -81,18 +84,26 @@ pub fn run(args: impl IntoIterator<Item = String>) -> ExitCode {
         println!("{USAGE}");
         return ExitCode::SUCCESS;
     }
-    let result = parse(args).and_then(|(seed, index, variant)| {
-        let direct = OptimizerQualificationVariant {
-            options: OptimizerQualificationOptions::default(),
-            search: OptimizerSearchDirective::DirectFallback,
-            assertions: Vec::new(),
-        };
-        qualify_generated_optimizer_case(seed, index, &[direct, variant])
-    });
+    let bounded_order = args.first().is_some_and(|arg| arg == "bounded-order");
+    let result = parse(args.into_iter().skip(usize::from(bounded_order))).and_then(
+        |(seed, index, variant)| {
+            let direct = OptimizerQualificationVariant {
+                options: OptimizerQualificationOptions::default(),
+                search: OptimizerSearchDirective::DirectFallback,
+                assertions: Vec::new(),
+            };
+            if bounded_order {
+                qualify_bounded_order_case(seed, index, &[direct, variant])
+            } else {
+                qualify_generated_optimizer_case(seed, index, &[direct, variant])
+                    .map(|report| report.json())
+            }
+        },
+    );
     match result {
         Ok(report) => {
-            println!("{}", report.json());
-            if report.qualification.success() {
+            println!("{report}");
+            if report["success"] == true {
                 ExitCode::SUCCESS
             } else {
                 ExitCode::FAILURE

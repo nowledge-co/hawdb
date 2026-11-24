@@ -41,13 +41,16 @@ impl AccountedCorpusStatistics {
             context.checkpoint()?;
             // Dictionary views borrow this one validated encoded block. Admit
             // its Vec before reading, while both frequency maps stay retained.
-            let block_bytes = usize::try_from(projection.statistics_block_bytes(query_terms))
-                .map_err(|_| {
+            // Resolve each term's posting-block range once for both passes.
+            let ranges = projection.posting_block_ranges(query_terms);
+            let block_bytes =
+                usize::try_from(projection.statistics_block_bytes(&ranges)).map_err(|_| {
                     HawDBError::Execution("lexical statistics block exceeds address space".into())
                 })?;
             let _block = context.memory.reserve(block_bytes)?;
-            let local = projection.query_statistics_for_terms(
+            let local = projection.query_statistics_in_ranges(
                 query_terms,
+                &ranges,
                 max_term_bytes,
                 Some(context),
             )?;
@@ -60,25 +63,5 @@ impl AccountedCorpusStatistics {
         };
         context.checkpoint()?;
         Ok(output)
-    }
-}
-
-impl LexicalProjectionReader {
-    pub(super) fn statistics_block_bytes<T: Borrow<str> + Ord>(
-        &self,
-        query_terms: &BTreeSet<T>,
-    ) -> u64 {
-        self.manifest
-            .blocks
-            .iter()
-            .filter(|block| {
-                block.kind == BlockKind::Postings
-                    && query_terms.iter().map(query_term).any(|term| {
-                        term >= block.min_key.as_str() && term <= block.max_key.as_str()
-                    })
-            })
-            .map(|block| block.length)
-            .max()
-            .unwrap_or_default()
     }
 }

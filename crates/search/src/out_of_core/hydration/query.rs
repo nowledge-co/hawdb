@@ -42,15 +42,16 @@ impl Loaded {
         candidates: &[SearchScoredCandidate],
         metrics: &mut SearchOutOfCoreMetrics,
         query: Option<QueryContext<'_>>,
+        embeddings: bool,
     ) -> Result<Self> {
         let storage = match query {
-            Some(query) => Storage::Query(load(reader, candidates, metrics, query)?),
+            Some(query) => Storage::Query(load(reader, candidates, metrics, query, embeddings)?),
             None => {
                 let ids = candidates
                     .iter()
                     .map(|candidate| candidate.id.clone())
                     .collect();
-                Storage::Legacy(reader.load_documents(&ids, metrics)?)
+                Storage::Legacy(reader.load_documents(&ids, metrics, embeddings)?)
             }
         };
         Ok(Self { storage })
@@ -75,36 +76,32 @@ fn load(
     candidates: &[SearchScoredCandidate],
     metrics: &mut SearchOutOfCoreMetrics,
     query: QueryContext<'_>,
+    embeddings: bool,
 ) -> Result<Documents> {
     query.checkpoint()?;
     let mut routes = Routes {
         values: BTreeMap::new(),
         _memory: query.memory.reserve(0)?,
     };
-    for candidate in candidates {
-        query.checkpoint()?;
-        let id = &candidate.id;
-        let route = reader
-            .segment_for_document_with_context(id, Some(query))?
-            .ok_or_else(|| invalid("candidate has no visible document route"))?;
-        if route.lexical_document_bytes_read > 0 {
-            metrics.lexical_document_block_reads =
-                metrics.lexical_document_block_reads.saturating_add(1);
-            metrics.lexical_document_bytes_read = metrics
-                .lexical_document_bytes_read
-                .saturating_add(route.lexical_document_bytes_read);
-        }
-        let key = (route.artifact_index, route.segment.segment_id);
-        if !routes.values.contains_key(&key) {
-            routes._memory.grow(MAP_ENTRY_BYTES)?;
-            routes.values.insert(key, BTreeSet::new());
-        }
-        let ids = routes.values.get_mut(&key).expect("route was inserted");
-        if !ids.contains(id) {
-            routes._memory.grow(add(SET_ENTRY_BYTES, id.len())?)?;
-            ids.insert(id.clone());
-        }
-    }
+    route_candidates(
+        reader,
+        candidates,
+        Some(query),
+        metrics,
+        |id, artifact_index, segment| {
+            let key = (artifact_index, segment.segment_id);
+            if !routes.values.contains_key(&key) {
+                routes._memory.grow(MAP_ENTRY_BYTES)?;
+                routes.values.insert(key, BTreeSet::new());
+            }
+            let ids = routes.values.get_mut(&key).expect("route was inserted");
+            if !ids.contains(id) {
+                routes._memory.grow(add(SET_ENTRY_BYTES, id.len())?)?;
+                ids.insert(id.to_string());
+            }
+            Ok(())
+        },
+    )?;
     let mut output = Documents {
         values: BTreeMap::new(),
         _memory: query.memory.reserve(0)?,
@@ -121,7 +118,15 @@ fn load(
             .and_then(|index| artifact.descriptor.segments.get(index))
             .filter(|segment| segment.segment_id == *segment_id)
             .ok_or_else(|| invalid("unknown hydration segment"))?;
-        let selected = read_selected(reader, artifact, segment, ids, used, metrics, query)?;
+        let selected = read_selected(
+            reader,
+            artifact,
+            segment,
+            ids,
+            used,
+            metrics,
+            Scan { query, embeddings },
+        )?;
         used = used
             .checked_add(selected.bytes)
             .ok_or_else(|| invalid("byte count overflow"))?;
@@ -145,6 +150,13 @@ fn load(
     Ok(output)
 }
 
+/// The query and whether its hits rescore stored embeddings.
+#[derive(Clone, Copy)]
+struct Scan<'a> {
+    query: QueryContext<'a>,
+    embeddings: bool,
+}
+
 struct Selection {
     documents: Vec<Document>,
     bytes: u64,
@@ -158,8 +170,9 @@ fn read_selected(
     ids: &BTreeSet<String>,
     used: u64,
     metrics: &mut SearchOutOfCoreMetrics,
-    query: QueryContext<'_>,
+    scan: Scan<'_>,
 ) -> Result<Selection> {
+    let Scan { query, embeddings } = scan;
     let range = segment
         .payload_range
         .ok_or_else(|| invalid("segment has no payload range"))?;
@@ -169,6 +182,9 @@ fn read_selected(
         .is_none_or(|end| end > artifact.payload_length)
     {
         return Err(invalid("segment range exceeds its artifact"));
+    }
+    if artifact.content_encoding == crate::out_of_core::content_blocks::ContentEncoding::Blocks1 {
+        return read_selected_blocks(reader, artifact, segment, ids, used, metrics, scan);
     }
     let selected = read_validated_with_account(
         crate::build_memory::read::QueryFileRange {
@@ -190,7 +206,7 @@ fn read_selected(
         |text| {
             select_records(
                 text,
-                segment,
+                Bounds::of(segment),
                 ids,
                 HydrationBudget {
                     limit: reader.config.max_hydrated_bytes.get(),
@@ -198,6 +214,7 @@ fn read_selected(
                 },
                 reader.config.max_uncompressed_segment_bytes.get(),
                 query,
+                embeddings,
             )
         },
     )?;
@@ -212,13 +229,262 @@ fn read_selected(
     Ok(selected)
 }
 
+/// Positioned, query-admitted reads of one segment.
+struct QuerySource<'a> {
+    file: &'a File,
+    expected_length: u64,
+    base: u64,
+    query: QueryContext<'a>,
+}
+
+impl crate::out_of_core::content_blocks::SegmentSource for QuerySource<'_> {
+    fn read_exact_at(&self, offset: u64, output: &mut [u8]) -> Result<()> {
+        crate::build_memory::read::QueryFileRange {
+            file: self.file,
+            expected_length: Some(self.expected_length),
+            offset: self
+                .base
+                .checked_add(offset)
+                .ok_or_else(|| invalid("range offset overflow"))?,
+            remaining: output.len() as u64,
+            context: self.query,
+            require_execution: true,
+        }
+        .read_exact_positioned(output)
+    }
+}
+
+/// Reads and verifies only the indexed blocks that can hold `ids` (#1917).
+/// Every block that contributes a result is verified before any result is
+/// released; blocks this query does not need are neither read nor verified.
+fn read_selected_blocks(
+    reader: &SearchOutOfCoreReader,
+    artifact: &SearchOutOfCoreSegmentReader,
+    segment: &SearchSegmentDescriptorEntry,
+    ids: &BTreeSet<String>,
+    used: u64,
+    metrics: &mut SearchOutOfCoreMetrics,
+    scan: Scan<'_>,
+) -> Result<Selection> {
+    let Scan { query, embeddings } = scan;
+    use crate::out_of_core::content_blocks::{self as blocks, CacheScope, Expect, Reads};
+    let range = segment
+        .payload_range
+        .ok_or_else(|| invalid("segment has no payload range"))?;
+    let source = QuerySource {
+        file: &artifact.payload,
+        expected_length: artifact.payload_length,
+        base: range.offset,
+        query,
+    };
+    let cache = CacheScope::new(
+        &reader.content_cache,
+        artifact.payload_sha256,
+        artifact.payload_generation,
+    );
+    let max_record_bytes = reader.config.max_uncompressed_segment_bytes.get();
+    let mut reads = Reads::default();
+    let result = (|| {
+        let index = blocks::load_index(
+            &source,
+            cache,
+            range.offset,
+            Expect {
+                length: range.length,
+                checksum: range.checksum,
+                max_uncompressed_bytes: max_record_bytes,
+                descriptor: Some((
+                    segment.document_count,
+                    &segment.first_document_id,
+                    &segment.last_document_id,
+                )),
+            },
+            Some(query.memory),
+            &mut reads,
+        )?;
+        let mut selection = Selection {
+            documents: Vec::new(),
+            bytes: 0,
+            peak_document_bytes: 0,
+            _memory: query.memory.reserve(0)?,
+        };
+        reserve_capacity(&mut selection.documents, ids.len(), &mut selection._memory)?;
+        let mut wanted_memory = query.memory.reserve(0)?;
+        let mut wanted = Vec::new();
+        reserve_capacity(&mut wanted, ids.len(), &mut wanted_memory)?;
+        // `ids` is ordered, so the blocks holding them are too.
+        wanted.extend(ids.iter().filter_map(|id| index.find(id)));
+        wanted.dedup();
+        let mut decoder = None;
+        for block in wanted {
+            query.checkpoint()?;
+            let entry = index.entries()[block];
+            let bounds = Bounds::of_block(&index, &entry);
+            let budget = HydrationBudget {
+                limit: reader.config.max_hydrated_bytes.get(),
+                used: used.saturating_add(selection.bytes),
+            };
+            let part = if u64::from(entry.uncompressed_len) > blocks::MAX_BUFFERED_BLOCK_BYTES {
+                reads.range_reads += 1;
+                reads.bytes_read += u64::from(entry.compressed_len);
+                reads.blocks_read += 1;
+                reads.bytes_inflated += u64::from(entry.uncompressed_len);
+                blocks::stream_blocks(
+                    crate::build_memory::read::QueryFileRange {
+                        file: &artifact.payload,
+                        expected_length: Some(artifact.payload_length),
+                        offset: range.offset + entry.offset,
+                        remaining: u64::from(entry.compressed_len),
+                        context: query,
+                        require_execution: true,
+                    },
+                    &index,
+                    block..block + 1,
+                    Some(DecodeAdmission {
+                        memory: query.memory,
+                        task: query.task,
+                        max_header_bytes: reader.config.max_document_header_bytes.get(),
+                    }),
+                    |text| {
+                        select_records(
+                            text,
+                            bounds,
+                            ids,
+                            budget,
+                            max_record_bytes,
+                            query,
+                            embeddings,
+                        )
+                    },
+                )?
+            } else {
+                let decoder = match &mut decoder {
+                    Some(decoder) => decoder,
+                    None => decoder.insert(crate::build_memory::decoder::BlockDecoder::new(
+                        Some(query.memory),
+                        Some(query.task),
+                    )?),
+                };
+                let body = blocks::load_block(
+                    &source,
+                    cache,
+                    range.offset,
+                    &entry,
+                    decoder,
+                    Some(query.memory),
+                    &mut reads,
+                )?;
+                select_block_records(&body, bounds, ids, budget, query, embeddings)?
+            };
+            selection.peak_document_bytes = selection
+                .peak_document_bytes
+                .max(selection.bytes.saturating_add(part.peak_document_bytes));
+            selection.bytes = selection
+                .bytes
+                .checked_add(part.bytes)
+                .ok_or_else(|| invalid("byte count overflow"))?;
+            if selection.documents.len() + part.documents.len() > selection.documents.capacity() {
+                return Err(invalid("block selected more documents than requested"));
+            }
+            selection.documents.extend(part.documents);
+        }
+        Ok(selection)
+    })();
+    reads.record(metrics);
+    let selection = result?;
+    metrics.peak_segment_document_bytes = metrics
+        .peak_segment_document_bytes
+        .max(selection.peak_document_bytes);
+    Ok(selection)
+}
+
+/// [`select_records`] over one buffered block of binary records (#1917):
+/// records are parsed in place, and only the selected ones are decoded,
+/// charged like [`decode_record`].
+fn select_block_records(
+    body: &[u8],
+    bounds: Bounds<'_>,
+    ids: &BTreeSet<String>,
+    budget: HydrationBudget,
+    query: QueryContext<'_>,
+    embeddings: bool,
+) -> Result<Selection> {
+    let remaining = budget
+        .limit
+        .checked_sub(budget.used)
+        .ok_or_else(|| invalid("hydration byte budget exhausted"))?;
+    let mut selected = Selection {
+        documents: Vec::new(),
+        bytes: 0,
+        peak_document_bytes: 0,
+        _memory: query.memory.reserve(0)?,
+    };
+    crate::out_of_core::content_blocks::records::scan(body, bounds, |record| {
+        query.checkpoint()?;
+        // Text-only hits hold no vector, so they are not charged for it.
+        let bytes = record.document_bytes()
+            - if embeddings {
+                0
+            } else {
+                (record.dimension() * size_of::<f32>()) as u64
+            };
+        selected.peak_document_bytes = selected
+            .peak_document_bytes
+            .max(selected.bytes.saturating_add(bytes));
+        if !ids.contains(record.id) {
+            return Ok(());
+        }
+        let decoded = add(
+            size_of::<Document>(),
+            add(
+                usize::try_from(bytes).map_err(|_| invalid("record size overflow"))?,
+                mul(record.metadata_count(), MAP_ENTRY_BYTES)?,
+            )?,
+        )?;
+        let memory = query.memory.reserve(decoded)?;
+        let document = Document {
+            document: record.decode(embeddings)?,
+            _memory: Some(memory),
+        };
+        let previous_bytes = selected.bytes;
+        selected.bytes = selected
+            .bytes
+            .checked_add(bytes)
+            .ok_or_else(|| invalid("byte count overflow"))?;
+        if selected.bytes > remaining {
+            return Err(ResourceBudgetError {
+                resource: ResourceBudgetKind::MemoryBytes,
+                scope: ResourceBudgetScope::Operator,
+                owner: "search hydration".into(),
+                memory_class: None,
+                requested: bytes,
+                used: budget.used.saturating_add(previous_bytes),
+                budget: budget.limit,
+                budget_option: "SearchOutOfCoreConfig.max_hydrated_bytes",
+                message: "selected documents exceed hydration byte budget".into(),
+            }
+            .into());
+        }
+        if selected.documents.len() == selected.documents.capacity() {
+            let required = add(selected.documents.len(), 1)?;
+            let capacity = required.max(selected.documents.capacity().saturating_mul(2));
+            reserve_capacity(&mut selected.documents, capacity, &mut selected._memory)?;
+        }
+        selected.documents.push(document);
+        Ok(())
+    })?;
+    query.checkpoint()?;
+    Ok(selected)
+}
+
 fn select_records(
     text: &mut dyn BufRead,
-    segment: &SearchSegmentDescriptorEntry,
+    segment: Bounds<'_>,
     ids: &BTreeSet<String>,
     budget: HydrationBudget,
     max_record_bytes: u64,
     query: QueryContext<'_>,
+    embeddings: bool,
 ) -> Result<Selection> {
     let remaining = budget
         .limit
@@ -254,25 +520,30 @@ fn select_records(
         // proves the segment's order, bounds and count from its id; the
         // checksummed range already fences the bytes of the others.
         let summary = summarize_record(record, query)?;
-        if count == 0 && summary.id != segment.first_document_id {
+        if count == 0 && summary.id != segment.first {
             return Err(invalid("document bounds do not match its descriptor"));
         }
         if count != 0 && previous.as_slice() >= summary.id.as_bytes() {
             return Err(invalid("documents are not strictly ordered"));
         }
         count = add(count, 1)?;
-        if count > segment.document_count {
+        if count > segment.count {
             return Err(invalid("document count exceeds its descriptor"));
         }
         previous.clear();
         reserve_capacity(&mut previous, summary.id.len(), &mut previous_memory)?;
         previous.extend_from_slice(summary.id.as_bytes());
-        let bytes = summary.bytes;
+        // Text-only hits hold no vector, so they are not charged for it.
+        let bytes = if embeddings {
+            summary.bytes
+        } else {
+            summary.bytes - summary.vector
+        };
         selected.peak_document_bytes = selected
             .peak_document_bytes
             .max(selected.bytes.saturating_add(bytes));
         if ids.contains(&summary.id) {
-            let document = decode_record(record, query)?;
+            let document = decode_record(record, query, embeddings)?;
             debug_assert_eq!(search_document_bytes(&document), bytes);
             let previous_bytes = selected.bytes;
             selected.bytes = selected
@@ -302,8 +573,7 @@ fn select_records(
             selected.documents.push(document);
         }
     }
-    if count != segment.document_count || previous.as_slice() != segment.last_document_id.as_bytes()
-    {
+    if count != segment.count || previous.as_slice() != segment.last.as_bytes() {
         return Err(invalid(
             "document count or bounds do not match its descriptor",
         ));
@@ -324,6 +594,8 @@ fn hex_size(raw: &str) -> Result<usize> {
 struct RecordSummary {
     id: String,
     bytes: u64,
+    /// The share of `bytes` that is the record's vector.
+    vector: u64,
 }
 
 fn summarize_record(record: &str, query: QueryContext<'_>) -> Result<RecordSummary> {
@@ -364,10 +636,13 @@ fn summarize_record(record: &str, query: QueryContext<'_>) -> Result<RecordSumma
     Ok(RecordSummary {
         id: decode_hex(id, query)?,
         bytes: bytes as u64,
+        vector: mul(dimension, size_of::<f32>())? as u64,
     })
 }
 
-fn decode_record(record: &str, query: QueryContext<'_>) -> Result<Document> {
+/// Decodes one record. Without `embeddings` the decimal-text vector is left
+/// unparsed and the document carries none: text-only hits never score it.
+fn decode_record(record: &str, query: QueryContext<'_>, embeddings: bool) -> Result<Document> {
     query.checkpoint()?;
     let mut fields = record.split('\t');
     let (Some("doc"), Some(id), Some(title), Some(content), Some(embedding), Some(metadata), None) = (
@@ -381,7 +656,7 @@ fn decode_record(record: &str, query: QueryContext<'_>) -> Result<Document> {
     ) else {
         return Err(invalid("invalid document record"));
     };
-    let dimension = if embedding.is_empty() {
+    let dimension = if embedding.is_empty() || !embeddings {
         0
     } else {
         embedding.split(',').count()

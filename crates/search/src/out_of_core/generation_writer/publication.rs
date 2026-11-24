@@ -549,6 +549,8 @@ pub(super) fn install_generation(
         documents_digest: input.documents_digest,
         source_graph_commit_epoch: input.source_graph_commit_epoch,
         descriptor_version: input.descriptor_version,
+        // Every content artifact staged here was framed by the segment writer.
+        content_encoding: super::super::content_blocks::written_content_encoding(),
     };
     let objects = new_segment.objects;
     let publish_content = input.mutations.is_none() || input.document_count != 0;

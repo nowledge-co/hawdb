@@ -15,6 +15,21 @@ or vector of every decoded document. Only requested documents survive the scan.
 Each underlying read is at most 8192 bytes, and each segment range is read once.
 Concurrent readers retain independent offsets and pinned file handles.
 
+## Block-framed segments (#1917)
+
+The contract below describes `stream1` envelope segments. Content artifacts
+written since #1917 are `blocks1`
+([SEARCH_CONTENT_BLOCKS.md](SEARCH_CONTENT_BLOCKS.md)): hit and by-id
+hydration read the verified segment index and then only the blocks holding the
+requested IDs, each verified (compressed CRC, length, uncompressed CRC, record
+count and bounds) before any result is released. Blocks a request does not
+read are not verified by that request; whole-segment consumers and
+`SearchOutOfCoreReader::verify_content_segments` still verify every block.
+Blocks hold binary records; whole-segment consumers read them re-encoded as
+the `doc` text lines described below, byte for byte.
+For `blocks1`, `segment_range_reads` and `hydration_segment_bytes_read` count
+the positioned reads actually made (index plus needed blocks), not the range.
+
 ## Integrity and admission
 
 The existing compressed-envelope header grammar is shared with the resident

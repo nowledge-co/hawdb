@@ -647,9 +647,26 @@ fn projected_graph_registration_and_admission_include_canonical_edges() {
 fn projected_graph_relationship_corruption_fails_without_partial_results() {
     for algorithm in ["page_rank", "louvain"] {
         let mut fixture = Fixture::new(StorageResidencyMode::OutOfCore, 0);
-        // Publish a fresh generation without reopening: startup may have
-        // cached verified segments, which must not mask this injected read error.
+        // Dirty the graph without changing topology, forcing a fresh bundle
+        // instead of carrying startup-cached verified segments.
+        let old_generation = fixture
+            .db()
+            .storage_residency_report()
+            .unwrap()
+            .canonical_generation;
+        fixture
+            .db()
+            .query("MATCH (n) SET n.corruption_probe = 1")
+            .unwrap();
         fixture.db().checkpoint().unwrap();
+        assert_ne!(
+            fixture
+                .db()
+                .storage_residency_report()
+                .unwrap()
+                .canonical_generation,
+            old_generation
+        );
         let before = frontier(&fixture.path);
         let epoch = fixture.db().commit_epoch();
         // Canonical relationship segments follow the node segments. Corrupt
@@ -662,9 +679,8 @@ fn projected_graph_relationship_corruption_fails_without_partial_results() {
             .unwrap();
         let canonical = super::super::active_storage_root(&fixture.path)
             .join(format!("canonical.{generation}.hawdb"));
-        let mut bytes = std::fs::read(&canonical).unwrap();
-        *bytes.last_mut().unwrap() ^= 0xff;
-        std::fs::write(canonical, bytes).unwrap();
+        let length = std::fs::metadata(&canonical).unwrap().len();
+        super::super::flip_test_file_byte(&canonical, length - 1, None);
         let mut nodes = 0;
         GraphExecutionRead::visit_nodes_owned(
             &fixture.db().runtime.get().unwrap().store,

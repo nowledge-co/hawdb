@@ -3292,7 +3292,7 @@ fn embedded_store_recall_validation_requires_search_projection() {
 
     assert_eq!(
         error.to_string(),
-        "storage error: nowledge mem search projection is not configured"
+        "semantic error: nowledge mem search projection is not configured"
     );
 }
 
@@ -3407,7 +3407,7 @@ fn embedded_store_search_projection_evidence_requires_projection() {
 
     assert_eq!(
         error.to_string(),
-        "storage error: nowledge mem search projection is not configured"
+        "semantic error: nowledge mem search projection is not configured"
     );
 }
 
@@ -3425,7 +3425,7 @@ fn embedded_store_search_projection_shadow_evidence_requires_projection() {
 
     assert_eq!(
         error.to_string(),
-        "storage error: nowledge mem search projection is not configured"
+        "semantic error: nowledge mem search projection is not configured"
     );
 }
 
@@ -3635,6 +3635,10 @@ fn qualified_out_of_core_open_recomputes_production_evidence() {
     let error = EmbeddedStore::open_with_options(options).unwrap_err();
     assert!(error.to_string().contains("dataset_too_small"));
     assert!(error.to_string().contains("workload_coverage_incomplete"));
+    assert!(matches!(
+        error,
+        HawDBError::SearchProductionQualificationRefused { .. }
+    ));
 
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -4669,9 +4673,19 @@ fn embedded_store_background_delta_uses_scheduler_qos() {
         .apply_scheduled_background_search_projection_graph_delta(request)
         .unwrap_err();
 
-    assert!(error
-        .to_string()
-        .contains("background search projection graph delta"));
+    // A zero total budget can never admit the delta.
+    assert!(
+        matches!(
+            error,
+            HawDBError::RuntimeAdmissionRefused(hawdb_core::RuntimeAdmissionRefusal {
+                code: "background_task_saturated",
+                available: 0,
+                retryable: false,
+                ..
+            })
+        ),
+        "{error}"
+    );
     assert!(store
         .search_projection()
         .unwrap()
@@ -6837,7 +6851,7 @@ fn embedded_store_retrieval_requires_search_projection() {
 
     assert_eq!(
         error.to_string(),
-        "storage error: nowledge mem search projection is not configured"
+        "semantic error: nowledge mem search projection is not configured"
     );
 }
 
@@ -8056,7 +8070,9 @@ fn grouped_evidence_complete_text_preserves_graph_eligibility_and_retained_reads
 mod catch_up_admission_tests;
 mod externally_owned_search_kinds_tests;
 mod initial_import_checkpoint_tests;
+mod missing_search_projection_tests;
 mod object_reclamation_tests;
+mod qualified_search_epoch_tests;
 mod resident_snapshot_admission_tests;
 mod schema_change_log_gap_tests;
 mod schema_maintenance_tests;

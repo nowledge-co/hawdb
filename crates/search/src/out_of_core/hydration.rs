@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::*;
-use crate::{decode_search_document_line, parse_snapshot_header};
+use crate::parse_snapshot_header;
 use hawdb_core::{ResourceBudgetError, ResourceBudgetKind, ResourceBudgetScope};
 use hawdb_integrity::Crc32cHasher;
 use std::io::{self, BufRead, BufReader};
@@ -82,17 +82,103 @@ fn invalid(reason: impl std::fmt::Display) -> HawDBError {
     HawDBError::Storage(format!("search hydration {reason}"))
 }
 
+/// The record count and id bounds one scanned range must match: a whole
+/// descriptor segment, or one indexed content block (#1917).
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Bounds<'a> {
+    pub(super) first: &'a str,
+    pub(super) last: &'a str,
+    pub(super) count: usize,
+}
+
+impl<'a> Bounds<'a> {
+    pub(super) fn of(segment: &'a SearchSegmentDescriptorEntry) -> Self {
+        Self {
+            first: &segment.first_document_id,
+            last: &segment.last_document_id,
+            count: segment.document_count,
+        }
+    }
+
+    pub(super) fn of_block<B: std::ops::Deref<Target = [u8]>>(
+        index: &'a super::content_blocks::Index<B>,
+        entry: &super::content_blocks::Entry,
+    ) -> Self {
+        Self {
+            first: index.first(entry),
+            last: index.last(entry),
+            count: entry.document_count as usize,
+        }
+    }
+}
+
+/// Positioned reads of one segment of an unaccounted payload file.
+pub(super) struct PlainSource<'a> {
+    pub(super) file: &'a File,
+    pub(super) base: u64,
+}
+
+impl super::content_blocks::SegmentSource for PlainSource<'_> {
+    fn read_exact_at(&self, offset: u64, output: &mut [u8]) -> Result<()> {
+        let offset = self
+            .base
+            .checked_add(offset)
+            .ok_or_else(|| invalid("range offset overflow"))?;
+        read_search_range(self.file, offset, output)
+    }
+}
+
+/// Routes the distinct candidate ids in ascending order, reading each lexical
+/// document block once for all of them (#1917), and visits each id with its
+/// `(artifact_index, segment)`.
+pub(super) fn route_candidates<'r, 'c>(
+    reader: &'r SearchOutOfCoreReader,
+    candidates: &'c [SearchScoredCandidate],
+    query: Option<crate::lexical_projection::QueryContext<'_>>,
+    metrics: &mut SearchOutOfCoreMetrics,
+    mut visit: impl FnMut(&'c str, usize, &'r SearchSegmentDescriptorEntry) -> Result<()>,
+) -> Result<()> {
+    let _memory = query
+        .map(|query| {
+            query
+                .memory
+                .reserve(candidates.len().saturating_mul(size_of::<&str>()))
+        })
+        .transpose()?;
+    let mut ids = candidates
+        .iter()
+        .map(|candidate| candidate.id.as_str())
+        .collect::<Vec<_>>();
+    ids.sort_unstable();
+    ids.dedup();
+    let routes = reader.segments_for_documents_with_context(&ids, query, metrics)?;
+    for (id, route) in ids.into_iter().zip(&routes.routes) {
+        let (artifact_index, segment) =
+            route.ok_or_else(|| invalid("candidate has no visible document route"))?;
+        visit(id, artifact_index, segment)?;
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
-struct Selection {
+pub(super) struct Selection {
     documents: Vec<SearchDocument>,
     bytes: u64,
     peak_document_bytes: u64,
 }
 
+/// The ids a selective read must release, and whether their documents carry
+/// the stored embedding (text-only hits never rescore it, #1917).
 #[derive(Clone, Copy)]
-struct HydrationBudget {
-    limit: u64,
-    used: u64,
+pub(super) struct Wanted<'a> {
+    pub(super) ids: &'a BTreeSet<String>,
+    pub(super) embeddings: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct HydrationBudget {
+    pub(super) limit: u64,
+    pub(super) used: u64,
 }
 
 impl SearchOutOfCoreSegmentReader {
@@ -100,13 +186,29 @@ impl SearchOutOfCoreSegmentReader {
         &self,
         config: &SearchOutOfCoreConfig,
         segment: &SearchSegmentDescriptorEntry,
-        ids: &BTreeSet<String>,
+        wanted: Wanted<'_>,
         hydrated_bytes: u64,
         metrics: &mut SearchOutOfCoreMetrics,
-    ) -> Result<Vec<SearchDocument>> {
+        cache: &super::content_blocks::ContentCache,
+    ) -> Result<(Vec<SearchDocument>, u64)> {
         let range = segment
             .payload_range
             .ok_or_else(|| invalid("segment has no payload range"))?;
+        if self.content_encoding == super::content_blocks::ContentEncoding::Blocks1 {
+            let cache = super::content_blocks::CacheScope::new(
+                cache,
+                self.payload_sha256,
+                self.payload_generation,
+            );
+            return self.read_selected_blocks(
+                config,
+                segment,
+                wanted,
+                hydrated_bytes,
+                metrics,
+                cache,
+            );
+        }
         let input = RangeReader {
             file: &self.payload,
             offset: range.offset,
@@ -117,7 +219,7 @@ impl SearchOutOfCoreSegmentReader {
             range.length,
             range.checksum,
             segment,
-            ids,
+            wanted,
             config.max_uncompressed_segment_bytes.get(),
             HydrationBudget {
                 limit: config.max_hydrated_bytes.get(),
@@ -132,7 +234,109 @@ impl SearchOutOfCoreSegmentReader {
         metrics.peak_segment_document_bytes = metrics
             .peak_segment_document_bytes
             .max(selected.peak_document_bytes);
-        Ok(selected.documents)
+        Ok((selected.documents, selected.bytes))
+    }
+}
+
+impl SearchOutOfCoreSegmentReader {
+    /// Reads and verifies only the indexed blocks that can hold `ids`.
+    fn read_selected_blocks(
+        &self,
+        config: &SearchOutOfCoreConfig,
+        segment: &SearchSegmentDescriptorEntry,
+        wanted: Wanted<'_>,
+        hydrated_bytes: u64,
+        metrics: &mut SearchOutOfCoreMetrics,
+        cache: Option<super::content_blocks::CacheScope<'_>>,
+    ) -> Result<(Vec<SearchDocument>, u64)> {
+        let ids = wanted.ids;
+        use super::content_blocks::{self as blocks, Expect, Reads};
+        let range = segment
+            .payload_range
+            .ok_or_else(|| invalid("segment has no payload range"))?;
+        let source = PlainSource {
+            file: &self.payload,
+            base: range.offset,
+        };
+        let mut reads = Reads::default();
+        let mut peak = 0u64;
+        let result = (|| {
+            let index = blocks::load_index(
+                &source,
+                cache,
+                range.offset,
+                Expect {
+                    length: range.length,
+                    checksum: range.checksum,
+                    max_uncompressed_bytes: config.max_uncompressed_segment_bytes.get(),
+                    descriptor: Some((
+                        segment.document_count,
+                        &segment.first_document_id,
+                        &segment.last_document_id,
+                    )),
+                },
+                None,
+                &mut reads,
+            )?;
+            let mut needed = ids
+                .iter()
+                .filter_map(|id| index.find(id))
+                .collect::<Vec<_>>();
+            needed.dedup();
+            let mut decoder = None;
+            let mut documents = Vec::new();
+            let mut bytes = 0u64;
+            for block in needed {
+                let entry = index.entries()[block];
+                let bounds = Bounds::of_block(&index, &entry);
+                let budget = HydrationBudget {
+                    limit: config.max_hydrated_bytes.get(),
+                    used: hydrated_bytes.saturating_add(bytes),
+                };
+                let selected = if u64::from(entry.uncompressed_len)
+                    > blocks::MAX_BUFFERED_BLOCK_BYTES
+                {
+                    reads.range_reads += 1;
+                    reads.bytes_read += u64::from(entry.compressed_len);
+                    reads.blocks_read += 1;
+                    reads.bytes_inflated += u64::from(entry.uncompressed_len);
+                    blocks::stream_blocks(
+                        RangeReader {
+                            file: &self.payload,
+                            offset: range.offset + entry.offset,
+                            remaining: u64::from(entry.compressed_len),
+                        },
+                        &index,
+                        block..block + 1,
+                        None,
+                        |text| select_documents(text, bounds, wanted, budget),
+                    )?
+                } else {
+                    let decoder = match &mut decoder {
+                        Some(decoder) => decoder,
+                        None => decoder
+                            .insert(crate::build_memory::decoder::BlockDecoder::new(None, None)?),
+                    };
+                    let body = blocks::load_block(
+                        &source,
+                        cache,
+                        range.offset,
+                        &entry,
+                        decoder,
+                        None,
+                        &mut reads,
+                    )?;
+                    select_block_records(&body, bounds, wanted, budget)?
+                };
+                peak = peak.max(bytes.saturating_add(selected.peak_document_bytes));
+                bytes = bytes.saturating_add(selected.bytes);
+                documents.extend(selected.documents);
+            }
+            Ok((documents, bytes))
+        })();
+        reads.record(metrics);
+        metrics.peak_segment_document_bytes = metrics.peak_segment_document_bytes.max(peak);
+        result
     }
 }
 
@@ -141,7 +345,7 @@ fn read_selected(
     length: u64,
     checksum: u64,
     segment: &SearchSegmentDescriptorEntry,
-    ids: &BTreeSet<String>,
+    wanted: Wanted<'_>,
     max_uncompressed_bytes: u64,
     budget: HydrationBudget,
 ) -> Result<Selection> {
@@ -151,7 +355,7 @@ fn read_selected(
         checksum,
         max_uncompressed_bytes,
         None,
-        |text| select_documents(text, segment, ids, budget),
+        |text| select_documents(text, Bounds::of(segment), wanted, budget),
     )
 }
 
@@ -204,7 +408,21 @@ pub(super) fn read_validated_with_account<T>(
         .map(|admission| admission.memory.reserve(4 * INPUT_BYTES))
         .transpose()?;
     let mut range = CheckedReader::new(input.take(length));
-    let mut buffered = BufReader::with_capacity(INPUT_BYTES, &mut range);
+    // The artifact's encoding is gated by the selector; the segment's own
+    // magic selects the frame reader (#1917).
+    let mut magic = [0; 8];
+    let prefix = read_prefix(&mut range, &mut magic)?;
+    if magic[..prefix] == super::content_blocks::MAGIC[..] {
+        return super::content_blocks::read_segment(
+            &mut range,
+            length,
+            checksum,
+            max_uncompressed_bytes,
+            admission,
+            select,
+        );
+    }
+    let mut buffered = BufReader::with_capacity(INPUT_BYTES, (&magic[..prefix]).chain(&mut range));
     let selected = read_envelope(
         &mut buffered,
         length,
@@ -228,6 +446,20 @@ pub(super) fn read_validated_with_account<T>(
         crate::build_control::checkpoint(admission.task)?;
     }
     selected
+}
+
+/// Reads up to `output.len()` bytes, fewer only at the end of the range.
+fn read_prefix(input: &mut impl Read, output: &mut [u8]) -> Result<usize> {
+    let mut count = 0;
+    while count < output.len() {
+        match input.read(&mut output[count..]) {
+            Ok(0) => break,
+            Ok(read) => count += read,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(crate::build_memory::read::io_error(error)),
+        }
+    }
+    Ok(count)
 }
 
 fn read_envelope<T>(
@@ -366,10 +598,11 @@ fn read_inflated<T>(
     (selected, drained, inflated.count, inflated.digest.finish())
 }
 
-/// A document line's id and the [`search_document_bytes`] its decoded
-/// document would have, read without decoding its title, content, vector or
-/// metadata. Metadata keys of one document are distinct, as written.
-fn summarize_document_line(line: &str) -> Result<(String, u64)> {
+/// A document line's id, the [`search_document_bytes`] its decoded document
+/// would have, and how many of those bytes are its vector, read without
+/// decoding its title, content, vector or metadata. Metadata keys of one
+/// document are distinct, as written.
+fn summarize_document_line(line: &str) -> Result<(String, u64, u64)> {
     let mut fields = line.split('\t');
     let (Some("doc"), Some(id), Some(title), Some(content), Some(embedding), Some(metadata), None) = (
         fields.next(),
@@ -401,10 +634,11 @@ fn summarize_document_line(line: &str) -> Result<(String, u64)> {
     } else {
         embedding.bytes().filter(|byte| *byte == b',').count() as u64 + 1
     };
+    let vector = dimension.saturating_mul(std::mem::size_of::<f32>() as u64);
     let mut bytes = hex(id)?
         .saturating_add(hex(title)?)
         .saturating_add(hex(content)?)
-        .saturating_add(dimension.saturating_mul(std::mem::size_of::<f32>() as u64));
+        .saturating_add(vector);
     if !metadata.is_empty() {
         for pair in metadata.split(';') {
             let Some((key, value)) = pair.split_once('=') else {
@@ -415,15 +649,138 @@ fn summarize_document_line(line: &str) -> Result<(String, u64)> {
             bytes = bytes.saturating_add(hex(key)?).saturating_add(hex(value)?);
         }
     }
-    Ok((crate::decode_string(id)?, bytes))
+    Ok((crate::decode_string(id)?, bytes, vector))
 }
 
-fn select_documents(
-    text: &mut dyn BufRead,
-    segment: &SearchSegmentDescriptorEntry,
-    ids: &BTreeSet<String>,
+/// [`select_documents`] over one buffered block of binary records (#1917):
+/// records are parsed in place, and only the selected ones are decoded.
+fn select_block_records(
+    body: &[u8],
+    bounds: Bounds<'_>,
+    wanted: Wanted<'_>,
     budget: HydrationBudget,
 ) -> Result<Selection> {
+    let remaining_bytes = budget.limit - budget.used;
+    let mut selected = Selection {
+        documents: Vec::new(),
+        bytes: 0,
+        peak_document_bytes: 0,
+    };
+    super::content_blocks::records::scan(body, bounds, |record| {
+        // Text-only hits hold no vector, so they are not charged for it.
+        let bytes = record.document_bytes()
+            - if wanted.embeddings {
+                0
+            } else {
+                (record.dimension() * size_of::<f32>()) as u64
+            };
+        selected.peak_document_bytes = selected
+            .peak_document_bytes
+            .max(selected.bytes.saturating_add(bytes));
+        if !wanted.ids.contains(record.id) {
+            return Ok(());
+        }
+        let document = record.decode(wanted.embeddings)?;
+        debug_assert_eq!(search_document_bytes(&document), bytes);
+        admit_selected(&mut selected, bytes, budget, remaining_bytes)?;
+        selected.documents.push(document);
+        Ok(())
+    })?;
+    Ok(selected)
+}
+
+/// Charges one selected document to the hydration byte budget.
+fn admit_selected(
+    selected: &mut Selection,
+    bytes: u64,
+    budget: HydrationBudget,
+    remaining_bytes: u64,
+) -> Result<()> {
+    let previous_bytes = selected.bytes;
+    selected.bytes = selected
+        .bytes
+        .checked_add(bytes)
+        .ok_or_else(|| invalid("byte count overflow"))?;
+    if selected.bytes > remaining_bytes {
+        return Err(ResourceBudgetError {
+            resource: ResourceBudgetKind::MemoryBytes,
+            scope: ResourceBudgetScope::Operator,
+            owner: "search hydration".to_string(),
+            memory_class: None,
+            requested: bytes,
+            // Preserve the full operation boundary across physical segments.
+            used: budget.used + previous_bytes,
+            budget: budget.limit,
+            budget_option: "SearchOutOfCoreConfig.max_hydrated_bytes",
+            message: format!(
+                "search hydration requires {} bytes, exceeding {remaining_bytes}",
+                selected.bytes
+            ),
+        }
+        .into());
+    }
+    Ok(())
+}
+
+/// Verifies a text record stream's order, bounds and count like
+/// [`select_documents`] with nothing selected, reading each record through
+/// one admitted line buffer of at most `max_record_bytes`.
+pub(super) fn verify_text_records(
+    text: &mut dyn BufRead,
+    segment: Bounds<'_>,
+    max_record_bytes: u64,
+    memory: &hawdb_executor::QueryMemoryAccount,
+    task: &hawdb_core::RuntimeTaskContext,
+) -> Result<()> {
+    let mut line_memory = memory.reserve(0)?;
+    let mut line = Vec::new();
+    let mut previous = None::<String>;
+    let mut count = 0usize;
+    while read_record(
+        text,
+        &mut line,
+        usize::try_from(max_record_bytes).unwrap_or(usize::MAX),
+        task,
+        &mut line_memory,
+    )? {
+        let record = std::str::from_utf8(&line).map_err(|_| invalid("invalid record UTF-8"))?;
+        let record = match record.strip_suffix('\n') {
+            Some(record) => record.strip_suffix('\r').unwrap_or(record),
+            None => record,
+        };
+        if record.is_empty() || record == "HAWDB_SEARCH_SEGMENT_V1" {
+            continue;
+        }
+        let (id, _, _) = summarize_document_line(record)?;
+        if count == 0 && id != segment.first {
+            return Err(invalid("document bounds do not match its descriptor"));
+        }
+        if previous.as_ref().is_some_and(|previous| previous >= &id) {
+            return Err(invalid("documents are not strictly ordered"));
+        }
+        count = count
+            .checked_add(1)
+            .ok_or_else(|| invalid("document count overflow"))?;
+        if count > segment.count {
+            return Err(invalid("document count exceeds its descriptor"));
+        }
+        previous = Some(id);
+    }
+    if count != segment.count || previous.as_deref() != Some(segment.last) {
+        return Err(invalid(
+            "document count or bounds do not match its descriptor",
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn select_documents(
+    text: &mut dyn BufRead,
+    segment: Bounds<'_>,
+    wanted: Wanted<'_>,
+    budget: HydrationBudget,
+) -> Result<Selection> {
+    let ids = wanted.ids;
     let remaining_bytes = budget.limit - budget.used;
     let mut selected = Selection {
         documents: Vec::new(),
@@ -449,8 +806,14 @@ fn select_documents(
         // Only the selected lines are decoded (#1611). Every line still
         // proves the segment's order, bounds and count from its id; the
         // checksummed range already fences the bytes of the others.
-        let (id, bytes) = summarize_document_line(line)?;
-        if count == 0 && id != segment.first_document_id {
+        // Text-only hits hold no vector, so they are not charged for it.
+        let (id, bytes, vector) = summarize_document_line(line)?;
+        let bytes = if wanted.embeddings {
+            bytes
+        } else {
+            bytes - vector
+        };
+        if count == 0 && id != segment.first {
             return Err(invalid("document bounds do not match its descriptor"));
         }
         if previous.as_ref().is_some_and(|previous| previous >= &id) {
@@ -459,7 +822,7 @@ fn select_documents(
         count = count
             .checked_add(1)
             .ok_or_else(|| invalid("document count overflow"))?;
-        if count > segment.document_count {
+        if count > segment.count {
             return Err(invalid("document count exceeds its descriptor"));
         }
         selected.peak_document_bytes = selected
@@ -468,37 +831,13 @@ fn select_documents(
         let selected_line = ids.contains(&id);
         previous = Some(id);
         if selected_line {
-            let document = decode_search_document_line(line)?;
+            let document = crate::decode_search_document_line_with(line, wanted.embeddings)?;
             debug_assert_eq!(search_document_bytes(&document), bytes);
-            let previous_bytes = selected.bytes;
-            selected.bytes = selected
-                .bytes
-                .checked_add(bytes)
-                .ok_or_else(|| invalid("byte count overflow"))?;
-            if selected.bytes > remaining_bytes {
-                return Err(ResourceBudgetError {
-                    resource: ResourceBudgetKind::MemoryBytes,
-                    scope: ResourceBudgetScope::Operator,
-                    owner: "search hydration".to_string(),
-                    memory_class: None,
-                    requested: bytes,
-                    // Preserve the full operation boundary across physical segments.
-                    used: budget.used + previous_bytes,
-                    budget: budget.limit,
-                    budget_option: "SearchOutOfCoreConfig.max_hydrated_bytes",
-                    message: format!(
-                        "search hydration requires {} bytes, exceeding {remaining_bytes}",
-                        selected.bytes
-                    ),
-                }
-                .into());
-            }
+            admit_selected(&mut selected, bytes, budget, remaining_bytes)?;
             selected.documents.push(document);
         }
     }
-    if count != segment.document_count
-        || previous.as_deref() != Some(segment.last_document_id.as_str())
-    {
+    if count != segment.count || previous.as_deref() != Some(segment.last) {
         return Err(invalid(
             "document count or bounds do not match its descriptor",
         ));

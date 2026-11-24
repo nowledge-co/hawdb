@@ -30,6 +30,50 @@ use super::{
 };
 pub(super) use crate::field_plan::single_count_distinct_column;
 
+pub(super) fn finish_fromless_group(
+    select: &SelectStatement,
+    parameters: &[Value],
+    state: &RelationalState,
+    bound: &super::BoundRow<'_>,
+    qualifies: bool,
+    ledger: &QueryMemoryLedger,
+    resources: &super::RelationalQueryResourceContext<'_>,
+) -> Result<(Row, super::BlockingOperatorMemoryReport)> {
+    let memory = resources.execution_memory;
+    let mut tracker = OperatorMemoryTracker::with_account(
+        memory.blocking_operator_bytes,
+        ledger.account(
+            QueryMemoryClass::BlockingState,
+            "RelationalAggregate",
+            memory.blocking_operator_bytes,
+        ),
+    );
+    let mut group = super::having::projection_template(select, parameters, state)?;
+    charge_aggregate_memory(aggregate_group_base_memory_bytes(&[], &group), &mut tracker)?;
+    if qualifies {
+        for projection in &mut group {
+            let delta = projection.update(
+                &|column| resolve_column_with_type(bound, column),
+                parameters,
+            )?;
+            tracker.release(delta.released_bytes);
+            charge_aggregate_memory(delta.added_bytes, &mut tracker)?;
+        }
+    }
+    let row = group
+        .into_iter()
+        .map(AggregateProjectionState::finish)
+        .collect::<Result<Row>>()?;
+    let report = hawdb_executor::blocking::in_memory_report(
+        "RelationalAggregateExec",
+        &tracker,
+        tracker.peak_bytes,
+        usize::from(qualifies),
+        memory,
+    );
+    Ok((row, report))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn execute_aggregate_select<'a>(
     select: &'a SelectStatement,

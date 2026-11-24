@@ -12,19 +12,35 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! A newer relational checkpoint layout (#1737: rows only in the canonical
-//! row-page root, no full-row `relational.N.hawdb`) is a typed
-//! `UnsupportedStorageFormat` refusal in every configuration this reader
-//! cannot serve, never `Storage`, and opening it changes no byte.
+//! Row-root-only relational checkpoints rebuild resident rows (#1737).
+//! Authoritative indexes still require a published index generation. Every
+//! successful or refused open leaves durable database bytes unchanged.
 
 use super::*;
 use crate::{StorageFormatError, RELATIONAL_CHECKPOINT_LAYOUT_FORMAT};
 use hawdb_storage::config::{RelationalIndexMode, StorageResidencyMode};
 
-/// Writes the current row-page format while preserving this test's original
-/// layout distinction: the initial Shadow checkpoint carries the full-row
-/// artifact, while an optional successor Authoritative checkpoint publishes
-/// only canonical row pages plus its persistent index generation.
+/// Writes the current row-page format with the default configuration: one
+/// `docs` table with 20 rows and one checkpoint, so no full-row file (#1737)
+/// and no persistent relational index generation.
+fn write_default_row_root(path: &std::path::Path) {
+    let mut db = Database::open(path).unwrap();
+    db.query_sql("CREATE TABLE docs (id BIGINT PRIMARY KEY, body TEXT NOT NULL)")
+        .unwrap();
+    for id in 0..20i64 {
+        db.query_sql_with_params(
+            "INSERT INTO docs (id, body) VALUES ($1, $2)",
+            &[Value::Int(id), Value::String(format!("body {id}"))],
+        )
+        .unwrap();
+    }
+    db.checkpoint().unwrap();
+}
+
+/// Writes the current row-page format: an initial Shadow checkpoint, then an
+/// optional successor Authoritative checkpoint that publishes canonical row
+/// pages plus its persistent index generation. Neither writes the full-row
+/// artifact (#1737).
 fn write_current_row_root(path: &std::path::Path, canonical_only: bool) {
     let config = DatabaseConfig {
         storage_residency_mode: StorageResidencyMode::OutOfCore,
@@ -218,14 +234,19 @@ fn legacy_covering_index_v5_reopens_and_upgrades_after_checkpoint() {
 }
 
 #[test]
-fn newer_row_root_layout_is_typed_or_served_by_authoritative_out_of_core() {
+fn row_root_layout_preserves_all_configuration_and_refusal_boundaries() {
     use RelationalIndexMode as Index;
     use StorageResidencyMode as Residency;
     let fixture_path = unique_test_dir("relational_checkpoint_layout_source");
-    write_current_row_root(&fixture_path, true);
+    write_default_row_root(&fixture_path);
     let fixture = database_bytes(&fixture_path);
     std::fs::remove_dir_all(fixture_path).unwrap();
     let mut checked = 0;
+    let mut opened = 0;
+    let mut refused = 0;
+    let expected = (0..20i64)
+        .map(|id| (Value::Int(id), Value::String(format!("body {id}"))))
+        .collect::<Vec<_>>();
     for residency in [
         Residency::Auto,
         Residency::Materialized,
@@ -252,30 +273,37 @@ fn newer_row_root_layout_is_typed_or_served_by_authoritative_out_of_core() {
                     },
                     ..DatabaseConfig::default()
                 };
+                let context = format!("{residency:?}/{index:?}/read_only={read_only}");
                 let result = Database::open_with_config(&path, config)
-                    .and_then(|mut db| db.query_sql("SELECT COUNT(*) AS n FROM docs"));
-                if residency == Residency::OutOfCore && index == Index::Authoritative {
-                    assert_eq!(result.unwrap().rows[0]["n"], Value::Int(20));
-                    assert_eq!(database_bytes(&path), before);
-                    std::fs::remove_dir_all(&path).unwrap();
-                    checked += 1;
-                    continue;
+                    .and_then(|mut db| db.query_sql("SELECT id, body FROM docs ORDER BY id"));
+                if index == Index::Authoritative {
+                    let error = result.unwrap_err();
+                    let HawDBError::UnsupportedStorageFormat(format) = &error else {
+                        panic!("expected a typed refusal: {context}: {error:?}");
+                    };
+                    assert_eq!(
+                        format.format(),
+                        RELATIONAL_CHECKPOINT_LAYOUT_FORMAT,
+                        "{context}"
+                    );
+                    let StorageFormatError::UnsupportedFeature { feature, .. } = format else {
+                        panic!("expected an unsupported feature: {context}");
+                    };
+                    assert!(
+                        feature.contains("without a persistent relational index generation"),
+                        "{context}: {error:?}"
+                    );
+                    refused += 1;
+                } else {
+                    let rows = result.unwrap_or_else(|error| panic!("{context}: {error:?}"));
+                    let actual = rows
+                        .rows
+                        .iter()
+                        .map(|row| (row["id"].clone(), row["body"].clone()))
+                        .collect::<Vec<_>>();
+                    assert_eq!(actual, expected, "{context}");
+                    opened += 1;
                 }
-                let error = result.unwrap_err();
-                let context = format!("{residency:?}/{index:?}/read_only={read_only}: {error:?}");
-                let HawDBError::UnsupportedStorageFormat(format) = &error else {
-                    panic!("expected a typed refusal: {context}");
-                };
-                assert_eq!(
-                    format.format(),
-                    RELATIONAL_CHECKPOINT_LAYOUT_FORMAT,
-                    "{context}"
-                );
-                let StorageFormatError::UnsupportedFeature { feature, .. } = format else {
-                    panic!("expected an unsupported feature: {context}");
-                };
-                let expected = "without a full-row relational checkpoint file";
-                assert!(feature.contains(expected), "{context}");
                 let after = database_bytes(&path);
                 let changed = before
                     .keys()
@@ -284,7 +312,7 @@ fn newer_row_root_layout_is_typed_or_served_by_authoritative_out_of_core() {
                     .collect::<std::collections::BTreeSet<_>>();
                 assert!(
                     changed.is_empty(),
-                    "the refused open changed database bytes {changed:?}: {context}"
+                    "opening changed database bytes {changed:?}: {context}"
                 );
                 std::fs::remove_dir_all(&path).unwrap();
                 checked += 1;
@@ -292,11 +320,12 @@ fn newer_row_root_layout_is_typed_or_served_by_authoritative_out_of_core() {
         }
     }
     assert_eq!(checked, 24);
+    assert_eq!(opened, 18);
+    assert_eq!(refused, 6);
 }
 
-/// The one configuration this reader serves for the newer layout:
-/// `OutOfCore` residency with `Authoritative` relational indexes, on a
-/// database that published a relational index generation.
+/// Authoritative reads and default resident reconstruction share the same
+/// checkpoint after an authoritative writer publishes another generation.
 #[test]
 fn newer_row_root_layout_with_index_generation_opens_out_of_core_authoritative() {
     let config = |read_only: bool| DatabaseConfig {
@@ -344,15 +373,10 @@ fn newer_row_root_layout_with_index_generation_opens_out_of_core_authoritative()
         let mut db = Database::open_with_config(&path, config(false)).unwrap();
         assert_eq!(rows(&mut db), expected);
     }
-    // Every other configuration still refuses with the typed error.
-    let error = Database::open(&path)
-        .and_then(|mut db| db.query_sql("SELECT COUNT(*) FROM docs"))
-        .unwrap_err();
-    assert!(
-        matches!(&error, HawDBError::UnsupportedStorageFormat(format)
-            if format.format() == RELATIONAL_CHECKPOINT_LAYOUT_FORMAT),
-        "{error:?}"
-    );
+    {
+        let mut db = Database::open(&path).unwrap();
+        assert_eq!(rows(&mut db), expected);
+    }
     std::fs::remove_dir_all(&path).unwrap();
 }
 

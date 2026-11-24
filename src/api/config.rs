@@ -97,6 +97,10 @@ pub struct DatabaseConfig {
     pub max_wal_batch_operations: Option<usize>,
     pub max_checkpoint_encoded_bytes: Option<u64>,
     pub max_checkpoint_decoded_bytes: Option<u64>,
+    /// Resident byte limit for cached storage segments and pages. Defaults to
+    /// 256 MiB. Smaller limits evict more aggressively and may increase reads.
+    /// The limit covers the cache; query scratch and materialized rows have
+    /// separate memory ownership.
     pub segment_cache_capacity_bytes: u64,
     /// Aggregate encoded graph-manifest bytes allowed during database open.
     /// Payload pages remain governed separately by the segment cache.
@@ -105,7 +109,11 @@ pub struct DatabaseConfig {
     /// Cache hits consume the separately derived logical traversal budget only.
     pub max_relational_index_read_bytes: NonZeroUsize,
     pub max_relational_hydration_bytes: NonZeroUsize,
+    /// Controls whether the canonical graph is materialized or read on demand.
+    /// Defaults to `Auto`.
     pub storage_residency_mode: hawdb_storage::config::StorageResidencyMode,
+    /// Size threshold for graph materialization under `Auto`. Defaults to
+    /// 64 MiB. Explicit residency modes do not consult this threshold.
     pub auto_materialize_checkpoint_bytes: u64,
     pub max_out_of_core_delta_bytes: Option<u64>,
     /// Derived columnar shadow double-write: every checkpoint also
@@ -119,6 +127,15 @@ pub struct DatabaseConfig {
     /// Enables the metadata-only monotonic INSERT fast path for RowPage tables.
     /// Disabled by default until workload qualification explicitly activates it.
     pub relational_monotonic_append_fast_path: bool,
+    /// Also write the legacy full-row `relational.N.hawdb` file at every
+    /// checkpoint. Off by default: the canonical row-page and overflow roots
+    /// carry the complete relational state, so a checkpoint writes only the
+    /// row pages and overflow extents changed since the previous one (#1737).
+    /// Enable it only while a host must keep downgrading to a persistent
+    /// format 5 release (HawDB 0.37), which needs the full-row file unless it
+    /// opens with OutOfCore residency and Authoritative relational indexes. Each
+    /// checkpoint then rewrites the whole relational state.
+    pub legacy_relational_checkpoint_file: bool,
     pub max_search_projection_change_log_entries: Option<usize>,
     pub max_search_projection_change_log_bytes: Option<usize>,
     pub search_projection_relational_change_limits:
@@ -286,6 +303,7 @@ impl Default for DatabaseConfig {
             graph_columnar_shadow_checkpoint: false,
             relational_index_mode: hawdb_storage::config::RelationalIndexMode::default(),
             relational_monotonic_append_fast_path: false,
+            legacy_relational_checkpoint_file: false,
             max_search_projection_change_log_entries: Some(
                 DEFAULT_SEARCH_PROJECTION_CHANGE_LOG_MAX_ENTRIES,
             ),

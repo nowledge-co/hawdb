@@ -107,6 +107,7 @@ fn projected_access_cost(
             let rows = catalog.label_count(label).max(1);
             node_full_scan_work(rows)
         }
+        NodeProjectionAccess::IdSeek => node_index_seek_work(1, 1),
         NodeProjectionAccess::PropertyValues { property, values } => {
             let rows = if values.len() == 1 {
                 catalog.estimate_property_index_value_rows(label, property, &values[0])

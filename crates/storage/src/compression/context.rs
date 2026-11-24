@@ -290,7 +290,7 @@ impl CompressionContext {
         Ok(())
     }
 
-    fn step<C: WriteBuf + ?Sized>(
+    pub(super) fn step<C: WriteBuf + ?Sized>(
         &mut self,
         input: &mut InBuffer<'_>,
         output: &mut OutBuffer<'_, C>,

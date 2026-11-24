@@ -258,16 +258,38 @@ pub(super) fn infer_coalesce_scalar_type(
     }
 }
 
+/// Bind projected names without evaluating their values. Used when the input
+/// can be empty or the projection may be elided entirely.
+pub(super) fn validate_projection_columns(
+    select: &SelectStatement,
+    state: &RelationalState,
+) -> Result<()> {
+    let mut result = Ok(());
+    for projection in &select.projection {
+        if let SelectProjection::Expression { expression, .. } = projection {
+            expression.visit(&mut |expression| {
+                if result.is_ok()
+                    && let ExprKind::Column(column) = &expression.kind
+                {
+                    result = resolve_projection_column_type(select, state, column).map(|_| ());
+                }
+            });
+        }
+    }
+    result
+}
+
 pub(super) fn resolve_projection_column_type(
     select: &SelectStatement,
     state: &RelationalState,
     column: &SqlColumnRef,
 ) -> Result<RelationalScalarType> {
-    let base_qualifier = select
-        .from_alias
-        .as_deref()
-        .unwrap_or(&select.from_table().name);
-    let base = std::iter::once((select.from_table().name.as_str(), base_qualifier));
+    let base = select.from.iter().map(|table| {
+        (
+            table.name.as_str(),
+            select.from_alias.as_deref().unwrap_or(&table.name),
+        )
+    });
     let joins = select.joins.iter().map(|join| {
         (
             join.table.name.as_str(),

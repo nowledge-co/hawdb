@@ -33,9 +33,15 @@ Both are omitted when `min_reader_version` is 1, and an absent field reads as
 | --- | --- |
 | 1 | Every field written before #1763. |
 | 2 | `content_source_graph_commit_epoch` (#1756), and the version fields themselves. |
-| 3 | A segment's `descriptor_version` (#1746). It names a V4 segment descriptor, which can omit a field's value set. |
+| 3 | `content_encoding: "blocks1"` on a content segment entry (#1917): its payload frames each descriptor segment as checksummed blocks of binary document records, block layout 2 ([SEARCH_CONTENT_BLOCKS.md](SEARCH_CONTENT_BLOCKS.md)). |
+| 4 | A segment's `descriptor_version` (#1746). It names a V4 segment descriptor, which can omit a field's value set. |
 
-This reader supports version 3.
+This reader supports version 4. New out-of-core content artifacts use
+`blocks1`, requiring at least reader version 3. A V4 descriptor raises the
+minimum to 4, including when combined with block-framed content. Selectors
+with only legacy artifacts retain minimum reader version 1 or 2. The writer
+stamps `format_version: 4` on every selector above the base version; the
+minimum reader version controls compatibility.
 
 ## Reading
 
@@ -48,8 +54,8 @@ A reader decodes the selector in two stages:
    `HawDBError::UnsupportedStorageFormat(StorageFormatError::UnsupportedVersion {
    format: SEARCH_PROJECTION_MANIFEST_FORMAT, found, supported })`. `found` is the
    selector's `min_reader_version`, saturated to `u16::MAX`. The message is
-   `unsupported search projection manifest version 3; this reader supports
-   version 2`.
+   `unsupported search projection manifest version 4; this reader supports
+   version 3`.
 2. **Strict decode.** Otherwise the reader decodes and validates the body
    exactly as before, with `deny_unknown_fields`.
 
@@ -101,14 +107,16 @@ Every writer stamps the selector from the fields present
 - `format_version` is the writer's version when `min_reader_version` is above
   1, and 1 otherwise.
 
-An epoch advance therefore writes version 2, because it writes
-`content_source_graph_commit_epoch`. The next content publication, a resident
-checkpoint or an out-of-core delta, drops that field and writes version 1
-again. A host can downgrade after such a publication.
+An epoch advance therefore writes at least version 2, because it writes
+`content_source_graph_commit_epoch`. The next content publication drops that
+field. A resident checkpoint then writes version 1 again; an out-of-core delta
+or rebuild requires at least reader version 3 because its new content artifact
+is `blocks1` (#1917). Downgrading below the release that introduced `blocks1` requires a
+rebuild with the older binary (into a new directory) or a logical dump.
 
-An out-of-core generation whose descriptor omits a value set writes version 3
-(see [Segment value summaries](#segment-value-summaries)). The selector stays
-at version 3 while any selected segment carries `descriptor_version`, so
+An out-of-core generation whose descriptor omits a value set requires reader
+version 4 (see [Segment value summaries](#segment-value-summaries)). The minimum
+stays at 4 while any selected segment carries `descriptor_version`, so
 publishing more content does not lower it.
 
 ## Bump policy
@@ -187,16 +195,15 @@ sets, alongside the documents they already hold in memory.
 
 - The gate only helps readers that have it. HawDB 0.31.0 and 0.32.0 have no
   gate, and they fail any selector with a field they do not know as `Storage`.
-  This includes every version-2 selector. Before downgrading to one of these
-  releases, publish content after the last epoch advance (checkpoint or catch
-  up), so that the selector is back at version 1.
-- A version-3 selector names V4 descriptors, which HawDB 0.37.x and earlier
-  cannot read. HawDB 0.33.0 through 0.37.x have the gate (#1764) and support
-  selector version 2, so they refuse a version-3 selector with the typed error
-  above. HawDB 0.31.0 and 0.32.0 fail it as `Storage`. Only a rebuild with the
-  older binary returns such a projection to a version that binary reads. A
-  generation whose descriptors keep every value set still writes V3
-  descriptors and is not affected.
+  This includes every version-2 selector. A resident checkpoint can restore
+  version 1 after an epoch advance; out-of-core publications with `blocks1` or
+  V4 descriptors require rebuilding into a new directory with the older binary.
+- A selector that names V4 descriptors requires reader version 4. A reader
+  supporting versions 1-3 with the gate refuses it with the typed error above.
+  Readers without the gate fail unknown selector fields as `Storage`. Only a
+  rebuild with the older binary returns such a projection to a version that
+  binary reads. Descriptors retaining every value set remain V3; block-framed
+  content still independently requires reader version 3.
 - Selectors written by a development build between #1762 and #1763 can carry
   `content_source_graph_commit_epoch` without the version fields. This reader
   accepts them, and the next publication stamps the version.
@@ -206,7 +213,7 @@ sets, alongside the documents they already hold in memory.
 `out_of_core::manifest_version::tests` (`hawdb-search`, the existing unit lane)
 covers:
 
-- a version-3 selector with an unknown field, refused as the typed error by the
+- a future selector with an unknown field, refused as the typed error by the
   decoder, `SearchOutOfCoreReader::open` and `SearchIndex::open`. The test
   asserts the error is not `Storage`, and that an oversized version saturates;
 - damaged, non-canonical and version-inconsistent selectors, and a supported
@@ -219,7 +226,7 @@ covers:
 - a resident checkpoint and an out-of-core delta after an advance, which write
   a version-1 selector without the version or content-epoch fields;
 - a new-generation build, an incremental update from a reader opened earlier,
-  and a resident checkpoint over a version-3 selector, which are all refused
+  and a resident checkpoint over a future selector, which are all refused
   with the typed error and leave the selector and the directory unchanged.
 
 Every refusal assertion also checks
@@ -234,9 +241,12 @@ Segment value summaries (#1746) are covered by
   field bounds are kept, including trimming and Unicode lowercase growth;
 - an omitted set never skips a segment for `Eq`, `In` or `NotIn`, and filters
   on it return the same rows; kept sets and ranges still skip segments;
-- a V4 generation writes version 3, a version-2 reader refuses it with the
-  typed error, and a mismatched `descriptor_version` or a `~` outside V4 is a
+- a V4 generation requires reader version 4; readers of versions 1-3 refuse it
+  with the typed error, and a mismatched `descriptor_version` or a `~` outside V4 is a
   storage failure;
+- block-framed content alone requires reader version 3; combining it with V4
+  descriptors requires version 4 through epoch advances, appends and delete-only
+  updates, while legacy stream content retains its original minimum version;
 - a V3 descriptor with full bodies reopens with bounded summaries;
 - reader-retained value bytes and admitted reader memory do not grow with the
   body length.
@@ -247,4 +257,5 @@ The C ABI (`bindings/ffi/src/error_tests.rs`) and Python
 Local replay:
 `cargo test --locked -p hawdb-search --lib manifest_version -- --test-threads=4`
 and
-`cargo test --locked -p hawdb-search --lib value_summar descriptor -- --test-threads=4`.
+`cargo test --locked -p hawdb-search --lib value_summar -- --test-threads=4`, plus
+`cargo test --locked -p hawdb-search --lib descriptor -- --test-threads=4`.

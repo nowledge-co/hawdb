@@ -394,23 +394,39 @@ impl GraphStore {
         } else {
             None
         };
-        if relational_checkpoint.is_none() && canonical_relational_manifest.is_none() {
-            let overflow = durable.open_bound_relational_overflow()?;
-            let rows = durable.open_bound_relational_row_pages(&overflow)?;
-            if !rows.manifest().tables.is_empty() {
-                // A layout/configuration mismatch, not corruption: the row
-                // root is intact but this reader serves resident rows only
-                // from a full-row relational file. Newer releases write none
-                // (#1737). Refuse with a typed error and change nothing.
-                return Err(HawDBError::UnsupportedStorageFormat(
-                    hawdb_core::StorageFormatError::UnsupportedFeature {
-                        format: hawdb_core::RELATIONAL_CHECKPOINT_LAYOUT_FORMAT,
-                        feature: "relational rows stored only in the canonical row-page root, without a full-row relational checkpoint file (written by a newer HawDB or by OutOfCore residency with Authoritative relational indexes); reopen with OutOfCore residency and Authoritative relational indexes, or with a newer HawDB",
-                        tag: rows.manifest().generation,
-                    },
-                ));
-            }
-        }
+        // Checkpoints whose relational rows are carried by the canonical row
+        // and overflow roots omit the legacy full-row file (#1737). Modes that
+        // serve SQL from resident rows rebuild them from those roots; earlier
+        // checkpoints that still name a full-row file decode it below.
+        let row_root_relational_checkpoint =
+            if relational_checkpoint.is_none() && canonical_relational_manifest.is_none() {
+                let overflow = durable.open_bound_relational_overflow()?;
+                let rows = durable.open_bound_relational_row_pages(&overflow)?;
+                if rows.manifest().tables.is_empty() {
+                    None
+                } else {
+                    let index_load = if config
+                        .relational_index_mode
+                        .requires_authoritative_indexes()
+                    {
+                        RelationalCheckpointIndexLoad::OmitMaterializedPostings
+                    } else {
+                        RelationalCheckpointIndexLoad::MaterializedPostings
+                    };
+                    Some(
+                        decode_relational_checkpoint_from_row_root(
+                            &durable_root_path,
+                            &rows,
+                            &overflow,
+                            RelationalDecodeLimits::checkpoint(),
+                            index_load,
+                        )
+                        .map_err(HawDBError::from_storage_error)?,
+                    )
+                }
+            } else {
+                None
+            };
         let mut decoded = hawdb_storage::checkpoint::DecodedCheckpoint::default();
         hawdb_storage::checkpoint::parse_checkpoint(body, catalog, &mut decoded)?;
         self.next_node_id = decoded.next_node_id;
@@ -525,6 +541,15 @@ impl GraphStore {
                 self.relational_state = checkpoint.state;
             }
         }
+        if let Some(checkpoint) = row_root_relational_checkpoint {
+            if checkpoint.epoch != self.commit_epoch {
+                return Err(HawDBError::Storage(format!(
+                    "relational row root epoch {} does not match graph commit epoch {}",
+                    checkpoint.epoch, self.commit_epoch
+                )));
+            }
+            self.relational_state = checkpoint.state;
+        }
         if let Some(row_root) = canonical_relational_manifest.as_ref() {
             if row_root.source_commit_epoch != self.commit_epoch {
                 return Err(HawDBError::Storage(format!(
@@ -608,6 +633,7 @@ impl GraphStore {
             }
         }
         if let Some(durable) = &mut self.durable {
+            durable.checkpoint_graph_catalog = Some(catalog.clone());
             durable.relational_checkpoint_encoded_len =
                 relational_checkpoint.map(|metadata| metadata.encoded_len);
             durable.relational_checkpoint_encoded_checksum =

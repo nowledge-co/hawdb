@@ -26,6 +26,19 @@ use std::sync::{Arc, Mutex, RwLock};
 
 static NEXT_ALIAS_CANDIDATE: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(test)]
+thread_local! {
+    pub(crate) static NEXT_ALIAS_LINK_ERROR: std::cell::Cell<Option<io::ErrorKind>> = const { std::cell::Cell::new(None) };
+}
+
+fn link_alias(source: &Path, destination: &Path) -> io::Result<()> {
+    #[cfg(test)]
+    if let Some(kind) = NEXT_ALIAS_LINK_ERROR.with(|slot| slot.take()) {
+        return Err(io::Error::from(kind));
+    }
+    fs::hard_link(source, destination)
+}
+
 mod checkpoint;
 pub(crate) use checkpoint::CheckpointImmutableFileError;
 
@@ -331,7 +344,7 @@ impl ImmutableFileHandles {
         }
         let candidate = loop {
             let candidate = alias_candidate_path(path)?;
-            match fs::hard_link(&binding.object_path, &candidate) {
+            match link_alias(&binding.object_path, &candidate) {
                 Ok(()) => break AliasCandidate(candidate),
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
                 Err(error) => return Err(error),
@@ -680,6 +693,46 @@ impl ImmutableFileHandles {
         }
         self.state.record_cache_evictions(count);
         count
+    }
+
+    /// Drops idle cached handles of the bound files at `paths`, keeping their
+    /// identity verification as a mount record so the next cold open of an
+    /// unchanged file does not hash it again. A one-shot scan uses this to
+    /// leave the descriptor cache as it found it.
+    pub(crate) fn release_idle_paths(&self, paths: &[PathBuf]) -> io::Result<usize> {
+        let mut references = Vec::with_capacity(paths.len());
+        for path in paths {
+            if let Some(binding) = self.binding(path)? {
+                references.push(binding.reference);
+            }
+        }
+        let mut released = 0;
+        for reference in references {
+            let key = CacheKey::Managed(reference);
+            let handle = {
+                let mut handles = self.handles.lock().unwrap_or_else(|e| e.into_inner());
+                match handles.get(&key) {
+                    Some(handle) if Arc::strong_count(&handle.file) == 1 => handles.remove(&key),
+                    _ => None,
+                }
+            };
+            let Some(handle) = handle else {
+                continue;
+            };
+            if let Ok(stamp) = handle.file.with_native(ObjectStamp::of_native) {
+                let mut records = self
+                    .mount_verified
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                if records.insert(reference, stamp, MOUNT_VERIFICATION_RECORDS_PER_PROJECT) {
+                    self.state.record_mount_verification_eviction();
+                }
+            }
+            drop(handle);
+            released += 1;
+        }
+        self.state.record_cache_evictions(released);
+        Ok(released)
     }
 
     pub(crate) fn retire_source(&self, capture: u64) {

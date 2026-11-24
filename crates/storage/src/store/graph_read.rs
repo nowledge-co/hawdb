@@ -599,14 +599,10 @@ impl GraphStore {
         let mut admission_error = None;
         let mut stopped = false;
         let result = reader.with_node_input(id, |input| {
-            if let Some(labels) = label_ids {
-                let mut matches = false;
-                for &label in labels {
-                    matches |= input.has_label(label)?;
-                }
-                if !matches {
-                    return Ok(None);
-                }
+            if let Some(labels) = label_ids
+                && !input.matches_any_label(labels)?
+            {
+                return Ok(None);
             }
             input
                 .decode_selection(None, |bytes| {
@@ -660,11 +656,27 @@ impl GraphStore {
         required_properties: &BTreeSet<String>,
         admit: &mut dyn FnMut(usize) -> Result<()>,
     ) -> Result<Option<ProjectedNodeRecord>> {
+        self.projected_node_for_labels_owned_admitted(id, None, required_properties, admit)
+    }
+
+    /// Admit selected properties only when the visible node matches the label pattern.
+    pub fn projected_node_for_labels_owned_admitted(
+        &self,
+        id: NodeId,
+        label_ids: Option<&[LabelId]>,
+        required_properties: &BTreeSet<String>,
+        admit: &mut dyn FnMut(usize) -> Result<()>,
+    ) -> Result<Option<ProjectedNodeRecord>> {
         record_read(|reads| reads.projected_nodes += 1);
         if self.node_tombstones.contains(&id) {
             return Ok(None);
         }
         if let Some(node) = self.nodes.get(&id) {
+            if label_ids
+                .is_some_and(|labels| !labels.iter().any(|label| node.labels.contains(label)))
+            {
+                return Ok(None);
+            }
             admit(projected_node_allocation_bytes(node, required_properties))?;
             return Ok(Some(project_node_record_ref(node, required_properties)));
         }
@@ -673,6 +685,11 @@ impl GraphStore {
         };
         let mut admission_error = None;
         let result = reader.with_node_input(id, |input| {
+            if let Some(labels) = label_ids
+                && !input.matches_any_label(labels)?
+            {
+                return Ok(None);
+            }
             input
                 .decode_selected(required_properties, |bytes| {
                     admit(bytes).map_err(|error| {
@@ -680,12 +697,12 @@ impl GraphStore {
                         CanonicalSegmentError::Source("graph read admission refused".into())
                     })
                 })
-                .map(|(node, ())| node)
+                .map(|(node, ())| Some(node))
         });
         if let Some(error) = admission_error {
             return Err(error);
         }
-        result.map_err(canonical_segment_error)
+        result.map_err(canonical_segment_error).map(Option::flatten)
     }
 
     pub fn relationship_owned(&self, id: RelId) -> Result<Option<RelRecord>> {
@@ -872,6 +889,9 @@ impl GraphStore {
                     admission,
                     consumer,
                 ),
+            hawdb_core::access::NodeProjectionAccess::IdSeek => Err(HawDBError::Execution(
+                "identity projection access requires an admitted node point read".into(),
+            )),
             hawdb_core::access::NodeProjectionAccess::PropertyUnion { .. } => Err(HawDBError::Execution(
                 "property-union projection access requires executor-owned deduplication admission"
                     .to_string(),

@@ -54,6 +54,7 @@ fn access_startup(access: &NodeProjectionAccess, total: PlanCostBreakdown) -> Pl
         NodeProjectionAccess::LabelScan => {
             PlanCostBreakdown::new(1, 0, 0, super::NODE_FULL_SCAN_STARTUP_COST, 0)
         }
+        NodeProjectionAccess::IdSeek => seek_startup(1),
         NodeProjectionAccess::PropertyValues { values, .. } => {
             seek_startup(values.len().max(1) as u64)
         }

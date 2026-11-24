@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use super::*;
+use crate::subquery_scope::join_on_scope;
 
 pub(in crate::query) fn bind_from_scopes(
     select: &mut SelectStatement,
@@ -32,9 +33,7 @@ pub(in crate::query) fn bind_from_scopes(
         }
     }
     for (ordinal, join) in select.joins.iter_mut().enumerate() {
-        let scope = relations
-            .get(join.on_scope_start..=ordinal + 1)
-            .ok_or_else(|| HawDBError::Semantic("invalid relational ON scope boundary".into()))?;
+        let scope = join_on_scope(&relations, join.on_scope_start, ordinal)?;
         qualify_expression(&mut join.on, scope)?;
     }
     for projection in &mut select.projection {

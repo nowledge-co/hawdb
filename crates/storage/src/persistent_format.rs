@@ -29,4 +29,14 @@
 
 /// Engine-wide persistent format version (docs/STORAGE.md, "Persistent
 /// format version").
-pub const PERSISTENT_FORMAT_VERSION: u32 = 5;
+///
+/// Version 6 (#1737): checkpoints no longer write the legacy full-row
+/// `relational.N.hawdb` file; the canonical row-page and overflow roots carry
+/// the relational state. Version 6 reads every database version 5 reads.
+/// Version 5 releases (HawDB 0.37) open version 6 databases only with
+/// OutOfCore residency and Authoritative relational indexes and refuse every
+/// other configuration with `RELATIONAL_CHECKPOINT_LAYOUT_FORMAT`.
+///
+/// Version 7 (#1641): outer manifest v2 explicitly binds carried graph
+/// generations. Earlier binaries reject that manifest revision.
+pub const PERSISTENT_FORMAT_VERSION: u32 = 7;

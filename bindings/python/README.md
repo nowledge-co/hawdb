@@ -568,6 +568,16 @@ pending interval or re-prepare. A batch larger than its per-batch limit raises
 `StorageError` in 0.37 and earlier but is not a storage failure. Neither publishes
 anything, and both keep their message text.
 
+A qualified out-of-core search open whose production qualification is stale
+raises `ExecutionError` with
+`kind == "search_production_qualification_graph_epoch_mismatch"`,
+`expected_canonical_graph_commit_epoch`, `opened_graph_commit_epoch` and
+`retryable == False` when the graph was written after qualification, and
+`kind == "search_production_qualification_refused"` with the sorted
+`blocker_codes` when the qualification report does not qualify the projection
+for the release. Both were a `StorageError` in 0.37 and earlier but are not storage
+failures and keep their message text: qualify again and reopen.
+
 Memory-ledger and spill-quota refusals, and the read ceilings described under
 [Read budgets](#read-budgets-and-query-plans), raise `exceptions.ResourceBudgetError`,
 a subclass of `ExecutionError`, with `resource`, `scope`, `owner`,
@@ -802,6 +812,13 @@ is a separate package with a LlamaIndex `PropertyGraphStore` over a
 is a separate package with a LangChain `GraphStore` over a `hawdb.Database`,
 for `LLMGraphTransformer` output and `GraphCypherQAChain`. Install it from
 that directory.
+
+## RAGFlow graph store
+
+[`integrations/ragflow-hawdb`](../../integrations/ragflow-hawdb/README.md) is
+a separate package that keeps the knowledge graph of each RAGFlow dataset's
+GraphRAG in its own HawDB database, with a patch for RAGFlow v0.27.3 that
+calls it. Install it from that directory.
 
 ## Dify plugin
 

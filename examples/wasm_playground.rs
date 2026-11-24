@@ -121,6 +121,12 @@ impl QueryBridge {
                     HawDBError::SearchProjectionBatchBudgetExceeded { .. } => {
                         "search_projection_batch_budget_exceeded"
                     }
+                    HawDBError::SearchProductionQualificationGraphEpochMismatch { .. } => {
+                        "search_production_qualification_graph_epoch_mismatch"
+                    }
+                    HawDBError::SearchProductionQualificationRefused { .. } => {
+                        "search_production_qualification_refused"
+                    }
                     HawDBError::BranchBusy { .. } => "branch_busy",
                     HawDBError::BranchReclamationBlocked { .. } => "branch_reclamation_blocked",
                     HawDBError::BranchEvidenceBudgetExceeded { .. } => {

@@ -373,7 +373,7 @@ fn validate_branch_derived_objects(store: &GraphStore, kind: DerivedArtifactKind
         .checkpoint_bindings
         .iter()
         .filter(|binding| {
-            rebuildable_artifact_kind(&binding.relative_path, durable.checkpoint_epoch)
+            rebuildable_artifact_kind(&binding.relative_path, durable.graph_generation())
                 == Some(kind)
         })
         .map(|binding| binding.reference)
