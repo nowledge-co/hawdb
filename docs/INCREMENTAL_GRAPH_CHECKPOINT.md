@@ -43,7 +43,10 @@ checkpoint to rebuild, even when the candidate carried adjacency successfully.
 
 ## Ownership, integrity and maintenance
 
-`PublishedReadView` captures C, G and A. Its typed `PhysicalGenerationPins`
+`PublishedReadView` captures C, G and A. Origin presence follows C, so its
+internal representation shares that presence instead of storing three option
+tags. The 64-bit identity remains within the original 56 bytes; optional getters,
+including zero-valued low-level generations, and Debug formatting are preserved. Its typed `PhysicalGenerationPins`
 retains adjacency independently, including when A differs from both C and G.
 Reclamation protects current A, previous A and reader-owned A. Retaining an
 adjacency origin does not retain unrelated canonical/spill/projection files

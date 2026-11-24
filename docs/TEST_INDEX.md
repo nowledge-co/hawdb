@@ -5119,3 +5119,10 @@ wait for `step` before each mutation/checkpoint, and wait for `finish` before
 scrub/reopen. Initialize both fixtures before timing and allow only one active
 worker. Record order and per-pair durations; keep full-run and paired evidence
 separate. This remains manual-only and introduces no CI execution lane.
+
+The same storage unit owner includes `read_view::generation_identity_tests`:
+compact physical-origin representation must distinguish an absent checkpoint
+from generation zero and retain independent canonical/adjacency pins. A 64-bit
+compile-time size ceiling keeps the extra origin within the original 56-byte
+published identity. Public optional getters and diagnostic Debug formatting
+retain their previous semantics.
