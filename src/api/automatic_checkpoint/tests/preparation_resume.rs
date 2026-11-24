@@ -15,7 +15,7 @@
 use super::*;
 use crate::Value;
 use hawdb_qos::{QosTelemetryEvent, QosTelemetrySink, QosUnitEvent, QosUnitPhase};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 #[derive(Debug)]
 struct StopPreparedSource {
@@ -144,7 +144,7 @@ fn preparation_survives_new_source_submission_and_resumes_original_base_before_c
     candidate.catch_up(&store).unwrap();
     assert_eq!(candidate.commit_epoch(), 129);
     catalog = store
-        .publish_checkpoint_candidate(&mut candidate, None, &BTreeSet::new())
+        .publish_checkpoint_candidate(&mut candidate, None, &Default::default())
         .unwrap();
     assert!(catalog.label_id("Later").is_some());
     drop(candidate);

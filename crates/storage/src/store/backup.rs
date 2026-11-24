@@ -180,18 +180,21 @@ pub(super) fn validate_backup_files(
         }
         None => {}
     }
+    let graph_generation = manifest
+        .graph_generation()
+        .expect("checkpoint has graph identity");
     let property_spills =
-        validate_backup_property_spills(root, files, &names, manifest, generation)?;
+        validate_backup_property_spills(root, files, &names, manifest, graph_generation)?;
     if let (Some(expected_len), Some(expected_checksum)) = (
         manifest.canonical_manifest_encoded_len,
         manifest.canonical_manifest_encoded_checksum,
     ) {
-        let canonical_manifest_name = canonical_manifest_generation_file(generation);
-        let canonical_artifact_name = canonical_artifact_generation_file(generation);
+        let canonical_manifest_name = canonical_manifest_generation_file(graph_generation);
+        let canonical_artifact_name = canonical_artifact_generation_file(graph_generation);
         let descriptor_page_name =
-            hawdb_storage::canonical::canonical_segment_descriptor_page_file(generation);
+            hawdb_storage::canonical::canonical_segment_descriptor_page_file(graph_generation);
         let descriptor_root_name =
-            hawdb_storage::canonical::canonical_segment_descriptor_root_file(generation);
+            hawdb_storage::canonical::canonical_segment_descriptor_root_file(graph_generation);
         for required in [
             canonical_manifest_name.as_str(),
             canonical_artifact_name.as_str(),
@@ -220,8 +223,8 @@ pub(super) fn validate_backup_files(
         let canonical_manifest_text = fs::read_to_string(root.join(&canonical_manifest_name))?;
         let canonical_manifest = CanonicalSegmentManifest::decode(&canonical_manifest_text)
             .map_err(HawDBError::from_storage_error)?;
-        if canonical_manifest.generation != ManifestGeneration(generation)
-            || canonical_manifest.source_commit_epoch != manifest.checkpoint_commit_epoch
+        if canonical_manifest.generation != ManifestGeneration(graph_generation)
+            || canonical_manifest.source_commit_epoch != manifest.graph_source_commit_epoch()
         {
             return Err(HawDBError::Storage(
                 "backup canonical descriptor identity does not match its checkpoint".to_string(),
@@ -312,14 +315,15 @@ pub(super) fn validate_backup_files(
             .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
     }
     if let Some(binding) = manifest.canonical_adjacency_generation_artifacts {
-        let adjacency_artifact_name = canonical_adjacency_artifact_generation_file(generation);
+        let adjacency_artifact_name =
+            canonical_adjacency_artifact_generation_file(graph_generation);
         let descriptor_page_name =
             hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_page_file(
-                generation,
+                graph_generation,
             );
         let descriptor_root_name =
             hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_root_file(
-                generation,
+                graph_generation,
             );
         for required in [
             adjacency_artifact_name.as_str(),
@@ -411,15 +415,17 @@ pub(super) fn validate_backup_files(
         manifest.property_projection_manifest_encoded_len,
         manifest.property_projection_manifest_encoded_checksum,
     ) {
-        let projection_manifest_name = property_projection_manifest_generation_file(generation);
-        let projection_artifact_name = property_projection_artifact_generation_file(generation);
+        let projection_manifest_name =
+            property_projection_manifest_generation_file(graph_generation);
+        let projection_artifact_name =
+            property_projection_artifact_generation_file(graph_generation);
         let descriptor_page_name =
             hawdb_storage::property_projection::property_projection_descriptor_page_file(
-                generation,
+                graph_generation,
             );
         let descriptor_root_name =
             hawdb_storage::property_projection::property_projection_descriptor_root_file(
-                generation,
+                graph_generation,
             );
         for required in [
             projection_manifest_name.as_str(),
@@ -460,8 +466,8 @@ pub(super) fn validate_backup_files(
             .iter()
             .find(|file| file.name == projection_artifact_name)
             .expect("required property projection artifact must exist");
-        if projection_manifest.generation != ManifestGeneration(generation)
-            || projection_manifest.source_commit_epoch != manifest.checkpoint_commit_epoch
+        if projection_manifest.generation != ManifestGeneration(graph_generation)
+            || projection_manifest.source_commit_epoch != manifest.graph_source_commit_epoch()
             || projection_manifest.artifact_len != projection_artifact.encoded_len
             || projection_manifest.artifact_digest.0 != projection_artifact.encoded_checksum
             || projection_manifest.artifact_sha256 != projection_artifact.sha256
@@ -482,8 +488,8 @@ pub(super) fn validate_backup_files(
         )
         .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
         if descriptor_root.root().kind != GraphDescriptorKind::PropertyProjection
-            || descriptor_root.root().generation != generation
-            || descriptor_root.root().source_commit_epoch != manifest.checkpoint_commit_epoch
+            || descriptor_root.root().generation != graph_generation
+            || descriptor_root.root().source_commit_epoch != manifest.graph_source_commit_epoch()
             || descriptor_root.root().descriptor_count != projection_manifest.block_count
         {
             return Err(HawDBError::Storage(
@@ -686,7 +692,7 @@ fn validate_backup_property_spills(
     let property_manifest = PropertySpillManifest::decode(&property_manifest_text)
         .map_err(HawDBError::from_storage_error)?;
     if property_manifest.generation != ManifestGeneration(generation)
-        || property_manifest.source_commit_epoch != manifest.checkpoint_commit_epoch
+        || property_manifest.source_commit_epoch != manifest.graph_source_commit_epoch()
     {
         return Err(HawDBError::Storage(
             "backup property spill identity does not match its checkpoint".to_string(),

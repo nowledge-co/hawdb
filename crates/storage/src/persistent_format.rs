@@ -36,4 +36,7 @@
 /// Version 5 releases (HawDB 0.37) open version 6 databases only with
 /// OutOfCore residency and Authoritative relational indexes and refuse every
 /// other configuration with `RELATIONAL_CHECKPOINT_LAYOUT_FORMAT`.
-pub const PERSISTENT_FORMAT_VERSION: u32 = 6;
+///
+/// Version 7 (#1641): outer manifest v2 explicitly binds carried graph
+/// generations. Earlier binaries reject that manifest revision.
+pub const PERSISTENT_FORMAT_VERSION: u32 = 7;

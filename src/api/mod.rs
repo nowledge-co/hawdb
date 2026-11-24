@@ -987,12 +987,10 @@ impl ReaderPins {
             .min()
     }
 
-    fn pinned_physical_generations(&self) -> BTreeSet<u64> {
-        self.active_views
-            .values()
-            .filter_map(|view| view.physical_generation())
-            .map(|generation| generation.0)
-            .collect()
+    fn pinned_physical_generations(&self) -> hawdb_storage::read_view::PhysicalGenerationPins {
+        hawdb_storage::read_view::PhysicalGenerationPins::from_views(
+            self.active_views.values().copied(),
+        )
     }
 }
 

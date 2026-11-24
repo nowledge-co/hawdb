@@ -89,7 +89,12 @@ impl DurableStore {
                 let name = entry.file_name();
                 let name = name.to_str()?;
                 let generation = storage_generation_for_file(name)?;
-                (generation < retain_from)
+                let retained_graph = crate::artifact_files::parse_graph_generation_file(name)
+                    .is_some_and(|graph| {
+                        graph == self.graph_generation()
+                            || Some(graph) == self.previous_graph_generation
+                    });
+                (generation < retain_from && !retained_graph)
                     .then(|| entry.metadata().ok().map(|metadata| metadata.len()))
                     .flatten()
             })
@@ -103,7 +108,7 @@ impl DurableStore {
         &mut self,
         current_generation: u64,
         previous_checkpoint_generation: u64,
-        pinned_reader_generations: Option<&BTreeSet<u64>>,
+        pinned_reader_generations: Option<&crate::read_view::PhysicalGenerationPins>,
         owner: Option<&DatabaseDirectoryLease>,
     ) {
         let mut debt = self.try_reclaim_old_generations(
@@ -198,7 +203,7 @@ impl DurableStore {
         &self,
         current_generation: u64,
         previous_checkpoint_generation: u64,
-        pinned_reader_generations: Option<&BTreeSet<u64>>,
+        pinned_reader_generations: Option<&crate::read_view::PhysicalGenerationPins>,
     ) -> GenerationReclamationDebt {
         let mut debt = GenerationReclamationDebt::default();
         let Ok(_descriptor_operation) = self.file_descriptor_context().internal_operation() else {
@@ -213,7 +218,14 @@ impl DurableStore {
             return debt;
         }
 
-        let mut retained_generations = pinned_reader_generations.cloned().unwrap_or_default();
+        let mut retained_generations = pinned_reader_generations
+            .map(|pins| pins.checkpoint_generations().clone())
+            .unwrap_or_default();
+        let mut retained_graph_generations = pinned_reader_generations
+            .map(|pins| pins.graph_generations().clone())
+            .unwrap_or_default();
+        retained_graph_generations.insert(self.graph_generation());
+        retained_graph_generations.extend(self.previous_graph_generation);
         retained_generations.insert(current_generation);
         // WAL rotations share the namespace and may leave gaps between
         // checkpoints. Preserve the actual preceding recovery generation.
@@ -256,6 +268,11 @@ impl DurableStore {
                 continue;
             };
             let generation = storage_generation_for_file(name);
+            if let Some(graph_generation) = crate::artifact_files::parse_graph_generation_file(name)
+                && retained_graph_generations.contains(&graph_generation)
+            {
+                continue;
+            }
             if generation.is_some_and(|generation| {
                 generation < current_generation && !retained_generations.contains(&generation)
             }) {
@@ -302,8 +319,9 @@ impl DurableStore {
     /// after a crash may still have an unsynchronized rename; it is made
     /// durable here before anything it superseded is removed. Generations at
     /// or above the selected one (prepared successors, in-flight checkpoint
-    /// candidates, interrupted-publication evidence) and reader-pinned
-    /// generations are never removed. An interrupted-publication name below
+    /// candidates, interrupted-publication evidence), checkpoint-number pins
+    /// and explicit branch-WAL retention declarations are never removed. API
+    /// read snapshots do not open branch-private WALs. A publication name below
     /// the selected generation can no longer be selected (head generations
     /// and their WAL generations only advance), so it is reclaimed like a
     /// data-root generation below the selected checkpoint. A failure leaves
@@ -317,7 +335,7 @@ impl DurableStore {
     /// so a pin that matches a branch WAL number only delays its removal.
     fn reclaim_superseded_branch_wals(
         &self,
-        pinned_reader_generations: Option<&BTreeSet<u64>>,
+        pinned_reader_generations: Option<&crate::read_view::PhysicalGenerationPins>,
         debt: &mut GenerationReclamationDebt,
     ) {
         if self.read_only {
@@ -355,7 +373,7 @@ impl DurableStore {
                 continue;
             };
             if generation >= selected_generation
-                || pinned_reader_generations.is_some_and(|pins| pins.contains(&generation))
+                || pinned_reader_generations.is_some_and(|pins| pins.retains_branch_wal(generation))
             {
                 continue;
             }

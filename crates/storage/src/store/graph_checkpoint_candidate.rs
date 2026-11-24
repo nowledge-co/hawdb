@@ -499,7 +499,7 @@ impl GraphStore {
         &mut self,
         candidate: &mut CheckpointCandidate,
         oldest_reader_commit_epoch: Option<u64>,
-        pinned_reader_generations: &BTreeSet<u64>,
+        pinned_reader_generations: &crate::read_view::PhysicalGenerationPins,
     ) -> Result<Catalog> {
         self.publish_checkpoint_candidate_inner(
             candidate,
@@ -529,7 +529,7 @@ impl GraphStore {
         &mut self,
         candidate: &mut CheckpointCandidate,
         oldest_reader_commit_epoch: Option<u64>,
-        pinned_reader_generations: Option<&BTreeSet<u64>>,
+        pinned_reader_generations: Option<&crate::read_view::PhysicalGenerationPins>,
     ) -> Result<Catalog> {
         self.ensure_usable()?;
         candidate.validate_source(self)?;
@@ -651,6 +651,9 @@ impl GraphStore {
         // Recovery reconstructs values, not foreground conflict history or
         // consumer acknowledgments. Preserve the exact live ownership state.
         next.inherit_live_checkpoint_ownership(self);
+        if let (Some(next_durable), Some(previous)) = (&mut next.durable, &self.durable) {
+            next_durable.previous_graph_generation = Some(previous.graph_generation());
+        }
         if let Some(durable) = &mut next.durable {
             durable.wal_uncheckpointed_since = if replayed == 0 {
                 None
@@ -907,7 +910,7 @@ impl CheckpointCandidate {
     pub fn reclaim_published_generations(
         &self,
         selected: &mut GraphStore,
-        pinned_reader_generations: &BTreeSet<u64>,
+        pinned_reader_generations: &crate::read_view::PhysicalGenerationPins,
     ) -> Result<()> {
         let owner = selected.branch_lease.clone();
         let (durable, generation, previous) = self.reclamation_runtime(selected)?;

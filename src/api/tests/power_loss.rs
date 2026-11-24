@@ -30,6 +30,7 @@ mod branch_wal_reclamation;
 mod consumer_reclamation;
 #[cfg(feature = "vector-search")]
 mod consumer_vector_incremental;
+mod graph_bundle_carry;
 mod object_reclamation;
 mod relational_checkpoint;
 mod resident_search_checkpoint;

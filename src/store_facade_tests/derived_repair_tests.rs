@@ -492,22 +492,47 @@ fn source_budget_rejects_before_repair_audit_or_publication() {
 #[cfg(feature = "test-support")]
 #[test]
 fn local_manifest_interruption_keeps_the_original_head_and_resumes_rebuild() {
-    interrupted_branch_repair(CheckpointPublishStage::ManifestPublished, false);
+    interrupted_branch_repair(CheckpointPublishStage::ManifestPublished, false, false);
 }
 
 #[cfg(feature = "test-support")]
 #[test]
 fn head_published_interruption_blocks_data_admission_and_finalizes_idempotently() {
-    interrupted_branch_repair(CheckpointPublishStage::BranchHeadPublished, true);
+    interrupted_branch_repair(CheckpointPublishStage::BranchHeadPublished, true, false);
 }
 
 #[cfg(feature = "test-support")]
-fn interrupted_branch_repair(stage: CheckpointPublishStage, head_published: bool) {
+#[test]
+fn carried_graph_repair_resumes_after_local_manifest_publication() {
+    interrupted_branch_repair(CheckpointPublishStage::ManifestPublished, false, true);
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn carried_graph_repair_finalizes_after_head_publication() {
+    interrupted_branch_repair(CheckpointPublishStage::BranchHeadPublished, true, true);
+}
+
+#[cfg(feature = "test-support")]
+fn interrupted_branch_repair(stage: CheckpointPublishStage, head_published: bool, carried: bool) {
     let path = checkpointed_database("interrupted");
+    if carried {
+        let mut db = Database::open(&path).unwrap();
+        db.query_sql("CREATE TABLE repair_carry (id INTEGER PRIMARY KEY)")
+            .unwrap();
+        for id in 0..3 {
+            db.query_sql(&format!("INSERT INTO repair_carry VALUES ({id})"))
+                .unwrap();
+            db.checkpoint().unwrap();
+        }
+    }
     let manifest = load_active_manifest(&path);
+    if carried {
+        assert!(manifest.graph_generation().unwrap() < manifest.checkpoint_epoch);
+    }
     corrupt_checkpoint_artifact(
         &path,
-        &canonical_adjacency_artifact_generation_file(manifest.checkpoint_epoch),
+        &canonical_adjacency_artifact_generation_file(manifest.graph_generation().unwrap()),
     );
     let plan = DatabaseDoctor::plan_derived_artifact_rebuild(
         &path,

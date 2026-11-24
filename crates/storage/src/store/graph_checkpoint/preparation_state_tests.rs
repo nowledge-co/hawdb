@@ -264,7 +264,7 @@ fn cancelled_bootstrap_keeps_completed_base_and_recovers_with_a_fresh_context() 
         .catch_up_with_work_context(&store, &fresh)
         .unwrap();
     catalog = store
-        .publish_checkpoint_candidate(&mut candidate, None, &BTreeSet::new())
+        .publish_checkpoint_candidate(&mut candidate, None, &Default::default())
         .unwrap();
     resumed.assert_released(&local);
     assert!(
@@ -555,7 +555,7 @@ fn append_bootstrap_resumes_the_same_base_and_keeps_leases_through_the_last_snap
     );
     assert!(admission.memory_report().live_accounted_bytes >= 512 * 1024);
     let mut catalog = store
-        .publish_checkpoint_candidate(&mut candidate, None, &BTreeSet::new())
+        .publish_checkpoint_candidate(&mut candidate, None, &Default::default())
         .unwrap();
     let bytes = admission.memory_report().live_accounted_bytes;
     let observer = crate::test_allocator::AllocationObservation::start();

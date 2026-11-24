@@ -2851,7 +2851,11 @@ fn mount_branch_runtime(
         objects,
         artifact_directory,
         &root.checkpoint_bindings,
-        derived_repair.then_some(manifest.checkpoint_epoch),
+        derived_repair.then(|| {
+            manifest
+                .graph_generation()
+                .expect("checkpoint has graph identity")
+        }),
     )?;
     // The manifest names the checkpoint's original WAL generation. A seal
     // can omit that empty generation and begin at a newer private generation.
@@ -4559,7 +4563,9 @@ mod tests {
             write_row(&mut source, "checkpoint-candidate");
             let source_epoch = source.store().commit_epoch();
             let old_head = *source.head();
-            let pinned_generation = source.store().durable.as_ref().unwrap().checkpoint_epoch;
+            let pinned_generations = crate::read_view::PhysicalGenerationPins::from_views([source
+                .store()
+                .published_read_view()]);
             let captured = source.store().checkpoint_source();
             let mut candidate = captured
                 .prepare_checkpoint_candidate(source.catalog())
@@ -4594,7 +4600,7 @@ mod tests {
                 .publish_checkpoint_candidate(
                     &mut candidate,
                     Some(source_epoch),
-                    &BTreeSet::from([pinned_generation]),
+                    &pinned_generations,
                 )
                 .unwrap();
             assert_eq!(source.head().sealed_root, candidate_root);
@@ -4655,6 +4661,10 @@ mod tests {
                 let original_wal =
                     fs::read(&branch.store().durable.as_ref().unwrap().wal_path).unwrap();
                 let pinned_generation = branch.store().durable.as_ref().unwrap().checkpoint_epoch;
+                let pinned_generations =
+                    crate::read_view::PhysicalGenerationPins::from_views([branch
+                        .store()
+                        .published_read_view()]);
                 let orphan_generation =
                     pinned_generation.max(branch.head().active_wal.generation) + 1;
                 let orphan_path = fixture.head_path(fixture.main).parent().unwrap().join(
@@ -4712,7 +4722,7 @@ mod tests {
                         .publish_checkpoint_candidate(
                             &mut candidate,
                             Some(source_epoch),
-                            &std::collections::BTreeSet::from([pinned_generation]),
+                            &pinned_generations,
                         )
                         .unwrap();
                 }

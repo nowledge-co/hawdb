@@ -29,7 +29,7 @@ acceptance without rewriting earlier frozen baselines. The checked-in
 proves a v2 row root with a named secondary index and bound index generation
 opens read-only and writable, checkpoints, and reopens. The historical partial-index fixture covers codec v4 and row-page v3.
 The covering-index fixture from main `ebc2c9c4a` covers codec v5 and row-page v4.
-New writers use relational codec v6, row-page v5, and persistent-format version 5.
+New writers use relational codec v6, row-page v5, and persistent-format version 6.
 The existing root checkpoint-layout tests own these reopen checks.
 
 `OCTET_LENGTH` scalar compatibility (https://github.com/nowledge-co/hawdb/issues/1835)
@@ -4872,3 +4872,44 @@ publication fault plan, in `Materialized` and `OutOfCore` residency with both
 durability policies, and checks that rows committed after the batch survive
 whole or not at all. Fsync counts are measured with a local profiling harness,
 not in CI. No new lane, fixture, feature or timeout.
+
+## Carried graph bundles (issue 1641)
+
+The existing storage unit owner (`//crates/storage:hawdb_storage_tests`)
+includes `store::graph_checkpoint::graph_bundle_tests` and the v2 manifest
+codec guards. They cover complete payload/descriptor carry, byte/inode identity,
+including checksum-valid rejection of published v2 manifests whose graph
+generation and source epoch are both `none`, with explicit G=C, empty initial
+and legacy v1 positive controls. They also cover
+relational DDL/writes, backup/restore/scrub, graph WAL replay, direct graph
+Catalog changes, post-reopen carry, projection-debt status and candidate cancellation/catch-up. The original inline
+`store::tests` functions are mechanically included from
+`store/tests/graph_store_cases_{1,2}.rs` in their original namespace; their test
+inventory and execution owner are unchanged.
+
+The root unit owner covers `api::tests::read_transactions::read_transaction_retains_carried_graph_base_until_release`
+(real out-of-core C!=G reader, four checkpoints, graph mutation, graph-only
+retention and release) and `store_facade_tests::derived_repair_tests::carried_graph_repair*`
+(checksum-bound quarantine and interrupted repair before/after head publication).
+The existing power-loss discovery/sharding owner includes
+`api::tests::power_loss::graph_bundle_carry` under both durability policies;
+it materializes the existing complete lost/torn/reordered publication plans
+around both head-rename boundaries and acknowledgement. No profile, timeout,
+feature matrix or new CI lane is introduced.
+
+Existing reader/cohort tests compare checkpoint C and graph G independently in
+both Materialized and OutOfCore modes, including queued cancellation, failed
+writer retirement and concurrent final fork drop. A graph bundle that is still
+current remains retained after reader release; reclamation checks first advance
+the graph and its preceding checkpoint. Corruption fixtures explicitly dirty
+the graph when they require an uncached fresh bundle, and target manifest G.
+These cases remain in the general, concurrent, recovery and analytics-core-general
+root partitions; replay the four owners with
+`bazel test //:hawdb_unit_general_tests //:hawdb_unit_concurrent_tests //:hawdb_unit_recovery_tests //:hawdb_unit_analytics_core_general_tests`.
+
+The full storage TLA suite owns `HawDBGraphBundleCarry` and its six negative controls plus a
+carried-suffix reachability control; see [scope and refinement argument](GRAPH_BUNDLE_CARRY.md). Replay
+with `cargo test --locked -p hawdb-storage --lib -- graph_bundle durable_manifest`,
+`cargo test --locked -p hawdb --all-features --lib -- read_transaction_retains_carried_graph carried_graph_repair graph_bundle_carry`,
+and the model/evidence/mutant commands in `docs/tla/README.md`. These bounded
+fixtures do not qualify physical devices, Windows namespace behavior or LDBC/TPC-C throughput.

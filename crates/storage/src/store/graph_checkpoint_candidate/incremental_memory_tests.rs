@@ -238,7 +238,7 @@ fn allocation_admitted_candidate_finishes_beyond_whole_estimate_with_a_fixed_sma
     candidate.finish_catch_up().unwrap();
     assert!(admission.memory_report().live_accounted_bytes > 0);
     catalog = store
-        .publish_checkpoint_candidate(&mut candidate, None, &BTreeSet::new())
+        .publish_checkpoint_candidate(&mut candidate, None, &Default::default())
         .unwrap();
     assert_eq!(fs::read(&base).unwrap(), base_bytes);
     assert_eq!(old.node_count_for_label(None), ROWS as usize);
