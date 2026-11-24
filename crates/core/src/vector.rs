@@ -94,24 +94,7 @@ impl<'a> VectorRef<'a> {
         mut finish: impl FnMut(T) -> std::result::Result<(), E>,
         map_invalid: impl Fn(HawDBError) -> E,
     ) -> std::result::Result<Self, E> {
-        let shape = || -> Result<VectorDimension> {
-            let prefix: [u8; 4] = encoded
-                .get(..4)
-                .and_then(|bytes| bytes.try_into().ok())
-                .ok_or_else(|| invalid("truncated dimension"))?;
-            let dimension = VectorDimension::new(u32::from_le_bytes(prefix))
-                .ok_or_else(|| invalid("dimension must be positive"))?;
-            let expected = usize::try_from(dimension.get())
-                .ok()
-                .and_then(|n| n.checked_mul(4))
-                .and_then(|n| n.checked_add(4))
-                .ok_or_else(|| invalid("payload length overflow"))?;
-            if encoded.len() != expected {
-                return Err(invalid("payload length does not match dimension"));
-            }
-            Ok(dimension)
-        };
-        let dimension = shape().map_err(&map_invalid)?;
+        let vector = Self::from_encoded_shape(encoded).map_err(&map_invalid)?;
         for block in encoded[4..].chunks(64 * 1024) {
             let unit = start()?;
             let finite = block
@@ -123,6 +106,26 @@ impl<'a> VectorRef<'a> {
             if !finite {
                 return Err(map_invalid(invalid("coordinates must be finite")));
             }
+        }
+        Ok(vector)
+    }
+
+    /// Validates the length only. The result must not leave this module: its
+    /// components may be non-finite until a distance kernel checks them.
+    fn from_encoded_shape(encoded: &'a [u8]) -> Result<Self> {
+        let prefix: [u8; 4] = encoded
+            .get(..4)
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or_else(|| invalid("truncated dimension"))?;
+        let dimension = VectorDimension::new(u32::from_le_bytes(prefix))
+            .ok_or_else(|| invalid("dimension must be positive"))?;
+        let expected = usize::try_from(dimension.get())
+            .ok()
+            .and_then(|n| n.checked_mul(4))
+            .and_then(|n| n.checked_add(4))
+            .ok_or_else(|| invalid("payload length overflow"))?;
+        if encoded.len() != expected {
+            return Err(invalid("payload length does not match dimension"));
         }
         Ok(Self { dimension, encoded })
     }
@@ -422,6 +425,28 @@ impl<'a> PreparedVectorQuery<'a> {
         self.distance_input(metric, Input::Encoded(&right.encoded[4..]), checkpoint)
     }
 
+    /// Scores an encoded vector whose components were not validated beforehand.
+    /// Validates its shape; every distance kernel refuses non-finite components,
+    /// so a separate component pass would only repeat that check.
+    pub fn distance_to_encoded_with_work(
+        &self,
+        metric: VectorDistance,
+        encoded: &[u8],
+        mut checkpoint: impl FnMut() -> Result<()>,
+    ) -> Result<f64> {
+        if self.coordinates.len() < 16 {
+            let right = VectorRef::from_encoded_with_work(
+                encoded,
+                &mut checkpoint,
+                |_| Ok(()),
+                std::convert::identity,
+            )?;
+            return self.distance_to_vector_with_work(metric, right, checkpoint);
+        }
+        let right = VectorRef::from_encoded_shape(encoded)?;
+        self.distance_to_vector_with_work(metric, right, checkpoint)
+    }
+
     fn distance_input(
         &self,
         metric: VectorDistance,
@@ -551,6 +576,42 @@ mod tests {
         assert!(VectorDistance::Cosine
             .distance_slice_to_vector_with_work(&[1.0], encoded.as_ref(), || Ok(()))
             .is_err());
+    }
+
+    #[test]
+    fn prepared_encoded_distance_matches_validated_vectors_and_refuses_malformed_input() {
+        for dimension in [2usize, 15, 16, 17, 37, 128] {
+            let left: Vec<f32> = (0..dimension).map(|i| i as f32 * 0.37 - 3.0).collect();
+            let right: Vec<f32> = (0..dimension).map(|i| 1.5 - i as f32 * 0.11).collect();
+            let encoded = Vector::new(&right).unwrap().encoded().to_vec();
+            for metric in [VectorDistance::Cosine, VectorDistance::Euclidean] {
+                let query = PreparedVectorQuery::for_distance(metric, &left, || Ok(())).unwrap();
+                let expected = query
+                    .distance_to_vector_with_work(
+                        metric,
+                        VectorRef::from_encoded(&encoded).unwrap(),
+                        || Ok(()),
+                    )
+                    .unwrap();
+                let score =
+                    |bytes: &[u8]| query.distance_to_encoded_with_work(metric, bytes, || Ok(()));
+                assert_eq!(score(&encoded).unwrap().to_bits(), expected.to_bits());
+                for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+                    for position in 0..dimension {
+                        let mut damaged = encoded.clone();
+                        damaged[4 + position * 4..8 + position * 4]
+                            .copy_from_slice(&value.to_le_bytes());
+                        assert!(score(&damaged).is_err(), "{dimension} {position}");
+                    }
+                }
+                assert!(score(&encoded[..encoded.len() - 1]).is_err());
+                assert!(score(&encoded[..3]).is_err());
+                assert!(score(Vector::new(&[1.0; 3]).unwrap().encoded()).is_err());
+                assert!(query
+                    .distance_to_encoded_with_work(metric, &encoded, || Err(invalid("stop")))
+                    .is_err());
+            }
+        }
     }
 
     #[test]

@@ -62,6 +62,15 @@ impl RuntimeWorkBudget {
         self.used.load(Ordering::Relaxed)
     }
 
+    /// The tightest remaining limit; concurrent charges can only lower it.
+    pub(super) fn remaining(&self) -> usize {
+        self.parents
+            .iter()
+            .flatten()
+            .map(|parent| parent.remaining())
+            .fold(self.limit.saturating_sub(self.used()), usize::min)
+    }
+
     pub(super) fn refusal(&self) -> Option<ResourceBudgetError> {
         self.refusal
             .lock()
