@@ -24,6 +24,15 @@ fn storage_error<T: std::fmt::Debug>(result: Result<T>) -> String {
     error.to_string()
 }
 
+fn integrity_error<T: std::fmt::Debug>(result: Result<T>) -> String {
+    let error = result.expect_err("corrupt artifact admitted");
+    assert!(
+        matches!(&error, HawDBError::StorageIntegrity(_)),
+        "{error:?}"
+    );
+    error.to_string()
+}
+
 #[test]
 fn frozen_metadata_and_integrity_failure_order_are_preserved() {
     let metadata = DurableArtifactMetadata::for_bytes(PAYLOAD);
@@ -43,14 +52,14 @@ fn frozen_metadata_and_integrity_failure_order_are_preserved() {
     .unwrap();
     let wrong_sha = Sha256Digest::from_bytes([0; 32]);
     assert!(
-        storage_error(verify_integrity(PAYLOAD, 8, 0, wrong_sha, "fixture"))
+        integrity_error(verify_integrity(PAYLOAD, 8, 0, wrong_sha, "fixture"))
             .contains("fixture encoded length mismatch: expected 8, got 9")
     );
     assert!(
-        storage_error(verify_integrity(PAYLOAD, 9, 0, wrong_sha, "fixture"))
+        integrity_error(verify_integrity(PAYLOAD, 9, 0, wrong_sha, "fixture"))
             .contains("fixture CRC32C mismatch: expected 0")
     );
-    assert!(storage_error(verify_integrity(
+    assert!(integrity_error(verify_integrity(
         PAYLOAD,
         9,
         metadata.encoded_checksum,
@@ -59,7 +68,7 @@ fn frozen_metadata_and_integrity_failure_order_are_preserved() {
     ))
     .contains("fixture SHA-256 mismatch"));
     // The bound uses u64 even though the actual CRC is 32 bits.
-    assert!(storage_error(verify_integrity(
+    assert!(integrity_error(verify_integrity(
         PAYLOAD,
         9,
         metadata.encoded_checksum + (1 << 32),
@@ -178,7 +187,7 @@ fn file_length_corruption_and_sparse_growth_fail_without_writes() {
             &mut budget,
         );
         match expected {
-            Some(message) => assert!(storage_error(result).contains(message)),
+            Some(message) => assert!(integrity_error(result).contains(message)),
             None => assert_eq!(result.unwrap(), PAYLOAD),
         }
         assert_eq!(fs::read(&path).unwrap(), bytes);
@@ -187,7 +196,7 @@ fn file_length_corruption_and_sparse_growth_fail_without_writes() {
     let file = fs::OpenOptions::new().write(true).open(&path).unwrap();
     file.set_len(1024 * 1024).unwrap();
     let mut budget = GraphManifestOpenBudget::new(9);
-    assert!(storage_error(read_bound_graph_manifest(
+    assert!(integrity_error(read_bound_graph_manifest(
         &path,
         9,
         metadata.encoded_checksum,
@@ -290,7 +299,7 @@ fn campaign(seeds: u64, steps: usize) -> usize {
         ] {
             let result = verify_integrity(&payload, length, crc, sha, "manifest");
             match expected {
-                Some(message) => assert!(storage_error(result).contains(message)),
+                Some(message) => assert!(integrity_error(result).contains(message)),
                 None => result.unwrap(),
             }
             cases += 1;

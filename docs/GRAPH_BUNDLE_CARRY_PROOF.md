@@ -113,6 +113,19 @@ a machine-checked composition. Rust mutation guards connect Catalog/graph
 classification and reader G to these abstractions. Physical recorder images
 exercise actual checksum-bound closure and head publication/recovery paths.
 
+The concrete closure planner also compares an already-bound physical path's
+streamed content reference with the selected sealed root before publishing it
+again. This enforces the model's immutable allocated graph contents when a
+generation is carried. Identity-preserving byte corruption is not a new model
+transition: the seven `api::tests::graph_bundle_integrity` probes exercise its
+fail-closed implementation boundary, including unchanged head selection and
+shared-handle invalidation. Admission/resource refusals remain distinct from
+proven content-binding mismatches. Candidate bootstrap keeps private failures
+isolated; after an integrity failure it rechecks selected-root bindings before
+allowing existing readers to continue. A mismatch or incomplete diagnostic
+invalidates shared readers. Successful verification isolates a private failure.
+This diagnostic is failure-only and uses checkpoint work accounting.
+
 This evidence excludes unbounded scheduler liveness, concrete OS/device
 behavior, memory/descriptor accounting proofs, hash collision resistance,
 arithmetic overflow and performance. Those remain governed by their owning

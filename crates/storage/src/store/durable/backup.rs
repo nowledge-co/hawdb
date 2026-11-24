@@ -24,6 +24,7 @@ use crate::error::{HawDBError, Result};
 use crate::file_io as fs;
 use crate::immutable_object::BlockWork;
 use crate::immutable_object::ObjectKind;
+use crate::store::immutable_root::checkpoint_artifact_relative_path;
 use crate::store::{
     canonical_adjacency_artifact_generation_file, canonical_artifact_generation_file,
     canonical_manifest_generation_file, checkpoint_generation_file, copy_backup_file,
@@ -45,6 +46,32 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 impl DurableStore {
+    /// Recheck authoritative files after a private candidate integrity failure.
+    /// Candidate-only damage must not invalidate readers of the selected root.
+    pub(in crate::store) fn verify_selected_checkpoint_bindings(
+        &self,
+        work: BlockWork<'_>,
+    ) -> Result<()> {
+        let Some(branch) = &self.branch_runtime else {
+            return Ok(());
+        };
+        for binding in &branch.root().checkpoint_bindings {
+            let digest = digest_closure_artifact(
+                &self.root_path.join(&binding.relative_path),
+                binding.reference.kind,
+                "verify selected checkpoint artifact",
+                work,
+            )?;
+            if digest.reference != binding.reference {
+                return Err(HawDBError::StorageIntegrity(format!(
+                    "previously published artifact {} changed its content reference",
+                    binding.relative_path
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// Builds the complete validated checkpoint closure through bound family
     /// readers; it never scans the storage directory.
     pub(in crate::store) fn checkpoint_closure_plan(
@@ -74,6 +101,21 @@ impl DurableStore {
                 "read checkpoint closure artifact",
                 work,
             )?;
+            if let Some(branch) = &self.branch_runtime {
+                let relative_path = checkpoint_artifact_relative_path(&self.root_path, &path)?;
+                // A carried generation is already authenticated by the selected
+                // sealed root. Rehashing changed bytes must not mint a new
+                // identity for that same immutable artifact path.
+                let bindings = &branch.root().checkpoint_bindings;
+                if let Ok(index) = bindings
+                    .binary_search_by(|binding| binding.relative_path.as_str().cmp(relative_path))
+                    && bindings[index].reference != digest.reference
+                {
+                    return Err(HawDBError::StorageIntegrity(format!(
+                        "previously published artifact {relative_path} changed its content reference"
+                    )));
+                }
+            }
             Ok(CheckpointArtifactInput {
                 path,
                 reference: digest.reference,
@@ -101,7 +143,7 @@ impl DurableStore {
                     || u64::from(digest.content.crc32c.get()) != encoded_checksum
                     || digest.content.sha256 != encoded_sha256
                 {
-                    return Err(HawDBError::Storage(format!(
+                    return Err(HawDBError::StorageIntegrity(format!(
                         "relational checkpoint closure artifact {} differs from its checkpoint binding",
                         relational_checkpoint.display()
                     )));

@@ -140,11 +140,35 @@ impl CheckpointPreparation {
                 Err(HawDBError::from_storage_error(error))
             }
             Err(crate::background::CheckpointOperationError::Operation(error)) => {
+                self.check_source_after_bootstrap_failure(&error, work);
                 // A partial mount or physical error cannot reuse mutated roots.
                 // Discard private artifacts, then rebuild from the same source.
                 self.bootstrap = None;
                 self.finished = false;
                 Err(error)
+            }
+        }
+    }
+
+    fn check_source_after_bootstrap_failure(
+        &self,
+        error: &HawDBError,
+        work: &crate::background::CheckpointWorkContext,
+    ) {
+        if matches!(error, HawDBError::StorageIntegrity(_))
+            && let Some(durable) = &self.source.durable
+        {
+            // Bootstrap has detached poison flags. Preserve live readers only
+            // when the selected source is independently verified intact. If
+            // that diagnostic is interrupted, integrity is unresolved: fail
+            // closed rather than treating cancellation as proof of health.
+            if durable
+                .verify_selected_checkpoint_bindings(crate::immutable_object::BlockWork(Some(work)))
+                .is_err()
+            {
+                self.source
+                    .integrity_poisoned
+                    .store(true, AtomicOrdering::Release);
             }
         }
     }
