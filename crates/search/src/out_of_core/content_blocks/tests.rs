@@ -754,7 +754,9 @@ fn deep_verification_of_a_large_document_stays_within_task_memory() {
 #[test]
 fn streamed_blocks_validate_every_record_id_like_sparse_reads() {
     let ids = ["doc:a0", "doc:b0", "doc:c0", "doc:d0"];
-    let cases: [(&str, &[(&str, &[u8])]); 4] = [
+    // Record ids rewritten as other bytes of the same length.
+    type Rewrites<'a> = &'a [(&'a str, &'a [u8])];
+    let cases: [(&str, Rewrites); 4] = [
         ("intact", &[]),
         ("shuffled", &[("doc:b0", b"doc:c0"), ("doc:c0", b"doc:b0")]),
         ("duplicate", &[("doc:c0", b"doc:b0")]),
