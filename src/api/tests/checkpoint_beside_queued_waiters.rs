@@ -40,13 +40,17 @@ fn directory(name: &str) -> Directory {
 
 /// Four CPUs, but a single Foreground I/O slot that queued callers contend for.
 fn governor() -> RuntimeGovernor {
+    governor_with_cpus(4)
+}
+
+fn governor_with_cpus(cpus: usize) -> RuntimeGovernor {
     RuntimeGovernor::new(
         RuntimeGovernorConfig {
             memory_budget_bytes: Some(1 << 30),
             ..RuntimeGovernorConfig::shared_host()
         },
         RuntimeResourceSnapshot::from_parts(
-            RuntimeResourceBudget::from_limits(NonZeroUsize::new(4).unwrap(), None, None),
+            RuntimeResourceBudget::from_limits(NonZeroUsize::new(cpus).unwrap(), None, None),
             RuntimeMemorySnapshot::from_limits(Some(8 << 30), Some(6 << 30), None, None, None),
         ),
         IoConcurrencyBudget::new(1, 1),
@@ -148,5 +152,24 @@ fn automatic_checkpoint_runs_beside_callers_that_keep_requeuing() {
     for caller in callers {
         assert!(caller.join().unwrap() > 0);
     }
+    assert_eq!(governor.snapshot().queued_admission_waiters, 0);
+}
+
+#[test]
+fn automatic_checkpoint_runs_on_two_cpus_while_a_writer_holds_one_and_a_waiter_is_queued() {
+    // Writer A holds one of two CPUs and the only Foreground I/O slot; B is
+    // queued, short of that I/O slot only. The checkpoint needs the other CPU
+    // and no Foreground I/O, so B's queue position must not refuse it.
+    let directory = directory("two-cpus");
+    let governor = governor_with_cpus(2);
+    let mut db = database(&directory, &governor);
+    let writer_a = governor.try_admit(io_request()).unwrap();
+    let waiter_b = governor.admission_waiter(RuntimeWorkPriority::Foreground);
+    assert!(governor.try_admit_waiter(&waiter_b, io_request()).is_err());
+    let written = write_through_checkpoints(&mut db, 2);
+    assert!(written > 0);
+    drop(writer_a);
+    drop(governor.try_admit_waiter(&waiter_b, io_request()).unwrap());
+    drop(waiter_b);
     assert_eq!(governor.snapshot().queued_admission_waiters, 0);
 }

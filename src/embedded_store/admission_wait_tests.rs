@@ -590,28 +590,25 @@ fn waiting_reader_is_not_starved_by_greedy_readers_on_io_depth() {
     assert_idle(&governor);
 }
 
+/// The recommended replay writer: ranked Background, waiting, in the
+/// Foreground pool.
 fn background_replay() -> RuntimeTaskContext {
     RuntimeTaskContext::default()
-        .with_admission_priority(RuntimeWorkPriority::Background)
+        .with_admission_queue_priority(RuntimeWorkPriority::Background)
         .with_admission_wait(Duration::from_secs(60))
 }
 
-/// Host tiering, top tier: on a governor with strict Foreground precedence,
-/// a user request (immediate Foreground, no retry) is admitted into free
-/// capacity even while a replay writer (Background, waiting) has been queued
-/// past the background aging boundary. By default that aged replay would
-/// make the user request yield with `queued_ahead`.
+/// Host tiering, top tier. A replay writer ranked Background is queued for
+/// the only CPU and has aged past the 100 ms boundary. By default it then
+/// makes an immediate user request yield (`queued_ahead`); under strict
+/// Foreground precedence the user request is refused only for the capacity
+/// actually held, so it is admitted the moment the CPU is free. A shadow read
+/// ranked Background yields to the queued replay either way.
 #[test]
-fn user_request_is_admitted_while_a_background_replay_is_queued() {
+fn user_request_is_not_queued_behind_an_aged_background_ranked_replay() {
     let governor = tiered_governor();
     let handle = handle(&governor);
-    // A running Background task fills the Background pool; the CPU is free.
-    let running = governor
-        .try_admit(RuntimeWorkRequest::new(
-            RuntimeWorkPriority::Background,
-            RuntimeWorkKind::Control,
-        ))
-        .unwrap();
+    let held = hold_cpu(&governor);
     let replay = thread::spawn({
         let handle = handle.clone();
         move || replay_commits_with(&handle, 1, &background_replay())
@@ -619,20 +616,21 @@ fn user_request_is_admitted_while_a_background_replay_is_queued() {
     wait_for_queue(&governor, 1);
     // Let the queued replay age (100 ms).
     thread::sleep(Duration::from_millis(150));
+    let user = || count_memories(&handle, &RuntimeTaskContext::default());
     governor.set_foreground_preempts_queued_background(false);
     assert!(matches!(
-        count_memories(&handle, &RuntimeTaskContext::default()),
+        user(),
         Err(HawDBError::RuntimeAdmissionRefused(refusal)) if refusal.code == "queued_ahead"
     ));
     governor.set_foreground_preempts_queued_background(true);
-    assert_eq!(
-        count_memories(&handle, &RuntimeTaskContext::default()).unwrap(),
-        1
-    );
-    // A shadow read (Background, immediate) yields to the queued replay.
+    assert!(matches!(
+        user(),
+        Err(HawDBError::RuntimeAdmissionRefused(refusal)) if refusal.code != "queued_ahead"
+    ));
     let shadow = count_memories(
         &handle,
-        &RuntimeTaskContext::default().with_admission_priority(RuntimeWorkPriority::Background),
+        &RuntimeTaskContext::default()
+            .with_admission_queue_priority(RuntimeWorkPriority::Background),
     )
     .unwrap_err();
     assert!(matches!(
@@ -640,12 +638,11 @@ fn user_request_is_admitted_while_a_background_replay_is_queued() {
         HawDBError::RuntimeAdmissionRefused(refusal)
             if refusal.code == "queued_ahead" && refusal.retryable
     ));
-    drop(running);
+    // The ranked replay stays in the Foreground pool.
+    assert_eq!(governor.snapshot().active_background_tasks, 0);
+    drop(held);
     replay.join().unwrap();
-    assert_eq!(
-        count_memories(&handle, &RuntimeTaskContext::default()).unwrap(),
-        2
-    );
+    assert_eq!(user().unwrap(), 2);
     assert_idle(&governor);
 }
 
@@ -662,7 +659,8 @@ fn background_replay_is_not_starved_by_a_greedy_background_shadow_reader() {
     let shadow = spawn_greedy_reader(
         &handle,
         &stop,
-        RuntimeTaskContext::default().with_admission_priority(RuntimeWorkPriority::Background),
+        RuntimeTaskContext::default()
+            .with_admission_queue_priority(RuntimeWorkPriority::Background),
     );
     let started = Instant::now();
     replay_commits_with(&handle, COMMITS, &background_replay());
@@ -807,5 +805,221 @@ fn shadow_search_runs_at_background_priority_and_waits() {
         )
         .unwrap();
     assert_eq!(documents.documents.len(), 1);
+    assert_idle(&governor);
+}
+
+#[cfg(feature = "background-maintenance")]
+mod recommended_tiering {
+    //! The host tiering recommended for #1947 on a durable store whose writes
+    //! trigger automatic checkpoints, with the default Background limit (one
+    //! task below eight CPUs) on four CPUs:
+    //!
+    //! - user requests: default context (immediate, Foreground);
+    //! - replay writer: queue rank Background, with a wait;
+    //! - shadow reads: queue rank Background, with a wait, held open a while.
+    //!
+    //! Ranking never moves work into the Background pool, so the checkpoint
+    //! the writer's commits depend on always finds its slot.
+
+    use super::*;
+
+    struct Directory(std::path::PathBuf);
+
+    impl Drop for Directory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn durable_handle(name: &str, governor: &RuntimeGovernor) -> (Directory, EmbeddedStoreHandle) {
+        let directory = Directory(
+            std::env::temp_dir().join(format!("hawdb-1947-tiering-{name}-{}", std::process::id())),
+        );
+        let _ = std::fs::remove_dir_all(&directory.0);
+        std::fs::create_dir_all(&directory.0).unwrap();
+        let mut database = Database::open_with_config(
+            directory.0.join("graph"),
+            DatabaseConfig {
+                automatic_checkpoint_max_age: Duration::from_millis(20),
+                max_read_result_rows: Some(16),
+                max_read_result_payload_bytes: Some(16 * 1024),
+                ..DatabaseConfig::default()
+            },
+        )
+        .unwrap();
+        database
+            .query("CREATE (:Memory {id: 'seed', title: 'Seed memory'})")
+            .unwrap();
+        let graph = EmbeddedGraph::from_database_with_runtime_governor(
+            database,
+            GraphMode::WritableCutover,
+            governor.clone(),
+        );
+        let handle = EmbeddedStoreHandle::new(EmbeddedStore::new(graph, None)).unwrap();
+        (directory, handle)
+    }
+
+    fn four_cpus_default_background_limit() -> RuntimeGovernor {
+        let governor = RuntimeGovernor::new(
+            RuntimeGovernorConfig {
+                memory_budget_bytes: Some(2 << 30),
+                result_budget_bytes: 128 << 20,
+                ..RuntimeGovernorConfig::shared_host()
+            },
+            RuntimeResourceSnapshot::from_parts(
+                RuntimeResourceBudget::from_limits(NonZeroUsize::new(4).unwrap(), None, None),
+                RuntimeMemorySnapshot::from_limits(Some(8 << 30), Some(6 << 30), None, None, None),
+            ),
+            IoConcurrencyBudget::new(2, 1),
+        );
+        assert_eq!(governor.snapshot().limits.background_task_limit.get(), 1);
+        governor.set_foreground_preempts_queued_background(true);
+        governor
+    }
+
+    fn completed_checkpoints(handle: &EmbeddedStoreHandle) -> u64 {
+        handle
+            .read_store()
+            .unwrap()
+            .graph
+            .database()
+            .automatic_checkpoint_report()
+            .unwrap()
+            .map_or(0, |report| report.completed_checkpoints)
+    }
+
+    fn ranked(wait: Duration) -> RuntimeTaskContext {
+        RuntimeTaskContext::default()
+            .with_admission_queue_priority(RuntimeWorkPriority::Background)
+            .with_admission_wait(wait)
+    }
+
+    fn run(name: &str, replay: RuntimeTaskContext) {
+        const COMMITS: usize = 100;
+        let governor = four_cpus_default_background_limit();
+        let (_directory, handle) = durable_handle(name, &governor);
+        let stop = Arc::new(AtomicBool::new(false));
+        let shadow_reads = Arc::new(AtomicUsize::new(0));
+        let shadows = (0..2)
+            .map(|_| {
+                let handle = handle.clone();
+                let stop = Arc::clone(&stop);
+                let shadow_reads = Arc::clone(&shadow_reads);
+                thread::spawn(move || {
+                    while !stop.load(Ordering::Acquire) {
+                        // A long shadow read keeps its admission while open.
+                        let read = handle.with_bounded_graph_read_snapshot_context(
+                            budget(),
+                            &ranked(PROMPT),
+                            |snapshot| {
+                                snapshot.query_cypher(
+                                    "MATCH (m:Memory) RETURN count(m) AS memories",
+                                    &BTreeMap::new(),
+                                    1,
+                                )?;
+                                thread::sleep(Duration::from_millis(20));
+                                Ok(())
+                            },
+                        );
+                        match read {
+                            Ok(()) => {
+                                shadow_reads.fetch_add(1, Ordering::AcqRel);
+                            }
+                            Err(HawDBError::RuntimeAdmissionRefused(refusal))
+                                if refusal.retryable => {}
+                            Err(error) => panic!("shadow read failed: {error}"),
+                        }
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        let user = spawn_greedy_reader(&handle, &stop, RuntimeTaskContext::default());
+        let checkpoints = completed_checkpoints(&handle);
+        let started = Instant::now();
+        for commit in 0..COMMITS {
+            handle
+                .with_transaction_context(&replay, |tx| {
+                    tx.query_with_params(
+                        "CREATE (:Memory {id: $id})",
+                        &BTreeMap::from([("id".to_string(), Value::Int(commit as i64))]),
+                    )
+                    .map(|_| ())
+                })
+                .unwrap_or_else(|error| panic!("replay commit {commit} failed: {error}"));
+            thread::sleep(Duration::from_millis(2));
+        }
+        // Checkpoints keep completing beside the ranked work.
+        while completed_checkpoints(&handle) <= checkpoints {
+            assert!(
+                started.elapsed() < PROMPT,
+                "no automatic checkpoint completed"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        stop.store(true, Ordering::Release);
+        for shadow in shadows {
+            shadow.join().unwrap();
+        }
+        let (_, _, queued_ahead) = user.join().unwrap();
+        assert_eq!(queued_ahead, 0, "ranked work made a user request queue");
+        assert!(shadow_reads.load(Ordering::Acquire) > 0);
+        assert_eq!(governor.snapshot().active_background_tasks, 0);
+        assert_eq!(governor.snapshot().queued_admission_waiters, 0);
+    }
+
+    #[test]
+    fn ranked_replay_commits_beside_long_shadow_reads_and_checkpoints() {
+        run("ranked", ranked(Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn a_background_priority_writer_stays_out_of_the_background_pool() {
+        // The earlier advice (`with_admission_priority(Background)`) no longer
+        // puts a writer in the one-slot Background pool, where it would hold
+        // the slot its own commit's checkpoint needs.
+        run(
+            "background-priority",
+            RuntimeTaskContext::default()
+                .with_admission_priority(RuntimeWorkPriority::Background)
+                .with_admission_wait(Duration::from_secs(60)),
+        );
+    }
+}
+
+/// The self-deadlock precondition from review: a writer must never hold the
+/// Background pool, because its commit can wait for an automatic checkpoint
+/// that needs that pool (one task below eight CPUs). A context asking for
+/// Background priority only lowers a transaction's queue rank.
+#[test]
+fn transactions_never_hold_the_background_pool() {
+    let governor = one_cpu_governor();
+    let handle = handle(&governor);
+    let background = RuntimeTaskContext::default()
+        .with_admission_priority(RuntimeWorkPriority::Background)
+        .with_admission_wait(PROMPT);
+    handle
+        .with_transaction_context(&background, |tx| {
+            let snapshot = governor.snapshot();
+            assert_eq!(snapshot.active_background_tasks, 0);
+            assert_eq!(snapshot.active_foreground_tasks, 1);
+            tx.query("CREATE (:Memory {id: 'typed'})").map(|_| ())
+        })
+        .unwrap();
+    let governor_view = governor.clone();
+    let statements = [crate::NowledgeGraphStatement {
+        cypher: "CREATE (:Memory {id: 'statement'})".into(),
+        parameters: BTreeMap::new(),
+    }];
+    handle
+        .transaction_context(&background, &statements)
+        .unwrap();
+    assert_eq!(governor_view.snapshot().active_background_tasks, 0);
+    // Reads may still opt into the Background pool explicitly.
+    handle
+        .with_bounded_read_snapshot_context(budget(), &background, |_| {
+            assert_eq!(governor.snapshot().active_background_tasks, 1);
+            Ok(())
+        })
+        .unwrap();
     assert_idle(&governor);
 }

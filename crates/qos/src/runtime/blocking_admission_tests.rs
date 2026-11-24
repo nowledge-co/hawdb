@@ -571,3 +571,150 @@ fn immediate_work_yields_only_when_it_competes_with_the_queued_waiter() {
     );
     drop(waiter);
 }
+
+fn governor_with(cpus: usize, foreground_io: usize) -> RuntimeGovernor {
+    RuntimeGovernor::new(
+        RuntimeGovernorConfig {
+            foreground_task_limit: NonZeroUsize::new(8),
+            ..RuntimeGovernorConfig::shared_host()
+        },
+        RuntimeResourceSnapshot::from_parts(
+            RuntimeResourceBudget::from_limits(NonZeroUsize::new(cpus).unwrap(), None, None),
+            RuntimeMemorySnapshot::from_limits(Some(8 * GIB), Some(6 * GIB), None, None, None),
+        ),
+        IoConcurrencyBudget::new(foreground_io, 1),
+    )
+}
+
+#[test]
+fn checkpoint_passes_a_waiter_short_of_io_while_a_writer_holds_a_cpu_on_two_cpus() {
+    // Two CPUs. Writer A holds one CPU (and would wait for a checkpoint); B
+    // is queued, short only of the single Foreground I/O slot. The checkpoint
+    // needs the free CPU but no Foreground I/O, so B cannot be delayed by it
+    // and it must be admitted (#1947 review: 1 + 1 + 1 > 2 used to refuse it).
+    let governor = governor_with(2, 1);
+    let io_request = RuntimeWorkRequest::foreground_query(0, 0)
+        .with_blocking(false)
+        .with_io_slots(1);
+    // Writer A holds one CPU and the only Foreground I/O slot.
+    let writer_a = governor.try_admit(io_request).unwrap();
+    let waiter_b = governor.admission_waiter(RuntimeWorkPriority::Foreground);
+    assert_eq!(
+        governor
+            .try_admit_waiter(&waiter_b, io_request)
+            .unwrap_err()
+            .code,
+        RuntimeAdmissionCode::IoSaturated
+    );
+    let checkpoint = governor
+        .try_admit(RuntimeWorkRequest::background_maintenance(1024))
+        .unwrap();
+    drop((checkpoint, writer_a));
+    drop(governor.try_admit_waiter(&waiter_b, io_request).unwrap());
+    drop(waiter_b);
+    assert_eq!(governor.snapshot().queued_admission_waiters, 0);
+}
+
+#[test]
+fn queue_rank_orders_work_without_moving_it_into_the_background_pool() {
+    // A replay writer ranked Background stays in the Foreground pool: it never
+    // holds the Background slot automatic checkpoints need. User requests
+    // (immediate, Foreground-ranked) pass it under strict precedence; a shadow
+    // read ranked Background yields to it.
+    let governor = one_cpu_governor();
+    governor.set_foreground_preempts_queued_background(true);
+    let held = governor
+        .try_admit(request(RuntimeWorkPriority::Foreground))
+        .unwrap();
+    let replay = governor.admission_waiter_ranked(
+        RuntimeWorkPriority::Foreground,
+        RuntimeWorkPriority::Background,
+    );
+    assert_eq!(replay.priority(), RuntimeWorkPriority::Foreground);
+    assert_eq!(replay.rank(), RuntimeWorkPriority::Background);
+    let foreground = request(RuntimeWorkPriority::Foreground);
+    assert!(governor.try_admit_waiter(&replay, foreground).is_err());
+    {
+        let mut state = mutex_lock(&governor.inner.state);
+        state.admission_waiters[0].enqueued_at = Instant::now() - BACKGROUND_ADMISSION_AGING;
+    }
+    drop(held);
+    // A Background-ranked shadow read yields to the queued replay.
+    assert_eq!(
+        governor
+            .try_admit_ranked(foreground, RuntimeWorkPriority::Background)
+            .unwrap_err()
+            .code,
+        RuntimeAdmissionCode::QueuedAhead
+    );
+    // A user request takes the free slot even though the replay has aged.
+    let user = governor.try_admit(foreground).unwrap();
+    drop(user);
+    let permit = governor.try_admit_waiter(&replay, foreground).unwrap();
+    let snapshot = governor.snapshot();
+    assert_eq!(snapshot.active_foreground_tasks, 1);
+    assert_eq!(snapshot.active_background_tasks, 0);
+    drop((permit, replay));
+    // Ranked through a task context, `admit_waiting` uses the same rule.
+    let context = RuntimeTaskContext::default()
+        .with_admission_queue_priority(RuntimeWorkPriority::Background);
+    assert_eq!(
+        RuntimeGovernor::effective_queue_rank(RuntimeWorkPriority::Foreground, &context),
+        RuntimeWorkPriority::Background
+    );
+    drop(governor.admit_waiting(foreground, &context, None).unwrap());
+}
+
+#[test]
+fn waiter_short_of_process_memory_is_not_overtaken_by_small_requests() {
+    use crate::{ProcessMemoryCapabilities, ProcessMemoryPolicyConfig, ProcessMemorySnapshot};
+    let policy = ProcessMemoryPolicy::new(ProcessMemoryPolicyConfig::new(
+        std::num::NonZeroU64::new(1000).unwrap(),
+    ));
+    policy.update(ProcessMemorySnapshot {
+        capabilities: ProcessMemoryCapabilities {
+            resident_memory: true,
+            total_page_faults: false,
+            split_page_faults: false,
+        },
+        resident_bytes: 200,
+        peak_resident_bytes: 200,
+        total_page_faults: None,
+        minor_page_faults: None,
+        major_page_faults: None,
+    });
+    let governor = RuntimeGovernor::new_with_process_memory_policy(
+        RuntimeGovernorConfig::shared_host(),
+        RuntimeResourceSnapshot::from_parts(
+            RuntimeResourceBudget::from_limits(NonZeroUsize::new(4).unwrap(), None, None),
+            RuntimeMemorySnapshot::from_limits(Some(8 * GIB), Some(6 * GIB), None, None, None),
+        ),
+        IoConcurrencyBudget::new(4, 1),
+        policy.clone(),
+    );
+    let available = policy.snapshot().available_bytes.unwrap();
+    let large = RuntimeWorkRequest::foreground_query(available + 1, 0).with_blocking(false);
+    let waiter = governor.admission_waiter(RuntimeWorkPriority::Foreground);
+    let refusal = governor.try_admit_waiter(&waiter, large).unwrap_err();
+    assert!(refusal.is_retryable(), "{refusal}");
+    // Small requests that reserve memory would eat the resident headroom the
+    // waiter is short of; they yield instead of overtaking it indefinitely.
+    let small = RuntimeWorkRequest::foreground_query(1, 0)
+        .with_blocking(false)
+        .with_cpu_slots(0);
+    assert_eq!(
+        governor.try_admit(small).unwrap_err().code,
+        RuntimeAdmissionCode::QueuedAhead
+    );
+    // Work that reserves no memory does not compete for it.
+    drop(
+        governor
+            .try_admit(RuntimeWorkRequest::new(
+                RuntimeWorkPriority::Foreground,
+                RuntimeWorkKind::Control,
+            ))
+            .unwrap(),
+    );
+    drop(waiter);
+    drop(governor.try_admit(small).unwrap());
+}

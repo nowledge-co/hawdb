@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::{
-    admit_runtime, embedded_query_report, prioritized_request, try_admit_runtime,
+    admit_runtime, embedded_query_report, prioritized_request, try_admit_runtime_ranked,
     EmbeddedQueryOutput, EmbeddedQueryReportInput, EmbeddedQueryReportOptions, EmbeddedReadOptions,
     EmbeddedStoreHandle, GraphMode, SearchProjectionExternalReadOperator,
 };
@@ -334,7 +334,11 @@ pub(super) fn admit_reusable_prepared(
 ) -> Result<(RuntimePermit, PreparedRuntimeQuery)> {
     let request =
         request.with_memory_bytes(request.memory_bytes.max(prepared.planning_memory_bytes()));
-    match try_admit_runtime(governor, prioritized_request(request, task_context)) {
+    match try_admit_runtime_ranked(
+        governor,
+        prioritized_request(request, task_context),
+        task_context,
+    ) {
         Ok(permit) => {
             task_context.record_admission(std::time::Duration::ZERO);
             Ok((permit, prepared))

@@ -571,8 +571,12 @@ waiters overtake one short-deadline Foreground waiter at most once (default
 and strict precedence), a later Foreground waiter may again be overtaken once,
 and an immediate request yields `queued_ahead` only when it competes with the
 selected waiter for a scarce resource (checkpoint-like maintenance passes a
-waiter short of Foreground I/O but not one short of the only CPU). Every
-case leaves the queue empty. The unit-test build raises the bounded re-check
+waiter short of Foreground I/O but not one short of the only CPU; on two
+CPUs it passes a waiter short only of I/O while a writer holds the other
+CPU); a waiter short of process resident memory is not overtaken by small
+memory-reserving requests; and a Background-ranked waiter in the Foreground
+pool is ordered behind users and ahead of Background-ranked immediates without
+taking the Background pool. Every case leaves the queue empty. The unit-test build raises the bounded re-check
 interval to 60 s, so the 20 s completion bounds prove signal wake-ups rather
 than polling. Core `cancellation::tests::admission_policy_*` pin the
 task-context defaults, scoping and shared admission trace. Root
@@ -596,11 +600,20 @@ admitted when a Background task releases the CPU; a Background shadow search
 (`search_candidates_with_report_context`) queues on a held Background pool while
 the Foreground search runs, then completes and is traced; and a Background shadow
 reader beside a Foreground writer paced 1 ms apart never refuses the writer
-while the reader progresses. Root `api::tests::checkpoint_beside_queued_waiters` (feature
+while the reader progresses. `admission_wait_tests::recommended_tiering`
+(feature `background-maintenance`) runs the recommended host tiering on a
+durable four-CPU handle with the default one-task Background pool and 20 ms
+automatic checkpoints: a Background-ranked replay writer commits 100 times
+beside two Background-ranked shadow readers that hold each read open for 20 ms
+and a greedy user reader; checkpoints keep completing, users never see
+`queued_ahead`, and nothing enters the Background pool; the same holds for a
+writer given `with_admission_priority(Background)`. Root
+`api::tests::checkpoint_beside_queued_waiters` (feature
 `background-maintenance`) open a durable database with a 20 ms automatic
 checkpoint age on a four-CPU governor with one Foreground I/O slot and write
-until automatic checkpoints complete, once with a waiter queued for the held
-I/O slot and once beside three callers that keep re-queuing for it; before the
+until automatic checkpoints complete: with a waiter queued for the held I/O
+slot, beside three callers that keep re-queuing for it, and on two CPUs while
+writer A holds one CPU and the I/O slot and B is queued; before the
 contention rule the checkpoint was refused `queued_ahead` indefinitely. Only
 that pacing and one 150 ms aging pause sleep; no new lane, profile or timeout.
 Replay with `cargo test --locked -p hawdb --all-features --lib

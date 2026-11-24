@@ -571,7 +571,10 @@ struct RuntimeGovernorState {
 #[derive(Debug)]
 struct RuntimeAdmissionQueueEntry {
     id: u64,
+    /// Resource pool of the waiter's requests.
     priority: RuntimeWorkPriority,
+    /// Queue order: selection, aging and immediate preemption use the rank.
+    rank: RuntimeWorkPriority,
     enqueued_at: Instant,
     signal: Arc<RuntimeAdmissionSignal>,
     /// A Foreground waiter that a Background waiter was admitted ahead of.
@@ -626,6 +629,7 @@ pub struct RuntimeAdmissionWaiter {
     governor: Arc<RuntimeGovernorInner>,
     id: u64,
     priority: RuntimeWorkPriority,
+    rank: RuntimeWorkPriority,
     enqueued_at: Instant,
     signal: Arc<RuntimeAdmissionSignal>,
     observed_generation: u64,
@@ -636,10 +640,15 @@ impl RuntimeAdmissionWaiter {
         self.priority
     }
 
+    /// Where this waiter ranks in the queue; never above its pool priority.
+    pub fn rank(&self) -> RuntimeWorkPriority {
+        self.rank
+    }
+
     /// Returns the one-shot deadline at which background aging may change
     /// this waiter's admission order.
     pub fn next_priority_change_at(&self) -> Option<Instant> {
-        if self.priority != RuntimeWorkPriority::Background {
+        if self.rank != RuntimeWorkPriority::Background {
             return None;
         }
         let deadline = self.enqueued_at.checked_add(BACKGROUND_ADMISSION_AGING)?;
@@ -915,11 +924,46 @@ impl RuntimeGovernor {
         &self,
         request: RuntimeWorkRequest,
     ) -> Result<RuntimePermit, RuntimeAdmissionError> {
-        self.try_admit_inner(None, request)
+        self.try_admit_inner(None, request, request.priority)
+    }
+
+    /// Like [`Self::try_admit`] for a request whose queue rank is lower than
+    /// its pool priority (#1947): a Background-ranked immediate request never
+    /// preempts a queued Background-ranked waiter.
+    pub fn try_admit_ranked(
+        &self,
+        request: RuntimeWorkRequest,
+        rank: RuntimeWorkPriority,
+    ) -> Result<RuntimePermit, RuntimeAdmissionError> {
+        self.try_admit_inner(None, request, request.priority.lowered_by(rank))
+    }
+
+    /// The queue rank a task's admission takes: `priority` lowered by the
+    /// context's queue priority and its admission priority.
+    pub fn effective_queue_rank(
+        priority: RuntimeWorkPriority,
+        context: &RuntimeTaskContext,
+    ) -> RuntimeWorkPriority {
+        priority
+            .lowered_by(context.admission_queue_priority())
+            .lowered_by(context.admission_priority())
     }
 
     /// Joins the priority-aware admission queue before attempting admission.
     pub fn admission_waiter(&self, priority: RuntimeWorkPriority) -> RuntimeAdmissionWaiter {
+        self.admission_waiter_ranked(priority, priority)
+    }
+
+    /// Joins the queue at `rank` while admitting requests from the `priority`
+    /// resource pool (#1947). The rank is never above the pool priority. A
+    /// Foreground-pool request ranked `Background` is ordered like Background
+    /// work but never holds the Background pool that maintenance needs.
+    pub fn admission_waiter_ranked(
+        &self,
+        priority: RuntimeWorkPriority,
+        rank: RuntimeWorkPriority,
+    ) -> RuntimeAdmissionWaiter {
+        let rank = priority.lowered_by(rank);
         let signal = Arc::new(RuntimeAdmissionSignal::default());
         let enqueued_at = Instant::now();
         let id = {
@@ -931,6 +975,7 @@ impl RuntimeGovernor {
                 .push_back(RuntimeAdmissionQueueEntry {
                     id,
                     priority,
+                    rank,
                     enqueued_at,
                     signal: Arc::clone(&signal),
                     overtaken: false,
@@ -942,6 +987,7 @@ impl RuntimeGovernor {
             governor: Arc::clone(&self.inner),
             id,
             priority,
+            rank,
             enqueued_at,
             signal,
             observed_generation: 0,
@@ -964,13 +1010,14 @@ impl RuntimeGovernor {
                 false,
             ));
         }
-        self.try_admit_inner(Some(waiter), request)
+        self.try_admit_inner(Some(waiter), request, waiter.rank)
     }
 
     fn try_admit_inner(
         &self,
         waiter: Option<&RuntimeAdmissionWaiter>,
         request: RuntimeWorkRequest,
+        rank: RuntimeWorkPriority,
     ) -> Result<RuntimePermit, RuntimeAdmissionError> {
         self.refresh_from_host_if_due();
         let (result, next) = {
@@ -983,7 +1030,7 @@ impl RuntimeGovernor {
             {
                 entry.last_request = Some(request);
             }
-            let queue_error = admission_queue_error(&state, waiter, request, Instant::now());
+            let queue_error = admission_queue_error(&state, waiter, request, rank, Instant::now());
             let resource_error = admission_error(&state, request);
             let process_memory_capacity_error = state
                 .process_memory_policy
@@ -1049,9 +1096,9 @@ impl RuntimeGovernor {
                         // A queued Background waiter is admitted only when
                         // selected, so every Foreground waiter still queued
                         // was just overtaken by an aged Background waiter.
-                        if waiter.priority == RuntimeWorkPriority::Background {
+                        if waiter.rank == RuntimeWorkPriority::Background {
                             for entry in &mut state.admission_waiters {
-                                if entry.priority == RuntimeWorkPriority::Foreground {
+                                if entry.rank == RuntimeWorkPriority::Foreground {
                                     entry.overtaken = true;
                                 }
                             }
@@ -1153,7 +1200,10 @@ impl RuntimeGovernor {
     ) -> Result<RuntimePermit, RuntimeAdmissionWaitError> {
         let waker = Waker::from(Arc::new(ThreadUnparker(std::thread::current())));
         let mut task = std::task::Context::from_waker(&waker);
-        let mut waiter = self.admission_waiter(request.priority);
+        let mut waiter = self.admission_waiter_ranked(
+            request.priority,
+            Self::effective_queue_rank(request.priority, context),
+        );
         let mut waited: Option<(Instant, RuntimeAdmissionCode)> = None;
         let started = Instant::now();
         // Records a completed wait and returns how long the caller queued.
@@ -1707,6 +1757,7 @@ fn admission_queue_error(
     state: &RuntimeGovernorState,
     waiter: Option<&RuntimeAdmissionWaiter>,
     request: RuntimeWorkRequest,
+    rank: RuntimeWorkPriority,
     now: Instant,
 ) -> Option<RuntimeAdmissionError> {
     let Some((selected_index, aged_background)) =
@@ -1742,23 +1793,19 @@ fn admission_queue_error(
                 .then(|| admission_error_value(RuntimeAdmissionCode::QueuedAhead, 1, 0, true))
         }
         None => {
-            // An immediate Foreground request may take free capacity ahead of
-            // a selected Background waiter that has not aged. Once it has
-            // aged, it blocks immediate requests too, so younger callers
-            // cannot starve it (#303) -- unless the governor opted into
-            // strict Foreground precedence (#1947). Every other immediate
-            // request yields to the selected waiter with `QueuedAhead`.
+            // An immediate Foreground-ranked request may take free capacity
+            // ahead of a selected Background-ranked waiter that has not aged.
+            // Once it has aged it blocks immediate requests too, so younger
+            // callers cannot starve it (#303) -- unless the governor opted
+            // into strict Foreground precedence (#1947).
             //
-            // An immediate request yields only when it competes with the
-            // selected waiter for a scarce resource (#1947): admitting it must
-            // not leave that waiter short of something it needs. Work that
-            // uses only capacity the waiter does not need -- for example
-            // automatic checkpoint maintenance beside a waiter short of
-            // Foreground I/O -- proceeds, so a queue cannot stall unrelated
-            // work that its own head may depend on.
-            let foreground_preempts_background = request.priority
-                == RuntimeWorkPriority::Foreground
-                && selected.priority == RuntimeWorkPriority::Background
+            // Otherwise an immediate request yields only when it competes with
+            // the selected waiter (#1947). Work that uses only capacity the
+            // waiter is not short of -- for example automatic checkpoint
+            // maintenance beside a waiter short of Foreground I/O -- proceeds,
+            // so a queue cannot stall unrelated work its own head depends on.
+            let foreground_preempts_background = rank == RuntimeWorkPriority::Foreground
+                && selected.rank == RuntimeWorkPriority::Background
                 && (!aged_background || state.foreground_preempts_queued_background);
             (!foreground_preempts_background
                 && contends_with_waiter(state, selected.last_request, request))
@@ -1767,9 +1814,52 @@ fn admission_queue_error(
     }
 }
 
-/// Whether admitting `request` now could leave `waiter` (a queued request)
-/// short of a resource both need. A waiter that has not attempted admission
-/// yet is assumed to need everything.
+/// One resource both a queued waiter and an immediate request may draw on:
+/// what is in use, what each needs and the limit. Needs of zero do not
+/// compete.
+struct ContendedResource {
+    active: u64,
+    waiter: u64,
+    request: u64,
+    limit: u64,
+}
+
+impl ContendedResource {
+    /// The waiter cannot fit even without the request.
+    fn waiter_short(&self) -> bool {
+        self.waiter > 0 && self.active.saturating_add(self.waiter) > self.limit
+    }
+
+    /// Admitting the request would leave the waiter short.
+    fn request_would_short_waiter(&self) -> bool {
+        self.waiter > 0
+            && self.request > 0
+            && self
+                .active
+                .saturating_add(self.waiter)
+                .saturating_add(self.request)
+                > self.limit
+    }
+}
+
+/// Whether admitting `request` now competes with `waiter` (the selected
+/// queued waiter's latest request). A waiter that has not attempted
+/// admission yet is assumed to need everything.
+///
+/// If the waiter is short of some resources, the request competes only when
+/// it uses one of those: taking a resource the waiter already has enough of
+/// cannot delay it, so automatic checkpoint work passes a waiter short of
+/// Foreground I/O even when the CPU it also needs is shared. If the waiter
+/// fits, the request competes when admitting it would leave the waiter
+/// short of any shared resource.
+///
+/// Modeled: task pool (same priority), blocking slots, CPU, the governor
+/// memory budget, same-pool task-scoped I/O, and the process resident-memory
+/// policy (a paused or unsampled policy counts as a shortage for every
+/// memory-reserving request). Not modeled: the result budget and static
+/// capacity limits (their refusals are terminal, so such a waiter leaves the
+/// queue), and critical memory pressure (it refuses Background requests
+/// whatever is admitted, so no immediate request can delay it further).
 fn contends_with_waiter(
     state: &RuntimeGovernorState,
     waiter: Option<RuntimeWorkRequest>,
@@ -1779,11 +1869,8 @@ fn contends_with_waiter(
         return true;
     };
     let limits = &state.limits;
-    let exceeds = |active: u64, waiter: u64, request: u64, limit: u64| {
-        waiter > 0 && request > 0 && active.saturating_add(waiter).saturating_add(request) > limit
-    };
     let same_pool = waiter.priority == request.priority;
-    let (active_tasks, task_limit, active_io, io_limit) = match request.priority {
+    let (active_tasks, task_limit, active_io, io_limit) = match waiter.priority {
         RuntimeWorkPriority::Foreground => (
             state.active_foreground_tasks,
             limits.foreground_task_limit.get(),
@@ -1797,35 +1884,69 @@ fn contends_with_waiter(
             limits.background_io_depth.get(),
         ),
     };
-    let tasks = same_pool && exceeds(active_tasks as u64, 1, 1, task_limit as u64);
-    let blocking = exceeds(
-        state.active_blocking_tasks as u64,
-        u64::from(waiter.blocking),
-        u64::from(request.blocking),
-        limits.blocking_task_limit.get() as u64,
-    );
-    let cpu = exceeds(
-        state.active_cpu_slots as u64,
-        waiter.cpu_slots as u64,
-        request.cpu_slots as u64,
-        limits.effective_cpu_slots.get() as u64,
-    );
-    let memory = exceeds(
-        state.admitted_memory_bytes,
-        waiter.reserved_memory_bytes(),
-        request.reserved_memory_bytes(),
-        limits.memory_budget_bytes,
-    );
-    let io = same_pool
-        && waiter.io_reservation_scope == RuntimeIoReservationScope::Task
-        && request.io_reservation_scope == RuntimeIoReservationScope::Task
-        && exceeds(
-            active_io as u64,
-            waiter.io_slots as u64,
-            request.io_slots as u64,
-            io_limit as u64,
-        );
-    tasks || blocking || cpu || memory || io
+    let task_io = |request: &RuntimeWorkRequest| {
+        if request.io_reservation_scope == RuntimeIoReservationScope::Task {
+            request.io_slots as u64
+        } else {
+            0
+        }
+    };
+    let mut resources = vec![
+        ContendedResource {
+            active: active_tasks as u64,
+            waiter: 1,
+            request: u64::from(same_pool),
+            limit: task_limit as u64,
+        },
+        ContendedResource {
+            active: state.active_blocking_tasks as u64,
+            waiter: u64::from(waiter.blocking),
+            request: u64::from(request.blocking),
+            limit: limits.blocking_task_limit.get() as u64,
+        },
+        ContendedResource {
+            active: state.active_cpu_slots as u64,
+            waiter: waiter.cpu_slots as u64,
+            request: request.cpu_slots as u64,
+            limit: limits.effective_cpu_slots.get() as u64,
+        },
+        ContendedResource {
+            active: state.admitted_memory_bytes,
+            waiter: waiter.reserved_memory_bytes(),
+            request: request.reserved_memory_bytes(),
+            limit: limits.memory_budget_bytes,
+        },
+        ContendedResource {
+            active: active_io as u64,
+            waiter: task_io(&waiter),
+            request: if same_pool { task_io(&request) } else { 0 },
+            limit: io_limit as u64,
+        },
+    ];
+    if let Some(policy) = &state.process_memory_policy {
+        let snapshot = policy.snapshot();
+        let available = if snapshot.admission_paused {
+            None
+        } else {
+            snapshot.available_bytes
+        };
+        resources.push(ContendedResource {
+            // Unknown or paused headroom: the waiter is short of it.
+            active: if available.is_none() { u64::MAX } else { 0 },
+            waiter: waiter.reserved_memory_bytes(),
+            request: request.reserved_memory_bytes(),
+            limit: available.unwrap_or(0),
+        });
+    }
+    if resources.iter().any(ContendedResource::waiter_short) {
+        resources
+            .iter()
+            .any(|resource| resource.waiter_short() && resource.request > 0)
+    } else {
+        resources
+            .iter()
+            .any(ContendedResource::request_would_short_waiter)
+    }
 }
 
 /// Selects the waiter whose turn it is.
@@ -1840,11 +1961,11 @@ fn selected_admission_waiter(
 ) -> Option<(usize, bool)> {
     let foreground = waiters
         .iter()
-        .position(|waiter| waiter.priority == RuntimeWorkPriority::Foreground);
+        .position(|waiter| waiter.rank == RuntimeWorkPriority::Foreground);
     let foreground_may_yield = foreground.is_none_or(|index| !waiters[index].overtaken);
     if foreground_may_yield
         && let Some(index) = waiters.iter().position(|waiter| {
-            waiter.priority == RuntimeWorkPriority::Background
+            waiter.rank == RuntimeWorkPriority::Background
                 && now.saturating_duration_since(waiter.enqueued_at) >= BACKGROUND_ADMISSION_AGING
         })
     {

@@ -322,6 +322,7 @@ pub struct RuntimeTaskContext {
     io_wave_controller: Option<Arc<dyn RuntimeIoWaveController>>,
     work_budget: Option<Arc<work::RuntimeWorkBudget>>,
     admission_priority: RuntimeWorkPriority,
+    admission_queue_priority: RuntimeWorkPriority,
     admission_wait: RuntimeAdmissionWait,
     admission_trace: Option<RuntimeAdmissionTrace>,
 }
@@ -378,6 +379,7 @@ impl RuntimeTaskContext {
             io_wave_controller: None,
             work_budget: None,
             admission_priority: RuntimeWorkPriority::Foreground,
+            admission_queue_priority: RuntimeWorkPriority::Foreground,
             admission_wait: RuntimeAdmissionWait::Refuse,
             admission_trace: None,
         }
@@ -410,6 +412,7 @@ impl RuntimeTaskContext {
             io_wave_controller: self.io_wave_controller.clone(),
             work_budget: self.work_budget.clone(),
             admission_priority: self.admission_priority,
+            admission_queue_priority: self.admission_queue_priority,
             admission_wait: self.admission_wait,
             admission_trace: self.admission_trace.clone(),
         }
@@ -477,6 +480,9 @@ impl RuntimeTaskContext {
             admission_priority: self
                 .admission_priority
                 .lowered_by(request.admission_priority),
+            admission_queue_priority: self
+                .admission_queue_priority
+                .lowered_by(request.admission_queue_priority),
             admission_wait: match self.admission_wait {
                 RuntimeAdmissionWait::Refuse => request.admission_wait,
                 wait => wait,
@@ -488,16 +494,24 @@ impl RuntimeTaskContext {
         })
     }
 
-    /// Selects the priority of runtime admissions made for this task.
+    /// Selects the resource pool (and queue rank) of runtime admissions made
+    /// for this task.
     ///
     /// Synchronous embedded entry points (`EmbeddedStoreHandle` reads,
-    /// queries, transactions and typed maintenance) admit at the lower of this
-    /// priority and the priority the operation would otherwise use: a context
-    /// can mark foreground work as `Background`, never promote background
-    /// maintenance. Defaults to `Foreground`. Background work has its own task
-    /// pool and I/O depth and yields under critical memory pressure, but CPU
-    /// slots, memory and blocking-task slots are shared, so pair it with
-    /// [`Self::with_admission_wait`] for fairness on small hosts.
+    /// queries and typed maintenance) admit at the lower of this priority and
+    /// the priority the operation would otherwise use: a context can move
+    /// foreground work into the Background pool, never promote background
+    /// maintenance. Defaults to `Foreground`. The Background pool has its own
+    /// task limit and I/O depth (one task on hosts with fewer than eight
+    /// CPUs) and yields under critical memory pressure.
+    ///
+    /// The Background pool is shared with automatic checkpoints and other
+    /// maintenance. Work that holds it -- in particular a long read -- delays
+    /// the checkpoint that committing writers may be waiting for, so prefer
+    /// [`Self::with_admission_queue_priority`], which only lowers the queue
+    /// rank. Transactions never move into the Background pool: for a mutation
+    /// this setting lowers only its queue rank, because its commit can depend
+    /// on Background maintenance.
     pub fn with_admission_priority(mut self, priority: RuntimeWorkPriority) -> Self {
         self.admission_priority = priority;
         self
@@ -507,20 +521,40 @@ impl RuntimeTaskContext {
         self.admission_priority
     }
 
+    /// Lowers only where this task's admissions rank in the governor's
+    /// queue, keeping them in the resource pool of the operation (#1947).
+    ///
+    /// A `Background`-ranked waiter is ordered behind Foreground-ranked
+    /// waiters (FIFO among equals, with one-time aging), and immediate
+    /// Foreground requests may take free capacity ahead of it. Because it
+    /// stays out of the Background pool, it can never hold the slot an
+    /// automatic checkpoint needs. Defaults to `Foreground`; the effective
+    /// rank is also lowered by [`Self::with_admission_priority`].
+    pub fn with_admission_queue_priority(mut self, priority: RuntimeWorkPriority) -> Self {
+        self.admission_queue_priority = priority;
+        self
+    }
+
+    pub fn admission_queue_priority(&self) -> RuntimeWorkPriority {
+        self.admission_queue_priority
+    }
+
     /// Waits up to `timeout` in the runtime governor's priority-ordered
     /// admission queue instead of refusing at once when capacity is short.
     ///
     /// The wait window starts now. Ordering, highest first:
     ///
-    /// 1. immediate (non-waiting) Foreground requests take free capacity
-    ///    ahead of queued Background waiters until those have queued for
-    ///    100 ms, or always on a governor with strict Foreground precedence
-    ///    (`RuntimeGovernor::set_foreground_preempts_queued_background`);
-    /// 2. queued waiters, Foreground before Background and FIFO within a
-    ///    priority, except that a Background waiter queued for 100 ms is
-    ///    selected once ahead of Foreground waiters so it cannot starve;
+    /// 1. immediate (non-waiting) Foreground-ranked requests take free
+    ///    capacity ahead of queued Background-ranked waiters until those have
+    ///    queued for 100 ms, or always on a governor with strict Foreground
+    ///    precedence (`RuntimeGovernor::set_foreground_preempts_queued_background`);
+    /// 2. queued waiters by rank (see [`Self::with_admission_queue_priority`]),
+    ///    Foreground before Background and FIFO within a rank, except that a
+    ///    Background-ranked waiter queued for 100 ms is selected ahead of
+    ///    Foreground-ranked waiters, at most once per Foreground waiter;
     /// 3. other immediate requests yield to the selected waiter with a
-    ///    retryable `queued_ahead` refusal, even when capacity is free.
+    ///    retryable `queued_ahead` refusal when they compete with it for a
+    ///    resource it is short of (or would make it short of).
     ///
     /// When the window ends, the admission returns the typed
     /// `RuntimeAdmissionRefused` with the last shortage and `waited` set to

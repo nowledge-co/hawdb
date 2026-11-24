@@ -1155,11 +1155,24 @@ impl EmbeddedStoreHandle {
     /// deadline, and resource reservation context.
     ///
     /// The context also selects the admission policy: an opportunistic read
-    /// can run at [`RuntimeWorkPriority::Background`] with
-    /// [`RuntimeTaskContext::with_admission_priority`] and wait in the
+    /// can rank behind other work with
+    /// [`RuntimeTaskContext::with_admission_queue_priority`] and wait in the
     /// governor's priority queue with
     /// [`RuntimeTaskContext::with_admission_wait`] instead of being refused
-    /// at once. The same policy applies to the handle's other context-taking
+    /// at once. Prefer the queue rank to
+    /// [`RuntimeTaskContext::with_admission_priority`]: the latter moves a
+    /// read into the Background pool, which automatic checkpoints share (one
+    /// task below eight CPUs), so a long read there delays the checkpoint
+    /// that committing writers may wait for. Transactions never enter the
+    /// Background pool.
+    ///
+    /// Recommended host tiering: user requests use the default context
+    /// (immediate, Foreground) on a governor with
+    /// `RuntimeGovernor::set_foreground_preempts_queued_background(true)`; a
+    /// replay writer and shadow-comparison reads rank `Background` with a
+    /// wait. Users then never yield to queued ranked work, the writer is
+    /// FIFO with (and never starved by) shadow reads, and maintenance keeps
+    /// its own pool. The same policy applies to the handle's other context-taking
     /// admissions: bounded and graph read snapshots, admitted queries and
     /// streaming reads, `transaction_context` and `with_transaction_context`,
     /// typed search (`search_candidates_with_report_context`,
@@ -2376,7 +2389,7 @@ pub(super) fn admit_runtime(
     let request = prioritized_request(request, task_context);
     let wait_until = match task_context.admission_wait() {
         RuntimeAdmissionWait::Refuse => {
-            let permit = try_admit_runtime(governor, request)?;
+            let permit = try_admit_runtime_ranked(governor, request, task_context)?;
             task_context.record_admission(std::time::Duration::ZERO);
             return Ok(permit);
         }
@@ -2399,14 +2412,45 @@ pub(super) fn admit_runtime(
         })
 }
 
+/// Applies the context's resource-pool priority. A mutation stays in its own
+/// pool: its commit can wait for Background maintenance (the automatic
+/// checkpoint), which must never wait for the slot the writer holds. Its
+/// queue rank is still lowered (see [`queue_rank`]).
 pub(super) fn prioritized_request(
     mut request: RuntimeWorkRequest,
     task_context: &RuntimeTaskContext,
 ) -> RuntimeWorkRequest {
-    request.priority = request
-        .priority
-        .lowered_by(task_context.admission_priority());
+    if request.kind != RuntimeWorkKind::Mutation {
+        request.priority = request
+            .priority
+            .lowered_by(task_context.admission_priority());
+    }
     request
+}
+
+/// The queue rank of an admission: the pool priority lowered by both the
+/// context's queue priority and its pool priority.
+pub(super) fn queue_rank(
+    request: RuntimeWorkRequest,
+    task_context: &RuntimeTaskContext,
+) -> RuntimeWorkPriority {
+    hawdb_qos::RuntimeGovernor::effective_queue_rank(request.priority, task_context)
+}
+
+/// [`try_admit_runtime`] at the context's queue rank.
+pub(super) fn try_admit_runtime_ranked(
+    governor: &RuntimeGovernor,
+    request: RuntimeWorkRequest,
+    task_context: &RuntimeTaskContext,
+) -> Result<RuntimePermit> {
+    governor
+        .try_admit_ranked(request, queue_rank(request, task_context))
+        .map_err(|error| {
+            if error.is_retryable() {
+                governor.record_admission_wait(request, error.code, 0);
+            }
+            HawDBError::from(error)
+        })
 }
 
 pub(super) fn typed_read_request(
