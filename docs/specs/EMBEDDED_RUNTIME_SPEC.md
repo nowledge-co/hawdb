@@ -368,9 +368,12 @@ append coverage is defined by the
 [MVCC commit validation protocol](../MVCC_COMMIT_VALIDATION_PROTOCOL.md).
 
 A pessimistic concurrent transaction obtains locks before statement execution.
-Supported relational primary-key lookups and inserts may use shared or
-exclusive point/range spans. Statements whose complete access span cannot be
-derived conservatively use a database-wide lock. Graph mutations are first
+Supported relational lookups and inserts may use shared or exclusive
+point/range spans over a primary-key, unique, or indexed column. A relational
+statement whose predicate matches no key column, or has no `WHERE` at all,
+takes an exclusive table lock instead; only statements that cannot be narrowed
+to a table at all (non-public or unknown tables, constraint-key rekeys,
+foreign-key cascades, schema mutations) use a database-wide lock. Graph mutations are first
 staged in a COW statement workspace to derive concrete node, relationship,
 allocation, node-delete-guard, and typed adjacency identities. The workspace is
 then restored, the normalized lock set is acquired, and the statement is

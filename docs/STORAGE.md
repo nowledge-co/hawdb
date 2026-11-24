@@ -841,15 +841,25 @@ mutation staging still uses `MutationLimits`; this is not complete allocation
 accounting. Plain transactions remain caller-managed. See the
 [ownership proof](tla/TRANSACTION_ADMISSION_LEASE_PROOF.md).
 
-Simple PostgreSQL reads over a primary key acquire shared point or range locks.
-Full-table reads acquire the full primary-key range. `INSERT` and `ON CONFLICT
-DO NOTHING` acquire exclusive points for the primary key and every declared
-unique key, plus shared points for referenced foreign keys. This permits
-disjoint primary-key inserts prepared from the same COW epoch to publish in
-separate WAL epochs. SQL updates, deletes, schema changes, joins, non-primary-key
-predicates, graph mutations, and query shapes whose complete access set cannot
-be proven acquire the database target conservatively. The fallback is part of
-correctness, not a silent unlocked path.
+A plain `SELECT` is a snapshot read and acquires no logical lock. Only
+`SELECT ... FOR SHARE` / `FOR UPDATE` lock, as shared / exclusive point or
+range locks: a locking read over a primary-key, unique, or indexed column
+takes a point or range lock over that key, a locking full-table read takes the
+full primary-key range (a table with no primary key takes a table lock
+instead), and a locking join takes one lock per table. `INSERT` and
+`ON CONFLICT DO NOTHING` acquire exclusive points for the primary key and every
+declared unique key, plus shared points for referenced foreign keys. This
+permits disjoint primary-key inserts prepared from the same COW epoch to
+publish in separate WAL epochs. SQL updates and deletes lock the rows they
+touch: a predicate over a primary-key, unique, or indexed column takes an
+exclusive point or range lock over that key, while a predicate that matches no
+key column, or a missing `WHERE`, takes an exclusive table lock. The database
+target is reserved for the cases that cannot be narrowed to a table at all:
+non-public or unknown tables, an update that assigns a constraint-key column,
+and a delete that can cascade through a foreign key. Schema changes, graph
+mutations, and query shapes whose complete access set cannot be proven keep
+the conservative fallback. The fallback is part of correctness, not a silent
+unlocked path.
 
 A pessimistic transaction that waits before its first successful statement
 refreshes its private snapshot after the lock is granted. After an earlier
