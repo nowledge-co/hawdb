@@ -1163,15 +1163,16 @@ impl EmbeddedStoreHandle {
     /// [`RuntimeTaskContext::with_admission_priority`]: the latter moves a
     /// read into the Background pool, which automatic checkpoints share (one
     /// task below eight CPUs), so a long read there delays the checkpoint
-    /// that committing writers may wait for. Transactions never enter the
-    /// Background pool.
+    /// that committing writers may wait for. The context never
+    /// moves a transaction into the Background pool; one whose statements all
+    /// plan as Background work (or that has none) is admitted there as before.
     ///
     /// Recommended host tiering: user requests use the default context
     /// (immediate, Foreground) on a governor with
     /// `RuntimeGovernor::set_foreground_preempts_queued_background(true)`; a
     /// replay writer and shadow-comparison reads rank `Background` with a
     /// wait. Users then never yield to queued ranked work, the writer is
-    /// FIFO with (and never starved by) shadow reads, and maintenance keeps
+    /// FIFO with waiting shadow reads, and maintenance keeps
     /// its own pool. The same policy applies to the handle's other context-taking
     /// admissions: bounded and graph read snapshots, admitted queries and
     /// streaming reads, `transaction_context` and `with_transaction_context`,

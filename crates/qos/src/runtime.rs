@@ -1847,9 +1847,12 @@ impl ContendedResource {
 /// admission yet is assumed to need everything.
 ///
 /// If the waiter is short of some resources, the request competes only when
-/// it uses one of those: taking a resource the waiter already has enough of
-/// cannot delay it, so automatic checkpoint work passes a waiter short of
-/// Foreground I/O even when the CPU it also needs is shared. If the waiter
+/// it uses one of those, so automatic checkpoint work passes a waiter short
+/// of Foreground I/O even when the CPU it also needs is shared. This relaxes
+/// the large-waiter protection of #303 for a waiter that needs several
+/// resources: two complementary streams of immediate requests can alternate
+/// in holding what it is short of and delay it indefinitely. A single stream
+/// cannot, because it then uses the missing resource and yields. If the waiter
 /// fits, the request competes when admitting it would leave the waiter
 /// short of any shared resource.
 ///

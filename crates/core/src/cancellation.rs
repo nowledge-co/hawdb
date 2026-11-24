@@ -509,7 +509,7 @@ impl RuntimeTaskContext {
     /// maintenance. Work that holds it -- in particular a long read -- delays
     /// the checkpoint that committing writers may be waiting for, so prefer
     /// [`Self::with_admission_queue_priority`], which only lowers the queue
-    /// rank. Transactions never move into the Background pool: for a mutation
+    /// rank. The context never moves a transaction into the Background pool: for a mutation
     /// this setting lowers only its queue rank, because its commit can depend
     /// on Background maintenance.
     pub fn with_admission_priority(mut self, priority: RuntimeWorkPriority) -> Self {
