@@ -76,6 +76,7 @@ fn main() {
             .unwrap();
         for round in 0..rounds + 2 {
             let value = Value::Int(round as i64 + 1);
+            let mutation_started = Instant::now();
             if workload == "node_property" {
                 store
                     .set_node_property(&mut catalog, "Note", None, "value", value.clone())
@@ -97,6 +98,7 @@ fn main() {
                     )
                     .unwrap();
             }
+            let mutation_elapsed = mutation_started.elapsed();
             let started = Instant::now();
             store.checkpoint(&catalog).unwrap();
             let elapsed = started.elapsed();
@@ -137,7 +139,7 @@ fn main() {
             }
             println!(
                 "{}",
-                json!({"workload":workload,"nodes":nodes,"edges":edges,"round":round,"warmup":round<2,"checkpoint_ns":elapsed.as_nanos(),"new_graph_bytes":graph_bytes,"new_adjacency_bytes":adjacency_bytes,"durability":"SyncOnEveryWrite","residency":"OutOfCore"})
+                json!({"workload":workload,"nodes":nodes,"edges":edges,"round":round,"warmup":round<2,"checkpoint_ns":elapsed.as_nanos(),"mutation_ns":mutation_elapsed.as_nanos(),"new_graph_bytes":graph_bytes,"new_adjacency_bytes":adjacency_bytes,"durability":"SyncOnEveryWrite","residency":"OutOfCore"})
             );
         }
         store.scrub_storage().unwrap();

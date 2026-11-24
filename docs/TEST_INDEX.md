@@ -5082,7 +5082,10 @@ independent origins, legacy uniform origins, future-version refusal and the
 common checkpoint replay boundary. The existing general root integrity family
 `api::tests::graph_bundle_integrity` now damages a descriptor carried across
 node-property checkpoints with A<G, requiring unchanged head, poisoned owner
-and invalidated captured reader. Existing interrupted derived-repair fixtures
+and invalidated captured reader. The existing general root read-transaction owner additionally pins an A<G
+snapshot across four relationship-property rebuilds, compares actual Cypher
+traversal rows with its original values, and verifies family-specific retention
+and release. Existing interrupted derived-repair fixtures
 quarantine and resume A<G sources on both sides of head publication. The existing
 power-loss carry fixture starts from populated A<G roots and retains the full
 lost/torn/reordered plan inventory under both durability policies. Existing test lanes, profiles, timeouts and
@@ -5101,7 +5104,9 @@ follows from this local manual benchmark.
 The companion embedded API measurement includes immutable sealed-root closure
 validation and publication:
 `cargo run --locked --release --example graph_checkpoint_carry_bench -- <new-root> <nodes> <edges> <rounds> <carry|rebuild>`.
-It uses identical workload and warmup conventions through parameter-free fixture
+It disables background maintenance through typed runtime configuration to keep
+checkpoint work inside explicit calls, and records synchronized mutation time
+separately. It uses identical workload and warmup conventions through fixture
 Cypher and the public `Database::checkpoint` API. Timed work excludes queries
 and record assertions; output labels the API explicitly. Keep these results
 separate from the low-level GraphStore measurement. Both preserve the default

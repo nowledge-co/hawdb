@@ -80,7 +80,9 @@ now corrupts an adjacency descriptor carried through node property updates,
 while preserving its filesystem identity stamp, and requires failed publication,
 unchanged head and invalidated reader admission. Existing interrupted repair
 and lost/torn/reordered power-loss fixtures now start from A<G roots. No new CI
-lane is added.
+lane is added. An embedded read transaction also retains an A<G base across
+four relationship-property rebuilds, compares original traversal rows and
+checks independent adjacency reclamation after release.
 
 The manual `graph_checkpoint_carry` benchmark accepts a new fixture directory,
 node count, relationship count, measured rounds and expected behavior (`carry`
@@ -90,7 +92,10 @@ relationship-property rebuild control, emits JSONL durations and fresh graph
 and adjacency file bytes, verifies every updated record, then scrubs and reopens.
 The companion `graph_checkpoint_carry_bench` example uses public embedded
 `Database::checkpoint`, including sealed-root closure validation/publication,
-and emits the same measurements with an explicit API label. Keep low-level
+and emits the same measurements with an explicit API label. Its typed runtime
+configuration disables background maintenance so checkpoint work cannot move
+into the untimed mutation phase. Durability stays at the default. Both harnesses
+record mutation time separately, including synchronized commit. Keep low-level
 GraphStore and embedded API timings separate.
 
 Fixture construction, mutation and post-checkpoint verification are outside the

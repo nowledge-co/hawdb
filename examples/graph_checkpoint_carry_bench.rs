@@ -24,10 +24,12 @@ fn main() {
     assert!(matches!(args[4].as_str(), "carry" | "rebuild"));
     for workload in ["node_property", "relationship_property"] {
         let path = root.join(workload);
-        let config = DatabaseConfig {
+        let mut config = DatabaseConfig {
             storage_residency_mode: StorageResidencyMode::OutOfCore,
             ..Default::default()
         };
+        // Keep all checkpoint work inside the explicit timed calls.
+        config.runtime_capabilities.background_maintenance = false;
         let mut db = Database::open_with_config(&path, config.clone()).unwrap();
         db.query("CREATE INDEX ON :Note(id)").unwrap();
         for id in 0..nodes {
@@ -63,7 +65,9 @@ fn main() {
                     edges,
                 )
             };
+            let mutation_started = Instant::now();
             db.query(&update).unwrap();
+            let mutation_elapsed = mutation_started.elapsed();
             let started = Instant::now();
             db.checkpoint().unwrap();
             let elapsed = started.elapsed();
@@ -94,7 +98,7 @@ fn main() {
             }
             println!(
                 "{}",
-                json!({"api":"Database::checkpoint","workload":workload,"nodes":nodes,"edges":edges,"round":round,"warmup":round<2,"checkpoint_ns":elapsed.as_nanos(),"new_graph_bytes":graph_bytes,"new_adjacency_bytes":adjacency_bytes,"durability":"SyncOnEveryWrite","residency":"OutOfCore"})
+                json!({"api":"Database::checkpoint","automatic_checkpoint":false,"workload":workload,"nodes":nodes,"edges":edges,"round":round,"warmup":round<2,"checkpoint_ns":elapsed.as_nanos(),"mutation_ns":mutation_elapsed.as_nanos(),"new_graph_bytes":graph_bytes,"new_adjacency_bytes":adjacency_bytes,"durability":"SyncOnEveryWrite","residency":"OutOfCore"})
             );
         }
         db.scrub_storage().unwrap();

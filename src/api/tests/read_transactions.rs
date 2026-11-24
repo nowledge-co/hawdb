@@ -84,10 +84,15 @@ fn read_transaction_retains_carried_graph_base_until_release() {
     let mut reader = db.begin_read_transaction().unwrap();
     let view = reader.published_read_view();
     let physical = view.physical_generations().collect::<Vec<_>>();
-    assert_eq!(physical.len(), 2);
+    assert_eq!(physical.len(), 3);
     assert_ne!(
         physical[0], physical[1],
         "reader must own C and an older graph G"
+    );
+    assert_eq!(physical[2], view.adjacency_generation().unwrap());
+    assert!(
+        physical[2] < physical[1],
+        "node properties retain an older adjacency A"
     );
     let graph_generation = physical[1].0;
     let root = db
@@ -837,4 +842,60 @@ fn read_transaction_rejects_checkpoint_control() {
     assert!(error
         .to_string()
         .contains("CHECKPOINT is not allowed inside a read transaction"));
+}
+
+#[test]
+fn read_transaction_retains_independent_adjacency_origin_until_release() {
+    let path = unique_test_dir("read_transaction_independent_adjacency");
+    let mut db = Database::open_with_config(
+        &path,
+        DatabaseConfig {
+            storage_residency_mode: StorageResidencyMode::OutOfCore,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let automatic_suspension = db.runtime.suspend_automatic_checkpoint().unwrap();
+    db.query("CREATE (:PinnedNote {id: 1, value: 0})-[:LINK {weight: 0}]->(:PinnedTarget {id: 2})")
+        .unwrap();
+    db.checkpoint().unwrap();
+    db.query("MATCH (n:PinnedNote) SET n.value = 1").unwrap();
+    db.checkpoint().unwrap();
+    let mut reader = db.begin_read_transaction().unwrap();
+    let view = reader.published_read_view();
+    let adjacency = view.adjacency_generation().unwrap().0;
+    assert!(adjacency < view.graph_generation().unwrap().0);
+    let root = active_storage_root(&path);
+    let old_adjacency = root.join(
+        hawdb_storage::artifact_files::canonical_adjacency_artifact_generation_file(adjacency),
+    );
+    let query = "MATCH (n:PinnedNote)-[r:LINK]->() RETURN n.value AS value, r.weight AS weight";
+    let expected = reader.query(query).unwrap().rows;
+    assert_eq!(expected.len(), 1);
+    assert_eq!(expected[0]["value"], Value::Int(1));
+    assert_eq!(expected[0]["weight"], Value::Int(0));
+    for weight in 1..5 {
+        db.query_with_params(
+            "MATCH ()-[r:LINK]->() SET r.weight = $weight",
+            &BTreeMap::from([("weight".into(), Value::Int(weight))]),
+        )
+        .unwrap();
+        db.checkpoint().unwrap();
+        assert!(old_adjacency.exists());
+        assert_eq!(reader.query(query).unwrap().rows, expected);
+        assert_eq!(
+            db.query(query).unwrap().rows[0]["weight"],
+            Value::Int(weight)
+        );
+    }
+    assert!(!root
+        .join(hawdb_storage::artifact_files::canonical_artifact_generation_file(adjacency))
+        .exists());
+    drop(reader);
+    db.checkpoint().unwrap();
+    assert!(!old_adjacency.exists());
+    db.scrub_storage().unwrap();
+    drop(automatic_suspension);
+    drop(db);
+    std::fs::remove_dir_all(path).unwrap();
 }
