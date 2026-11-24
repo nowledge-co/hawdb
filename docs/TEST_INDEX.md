@@ -606,8 +606,13 @@ durable four-CPU handle with the default one-task Background pool and 20 ms
 automatic checkpoints: a Background-ranked replay writer commits 100 times
 beside two Background-ranked shadow readers that hold each read open for 20 ms
 and a greedy user reader; checkpoints keep completing, users never see
-`queued_ahead`, and nothing enters the Background pool; the same holds for a
-writer given `with_admission_priority(Background)`. Root
+`queued_ahead`; the same holds for a writer given
+`with_admission_priority(Background)`. Parked writers are covered by
+`automatic_checkpoint::tests::headroom::queued_callers`: a real commit waits for
+the paused checkpoint owner near capacity, with the writer on four CPUs at the
+default Background limit, beside a long shadow read, and on two CPUs with a
+caller queued for I/O; the owner's first attempt must be admitted and the commit
+must succeed. Root
 `api::tests::checkpoint_beside_queued_waiters` (feature
 `background-maintenance`) open a durable database with a 20 ms automatic
 checkpoint age on a four-CPU governor with one Foreground I/O slot and write

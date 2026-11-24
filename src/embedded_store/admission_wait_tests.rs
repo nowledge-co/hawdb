@@ -963,7 +963,8 @@ mod recommended_tiering {
         let (_, _, queued_ahead) = user.join().unwrap();
         assert_eq!(queued_ahead, 0, "ranked work made a user request queue");
         assert!(shadow_reads.load(Ordering::Acquire) > 0);
-        assert_eq!(governor.snapshot().active_background_tasks, 0);
+        // The Background pool is the checkpoint owner's here; it may be running
+        // now, so its occupancy is not asserted.
         assert_eq!(governor.snapshot().queued_admission_waiters, 0);
     }
 
