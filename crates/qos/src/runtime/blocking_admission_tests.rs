@@ -379,3 +379,137 @@ fn short_foreground_wait_takes_the_slot_a_background_task_releases() {
     assert_eq!(trace.admissions(), 1);
     assert!(trace.queued_for() > Duration::ZERO);
 }
+
+#[test]
+fn foreground_waiter_yields_to_aged_background_waiters_at_most_once() {
+    // Three aged Background waiters (replay, retrieval, maintenance) and one
+    // short-deadline Foreground waiter: exactly one Background admission may
+    // overtake the Foreground waiter, then it is next.
+    for strict in [false, true] {
+        let governor = one_cpu_governor();
+        governor.set_foreground_preempts_queued_background(strict);
+        let held = governor
+            .try_admit(request(RuntimeWorkPriority::Foreground))
+            .unwrap();
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let spawn = |priority: RuntimeWorkPriority, wait_until: Option<Instant>| {
+            let governor = governor.clone();
+            let order = Arc::clone(&order);
+            thread::spawn(move || {
+                let permit = governor
+                    .admit_waiting(
+                        request(priority),
+                        &RuntimeTaskContext::default(),
+                        wait_until,
+                    )
+                    .unwrap();
+                order.lock().unwrap().push(priority);
+                drop(permit);
+            })
+        };
+        let background = (0..3)
+            .map(|queued| {
+                let waiter = spawn(RuntimeWorkPriority::Background, None);
+                wait_for_queue(&governor, queued + 1);
+                waiter
+            })
+            .collect::<Vec<_>>();
+        let foreground = spawn(
+            RuntimeWorkPriority::Foreground,
+            Instant::now().checked_add(Duration::from_secs(10)),
+        );
+        wait_for_queue(&governor, 4);
+        {
+            // Every Background waiter has aged before capacity frees.
+            let mut state = mutex_lock(&governor.inner.state);
+            for waiter in &mut state.admission_waiters {
+                if waiter.priority == RuntimeWorkPriority::Background {
+                    waiter.enqueued_at = Instant::now() - BACKGROUND_ADMISSION_AGING;
+                }
+            }
+        }
+        drop(held);
+        foreground.join().unwrap();
+        for waiter in background {
+            waiter.join().unwrap();
+        }
+        assert_eq!(
+            *order.lock().unwrap(),
+            [
+                RuntimeWorkPriority::Background,
+                RuntimeWorkPriority::Foreground,
+                RuntimeWorkPriority::Background,
+                RuntimeWorkPriority::Background,
+            ],
+            "strict = {strict}"
+        );
+        assert_eq!(governor.snapshot().queued_admission_waiters, 0);
+    }
+}
+
+#[test]
+fn a_new_foreground_waiter_may_again_be_overtaken_once() {
+    // The once-only rule is per Foreground waiter: Background work still
+    // progresses past each newly queued Foreground waiter, so neither class
+    // starves.
+    let governor = one_cpu_governor();
+    let held = governor
+        .try_admit(request(RuntimeWorkPriority::Foreground))
+        .unwrap();
+    let first_background = governor.admission_waiter(RuntimeWorkPriority::Background);
+    let second_background = governor.admission_waiter(RuntimeWorkPriority::Background);
+    let first_foreground = governor.admission_waiter(RuntimeWorkPriority::Foreground);
+    {
+        let mut state = mutex_lock(&governor.inner.state);
+        for waiter in &mut state.admission_waiters {
+            waiter.enqueued_at = Instant::now() - BACKGROUND_ADMISSION_AGING;
+        }
+    }
+    let background = request(RuntimeWorkPriority::Background);
+    let foreground = request(RuntimeWorkPriority::Foreground);
+    drop(held);
+    drop(
+        governor
+            .try_admit_waiter(&first_background, background)
+            .unwrap(),
+    );
+    // The overtaken Foreground waiter is next, ahead of the aged waiter.
+    assert_eq!(
+        governor
+            .try_admit_waiter(&second_background, background)
+            .unwrap_err()
+            .code,
+        RuntimeAdmissionCode::QueuedAhead
+    );
+    drop(
+        governor
+            .try_admit_waiter(&first_foreground, foreground)
+            .unwrap(),
+    );
+    // A Foreground waiter queued later has not yielded yet.
+    let second_foreground = governor.admission_waiter(RuntimeWorkPriority::Foreground);
+    assert_eq!(
+        governor
+            .try_admit_waiter(&second_foreground, foreground)
+            .unwrap_err()
+            .code,
+        RuntimeAdmissionCode::QueuedAhead
+    );
+    drop(
+        governor
+            .try_admit_waiter(&second_background, background)
+            .unwrap(),
+    );
+    drop(
+        governor
+            .try_admit_waiter(&second_foreground, foreground)
+            .unwrap(),
+    );
+    drop((
+        first_background,
+        second_background,
+        first_foreground,
+        second_foreground,
+    ));
+    assert_eq!(governor.snapshot().queued_admission_waiters, 0);
+}

@@ -574,6 +574,9 @@ struct RuntimeAdmissionQueueEntry {
     priority: RuntimeWorkPriority,
     enqueued_at: Instant,
     signal: Arc<RuntimeAdmissionSignal>,
+    /// A Foreground waiter that a Background waiter was admitted ahead of.
+    /// It yields to aged Background waiters at most once (#1947).
+    overtaken: bool,
 }
 
 #[derive(Debug, Default)]
@@ -928,6 +931,7 @@ impl RuntimeGovernor {
                     priority,
                     enqueued_at,
                     signal: Arc::clone(&signal),
+                    overtaken: false,
                 });
             id
         };
@@ -1031,6 +1035,16 @@ impl RuntimeGovernor {
                 None => {
                     if let Some(waiter) = waiter {
                         remove_admission_waiter(&mut state, waiter.id);
+                        // A queued Background waiter is admitted only when
+                        // selected, so every Foreground waiter still queued
+                        // was just overtaken by an aged Background waiter.
+                        if waiter.priority == RuntimeWorkPriority::Background {
+                            for entry in &mut state.admission_waiters {
+                                if entry.priority == RuntimeWorkPriority::Foreground {
+                                    entry.overtaken = true;
+                                }
+                            }
+                        }
                     }
                     let executor_thread_limit = state.limits.effective_cpu_slots;
                     reserve(&mut state, request);
@@ -1733,21 +1747,29 @@ fn admission_queue_error(
     }
 }
 
+/// Selects the waiter whose turn it is.
+///
+/// Foreground waiters go first, FIFO. An aged Background waiter (queued for
+/// `BACKGROUND_ADMISSION_AGING`) goes ahead of them so it cannot starve, but
+/// only while the oldest Foreground waiter has not already been overtaken:
+/// each Foreground waiter yields to aged Background work at most once.
 fn selected_admission_waiter(
     waiters: &VecDeque<RuntimeAdmissionQueueEntry>,
     now: Instant,
 ) -> Option<(usize, bool)> {
-    if let Some((index, _)) = waiters.iter().enumerate().find(|(_, waiter)| {
-        waiter.priority == RuntimeWorkPriority::Background
-            && now.saturating_duration_since(waiter.enqueued_at) >= BACKGROUND_ADMISSION_AGING
-    }) {
+    let foreground = waiters
+        .iter()
+        .position(|waiter| waiter.priority == RuntimeWorkPriority::Foreground);
+    let foreground_may_yield = foreground.is_none_or(|index| !waiters[index].overtaken);
+    if foreground_may_yield
+        && let Some(index) = waiters.iter().position(|waiter| {
+            waiter.priority == RuntimeWorkPriority::Background
+                && now.saturating_duration_since(waiter.enqueued_at) >= BACKGROUND_ADMISSION_AGING
+        })
+    {
         return Some((index, true));
     }
-    if let Some((index, _)) = waiters
-        .iter()
-        .enumerate()
-        .find(|(_, waiter)| waiter.priority == RuntimeWorkPriority::Foreground)
-    {
+    if let Some(index) = foreground {
         return Some((index, false));
     }
     waiters.front().map(|_| (0, false))
