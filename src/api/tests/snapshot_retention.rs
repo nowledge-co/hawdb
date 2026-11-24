@@ -39,17 +39,21 @@ fn fixture(path: &std::path::Path, mode: StorageResidencyMode) -> Database {
     db
 }
 
-fn generation(db: &Database) -> u64 {
-    db.published_read_view()
-        .unwrap()
-        .physical_generation()
-        .unwrap()
-        .0
+fn generation(db: &Database) -> (u64, u64) {
+    let view = db.published_read_view().unwrap();
+    (
+        view.physical_generation().unwrap().0,
+        view.graph_generation().unwrap().0,
+    )
 }
 
-fn assert_roots(db: &Database, expected: &BTreeSet<u64>) {
+fn assert_roots(db: &Database, expected: &BTreeSet<(u64, u64)>) {
     let files = db.storage_artifact_file_sizes().unwrap();
-    for prefix in ["canonical.", "checkpoint."] {
+    for (prefix, graph) in [("canonical.", true), ("checkpoint.", false)] {
+        let expected = expected
+            .iter()
+            .map(|&(checkpoint, canonical)| if graph { canonical } else { checkpoint })
+            .collect::<BTreeSet<_>>();
         let actual = files
             .keys()
             .filter_map(|file| {
@@ -59,11 +63,11 @@ fn assert_roots(db: &Database, expected: &BTreeSet<u64>) {
                     .ok()
             })
             .collect::<BTreeSet<_>>();
-        assert_eq!(&actual, expected, "{prefix}");
+        assert_eq!(actual, expected, "{prefix}");
     }
 }
 
-fn checkpoint_roots(db: &mut Database, pinned: &[u64]) {
+fn checkpoint_roots(db: &mut Database, pinned: &[(u64, u64)]) {
     let previous = generation(db);
     db.checkpoint().unwrap();
     let current = generation(db);
@@ -238,7 +242,7 @@ fn result_budget_rollback_keeps_the_writer_snapshot_until_conflict_retirement() 
         let old_generation = db
             .published_read_view()
             .unwrap()
-            .physical_generation()
+            .graph_generation()
             .unwrap()
             .0;
         let mut writer = db
@@ -396,12 +400,10 @@ fn queued_snapshot_survives_physical_reclamation_and_refunds_cancelled_admission
         let governor = governor();
         let context = crate::RuntimeTaskContext::default();
         let before = db.commit_epoch().unwrap();
-        let old_generation = db
-            .published_read_view()
-            .unwrap()
-            .physical_generation()
-            .unwrap()
-            .0;
+        let old_view = db.published_read_view().unwrap();
+        let old_generation = old_view.graph_generation().unwrap().0;
+        let old_checkpoint = old_view.physical_generation().unwrap().0;
+        assert_ne!(old_checkpoint, old_generation);
         let mut writer = db
             .begin_admitted_transaction(
                 ConcurrentTransactionOptions::optimistic(),
@@ -437,6 +439,10 @@ fn queued_snapshot_survives_physical_reclamation_and_refunds_cancelled_admission
         assert_eq!(governor.snapshot().active_foreground_tasks, 1);
         assert!(active_storage_root(&path)
             .join(format!("canonical.{old_generation}.hawdb"))
+            .exists());
+        // G is still current, so C proves that the queued snapshot owns a pin.
+        assert!(active_storage_root(&path)
+            .join(format!("checkpoint.{old_checkpoint}.hawdb"))
             .exists());
         assert_eq!(db.commit_epoch().unwrap(), before);
         if cancelled {
@@ -475,9 +481,16 @@ fn queued_snapshot_survives_physical_reclamation_and_refunds_cancelled_admission
             })
         );
         drop(reader);
+        // A cancelled writer leaves the graph current. Advance it explicitly
+        // before expecting reader retirement to make the old bundle reclaimable.
+        db.query("CREATE (:RetentionProbe)").unwrap();
+        db.checkpoint().unwrap();
         db.checkpoint().unwrap();
         assert!(!active_storage_root(&path)
             .join(format!("canonical.{old_generation}.hawdb"))
+            .exists());
+        assert!(!active_storage_root(&path)
+            .join(format!("checkpoint.{old_checkpoint}.hawdb"))
             .exists());
         drop(db);
         std::fs::remove_dir_all(path).unwrap();

@@ -647,9 +647,26 @@ fn projected_graph_registration_and_admission_include_canonical_edges() {
 fn projected_graph_relationship_corruption_fails_without_partial_results() {
     for algorithm in ["page_rank", "louvain"] {
         let mut fixture = Fixture::new(StorageResidencyMode::OutOfCore, 0);
-        // Publish a fresh generation without reopening: startup may have
-        // cached verified segments, which must not mask this injected read error.
+        // Dirty the graph without changing topology, forcing a fresh bundle
+        // instead of carrying startup-cached verified segments.
+        let old_generation = fixture
+            .db()
+            .storage_residency_report()
+            .unwrap()
+            .canonical_generation;
+        fixture
+            .db()
+            .query("MATCH (n) SET n.corruption_probe = 1")
+            .unwrap();
         fixture.db().checkpoint().unwrap();
+        assert_ne!(
+            fixture
+                .db()
+                .storage_residency_report()
+                .unwrap()
+                .canonical_generation,
+            old_generation
+        );
         let before = frontier(&fixture.path);
         let epoch = fixture.db().commit_epoch();
         // Canonical relationship segments follow the node segments. Corrupt

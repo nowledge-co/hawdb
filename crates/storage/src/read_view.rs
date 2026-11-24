@@ -494,6 +494,12 @@ impl PublishedReadView {
         self.physical_generation
     }
 
+    /// Graph bundle retained by this view, which may precede the checkpoint
+    /// generation when a checkpoint carries unchanged graph artifacts.
+    pub const fn graph_generation(self) -> Option<ManifestGeneration> {
+        self.graph_generation
+    }
+
     pub const fn physical_base_is_current(self) -> bool {
         matches!(
             self.checkpoint_commit_epoch,

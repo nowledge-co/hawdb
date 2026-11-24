@@ -4707,6 +4707,9 @@ feature; `PERSISTENT_FORMAT_VERSION` is unchanged.
 The existing storage unit owner (`//crates/storage:hawdb_storage_tests`)
 includes `store::graph_checkpoint::graph_bundle_tests` and the v2 manifest
 codec guards. They cover complete payload/descriptor carry, byte/inode identity,
+including checksum-valid rejection of published v2 manifests whose graph
+generation and source epoch are both `none`, with explicit G=C, empty initial
+and legacy v1 positive controls. They also cover
 relational DDL/writes, backup/restore/scrub, graph WAL replay, direct graph
 Catalog changes, post-reopen carry, projection-debt status and candidate cancellation/catch-up. The original inline
 `store::tests` functions are mechanically included from
@@ -4722,6 +4725,16 @@ The existing power-loss discovery/sharding owner includes
 it materializes the existing complete lost/torn/reordered publication plans
 around both head-rename boundaries and acknowledgement. No profile, timeout,
 feature matrix or new CI lane is introduced.
+
+Existing reader/cohort tests compare checkpoint C and graph G independently in
+both Materialized and OutOfCore modes, including queued cancellation, failed
+writer retirement and concurrent final fork drop. A graph bundle that is still
+current remains retained after reader release; reclamation checks first advance
+the graph and its preceding checkpoint. Corruption fixtures explicitly dirty
+the graph when they require an uncached fresh bundle, and target manifest G.
+These cases remain in the general, concurrent, recovery and analytics-core-general
+root partitions; replay the four owners with
+`bazel test //:hawdb_unit_general_tests //:hawdb_unit_concurrent_tests //:hawdb_unit_recovery_tests //:hawdb_unit_analytics_core_general_tests`.
 
 The full storage TLA suite owns `HawDBGraphBundleCarry` and its six negative controls plus a
 carried-suffix reachability control; see [scope and refinement argument](GRAPH_BUNDLE_CARRY.md). Replay

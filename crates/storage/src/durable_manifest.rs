@@ -1203,6 +1203,16 @@ impl DurableManifest {
                 return Err(HawDBError::Storage(format!("manifest revision {manifest_revision} has an invalid graph bundle field set: {field}")));
             }
         }
+        if manifest_revision == 2
+            && manifest.checkpoint_generation.is_some()
+            && (manifest.graph_artifact_generation.is_none()
+                || manifest.graph_artifact_source_commit_epoch.is_none())
+        {
+            return Err(HawDBError::Storage(
+                "published v2 manifest requires an explicit graph bundle generation/epoch binding"
+                    .into(),
+            ));
+        }
         manifest.relational_row_generation_artifacts = relational_row.finish_row()?;
         manifest.canonical_adjacency_generation_artifacts = canonical_adjacency.finish()?;
         manifest.relational_overflow_generation_artifacts =

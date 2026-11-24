@@ -192,6 +192,31 @@ fn frozen_v1_bytes_preserve_all_binding_fields_and_paths() {
 }
 
 #[test]
+fn published_v2_requires_explicit_graph_values_even_without_carry() {
+    let encoded = published().encode();
+    let decoded = DurableManifest::decode(&encoded).unwrap();
+    assert_eq!(decoded.graph_artifact_generation, Some(7));
+    assert_eq!(decoded.graph_artifact_source_commit_epoch, Some(42));
+    let mut missing = fields(&encoded);
+    for field in [
+        "graph_artifact_generation",
+        "graph_artifact_source_commit_epoch",
+    ] {
+        replace(&mut missing, field, "none");
+    }
+    assert!(rejected(&frame(&missing)).contains("explicit graph bundle"));
+
+    let initial = DurableManifest::decode(&DurableManifest::default().encode()).unwrap();
+    assert_eq!(initial.checkpoint_generation, None);
+    assert_eq!(initial.graph_artifact_generation, None);
+    assert_eq!(initial.graph_artifact_source_commit_epoch, None);
+    let legacy = DurableManifest::decode(PUBLISHED).unwrap();
+    assert_eq!(legacy.graph_artifact_generation, None);
+    assert_eq!(legacy.graph_generation(), Some(7));
+    assert_eq!(legacy.graph_source_commit_epoch(), 42);
+}
+
+#[test]
 fn v2_graph_binding_round_trip_and_old_reader_refusal() {
     let mut carried = published();
     carried.graph_artifact_generation = Some(3);

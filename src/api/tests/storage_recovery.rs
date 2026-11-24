@@ -583,7 +583,7 @@ fn entity_query_fails_closed_when_an_out_of_core_segment_is_corrupted() {
         .unwrap();
     db.checkpoint().unwrap();
 
-    let canonical_path = active_generation_path(&path, "checkpoint_generation", "canonical");
+    let canonical_path = active_generation_path(&path, "graph_artifact_generation", "canonical");
     let mut bytes = std::fs::read(&canonical_path).unwrap();
     bytes[24] ^= 0xff;
     std::fs::write(&canonical_path, bytes).unwrap();
@@ -632,7 +632,7 @@ fn public_query_fails_closed_when_an_out_of_core_segment_is_corrupted() {
         .unwrap();
     db.checkpoint().unwrap();
 
-    let canonical_path = active_generation_path(&path, "checkpoint_generation", "canonical");
+    let canonical_path = active_generation_path(&path, "graph_artifact_generation", "canonical");
     let mut bytes = std::fs::read(&canonical_path).unwrap();
     bytes[24] ^= 0xff;
     std::fs::write(&canonical_path, bytes).unwrap();
@@ -1840,7 +1840,7 @@ fn storage_scrub_streams_strong_artifact_verification_and_poisons_on_corruption(
     assert!(clean.sha256_verified_file_count >= 2);
     assert!(clean.checked_bytes > 0);
 
-    let canonical_path = active_generation_path(&path, "checkpoint_generation", "canonical");
+    let canonical_path = active_generation_path(&path, "graph_artifact_generation", "canonical");
     let mut bytes = std::fs::read(&canonical_path).unwrap();
     bytes[24] ^= 0xff;
     std::fs::write(&canonical_path, bytes).unwrap();
@@ -2501,7 +2501,7 @@ fn checkpoint_query_invokes_storage_checkpoint() {
 
     let checkpoint = read_test_durable_text(&active_checkpoint_path(&path)).unwrap();
     assert!(checkpoint.contains("canonical_records\ttrue\n"));
-    assert!(active_generation_path(&path, "checkpoint_generation", "canonical").exists());
+    assert!(active_generation_path(&path, "graph_artifact_generation", "canonical").exists());
     assert_eq!(read_test_wal(&path).unwrap(), "");
 
     std::fs::remove_dir_all(path).unwrap();
@@ -2754,7 +2754,12 @@ fn user_invalidates_old_snapshots_when_checkpoint_or_projection_reads_corrupt_ca
         snapshot
             .query_sql("SELECT id FROM snapshot_probe WHERE id = 1")
             .expect("healthy snapshot probe succeeds before canonical corruption");
-        let canonical = active_generation_path(&path, "checkpoint_generation", "canonical");
+        // Force a graph rebuild; an unchanged graph intentionally carries its
+        // already-admitted bundle without reading canonical payloads.
+        if checkpoint {
+            db.query("CREATE (:Memory {id: 'two'})").unwrap();
+        }
+        let canonical = active_generation_path(&path, "graph_artifact_generation", "canonical");
         let mut bytes = std::fs::read(&canonical).unwrap();
         bytes[24] ^= 0xff;
         std::fs::write(canonical, bytes).unwrap();

@@ -653,7 +653,13 @@ fn out_of_core_reader_pin_retains_its_canonical_generation_until_drop() {
     assert_eq!(pinned_view.checkpoint_commit_epoch(), Some(2));
     let pinned_generation = pinned_view.physical_generation().unwrap().0;
     let data = active_storage_root(&path);
-    let mut generations = vec![pinned_generation];
+    let mut generations = vec![(
+        pinned_generation,
+        db.storage_residency_report()
+            .unwrap()
+            .canonical_generation
+            .unwrap(),
+    )];
     for id in 2..=5 {
         db.query_with_params(
             "CREATE (:Memory {id: $id, title: 'Newer'})",
@@ -661,17 +667,22 @@ fn out_of_core_reader_pin_retains_its_canonical_generation_until_drop() {
         )
         .unwrap();
         db.checkpoint().unwrap();
-        generations.push(
+        generations.push((
             db.published_read_view()
                 .unwrap()
                 .physical_generation()
                 .unwrap()
                 .0,
-        );
+            db.storage_residency_report()
+                .unwrap()
+                .canonical_generation
+                .unwrap(),
+        ));
     }
 
-    for prefix in ["canonical", "checkpoint"] {
-        for (index, generation) in generations.iter().enumerate() {
+    for (prefix, graph) in [("canonical", true), ("checkpoint", false)] {
+        for (index, &(checkpoint, canonical)) in generations.iter().enumerate() {
+            let generation = if graph { canonical } else { checkpoint };
             let expected = index == 0 || index >= generations.len() - 2;
             assert_eq!(
                 data.join(format!("{prefix}.{generation}.hawdb")).exists(),
@@ -694,11 +705,21 @@ fn out_of_core_reader_pin_retains_its_canonical_generation_until_drop() {
         .physical_generation()
         .unwrap()
         .0;
-    for generation in &generations[..generations.len() - 1] {
+    for &(_, generation) in &generations[..generations.len() - 1] {
         assert!(!data.join(format!("canonical.{generation}.hawdb")).exists());
     }
-    for generation in [*generations.last().unwrap(), current_generation] {
-        assert!(data.join(format!("canonical.{generation}.hawdb")).exists());
+    let current_graph = db
+        .storage_residency_report()
+        .unwrap()
+        .canonical_generation
+        .unwrap();
+    assert_eq!(current_graph, generations.last().unwrap().1);
+    assert!(data
+        .join(format!("canonical.{current_graph}.hawdb"))
+        .exists());
+    assert_ne!(current_generation, current_graph);
+    for generation in [generations.last().unwrap().0, current_generation] {
+        assert!(data.join(format!("checkpoint.{generation}.hawdb")).exists());
     }
     drop(db);
     std::fs::remove_dir_all(path).unwrap();

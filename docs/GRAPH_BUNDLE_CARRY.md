@@ -9,6 +9,8 @@ descriptor roots, lengths, CRCs and SHA-256 identities when unchanged. V2
 manifests bind G/E explicitly. Legacy v1 manifests resolve them to the original
 checkpoint generation/commit. V2 is emitted even when G=C; the version line
 precedes new fields so old readers refuse before interpreting unknown fields.
+Published v2 manifests require non-`none` values for both G and E, including
+G=C. Only an initial manifest without a checkpoint may omit their values.
 Payload codecs and immutable-object reference domains are unchanged.
 
 ## Eligibility and publication
@@ -43,6 +45,8 @@ preceding graph root before reclamation.
 
 `PublishedReadView` captures C and G from the live durable store before making
 a detached snapshot. `PhysicalGenerationPins` keeps checkpoint and graph sets
+separate. `PublishedReadView::physical_generation()` exposes C and
+`graph_generation()` exposes G in both residency modes. The typed pin sets stay
 separate; hidden low-level Rust publication/reclamation methods now take this
 typed set rather than a bare set of checkpoint integers. Callers construct it
 from their actual published views. Low-level owners can separately declare an
