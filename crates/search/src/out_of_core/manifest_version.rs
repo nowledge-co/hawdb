@@ -34,9 +34,14 @@ pub(super) const CONTENT_EPOCH_VERSION: u16 = 2;
 /// independently compressed and checksummed blocks behind an index.
 pub(super) const CONTENT_BLOCKS_VERSION: u16 = 3;
 
+/// Version 4 adds a segment's `descriptor_version`, written when the segment
+/// descriptor uses the V4 grammar that can omit a field's value set (#1746).
+/// Older readers reject that descriptor, so the selector refuses them first.
+pub(super) const VALUE_SUMMARY_VERSION: u16 = 4;
+
 /// The highest selector version this reader decodes. It is also the
 /// `format_version` this writer stamps on a selector above the base version.
-pub(super) const READER_VERSION: u16 = CONTENT_BLOCKS_VERSION;
+pub(super) const READER_VERSION: u16 = VALUE_SUMMARY_VERSION;
 
 pub(super) const fn base_version() -> u16 {
     BASE_VERSION

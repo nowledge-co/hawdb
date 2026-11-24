@@ -795,6 +795,11 @@ struct SearchOutOfCoreSegmentManifest<S = String> {
     document_count: usize,
     documents_digest: u64,
     source_graph_commit_epoch: Option<u64>,
+    /// `Some(4)` when the descriptor uses the V4 grammar, which can omit a
+    /// field's value set (#1746). Absent for V1-V3 descriptors. Its presence
+    /// raises the selector's `min_reader_version` to 4.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    descriptor_version: Option<u16>,
     /// How `payload_file` frames its descriptor segments. Absent means
     /// `stream1`; `blocks1` requires selector version 3 (#1917).
     #[serde(
@@ -803,6 +808,9 @@ struct SearchOutOfCoreSegmentManifest<S = String> {
     )]
     content_encoding: content_blocks::ContentEncoding,
 }
+
+/// The descriptor grammar that can omit a value set (#1746).
+pub(crate) const VALUE_SUMMARY_DESCRIPTOR_VERSION: u16 = 4;
 
 /// One immutable mutation artifact selected by the active manifest.
 ///
@@ -988,6 +996,12 @@ impl SearchOutOfCoreManifestBody {
     /// base reader.
     fn required_reader_version(&self) -> u16 {
         if self
+            .segments
+            .iter()
+            .any(|segment| segment.descriptor_version.is_some())
+        {
+            manifest_version::VALUE_SUMMARY_VERSION
+        } else if self
             .segments
             .iter()
             .any(|segment| !segment.content_encoding.is_stream1())
@@ -1726,6 +1740,18 @@ impl SearchOutOfCoreSegmentReader {
                 HawDBError::Storage(format!("search segment descriptor is not UTF-8: {error}"))
             })
         })?;
+        let v4 = descriptor_text.starts_with(crate::SEARCH_SEGMENT_DESCRIPTOR_V4_HEADER)
+            && descriptor_text[crate::SEARCH_SEGMENT_DESCRIPTOR_V4_HEADER.len()..]
+                .starts_with('\n');
+        match manifest.descriptor_version {
+            None if !v4 => {}
+            Some(VALUE_SUMMARY_DESCRIPTOR_VERSION) if v4 => {}
+            version => {
+                return Err(HawDBError::Storage(format!(
+                    "search segment descriptor grammar does not match manifest descriptor version {version:?}"
+                )))
+            }
+        }
         let descriptor =
             crate::document_encoding::DecodedDescriptor::decode(descriptor_text, admission)?;
         drop(descriptor_bytes);
@@ -5726,6 +5752,8 @@ fn publish_out_of_core_projection(
             document_count: index.documents.len(),
             documents_digest: lexical_documents_digest(&index.documents),
             source_graph_commit_epoch: index.source_graph_commit_epoch,
+            // The resident descriptor keeps complete value sets (V3).
+            descriptor_version: None,
             // The resident snapshot writer frames segments as envelopes.
             content_encoding: content_blocks::ContentEncoding::Stream1,
         }],
@@ -6600,6 +6628,7 @@ mod tests {
     mod target_admission;
     #[cfg(feature = "full-text-search")]
     mod text_seed;
+    mod value_summary_bounds;
     mod vector_segments;
 
     use super::*;

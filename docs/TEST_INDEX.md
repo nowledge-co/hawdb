@@ -804,6 +804,25 @@ owned by the existing search segment qualification. No lane, profile or timeout
 is added. Local replay:
 `cargo test --locked -p hawdb-search --all-features --lib content_blocks`.
 
+Search-crate owners `out_of_core::tests::value_summary_bounds`,
+`out_of_core::generation_writer::artifacts::descriptor::tests` and
+`document_encoding::descriptor::decode::tests` (`nowledge-co/hawdb#1746`), in
+the same `hawdb-search` unit lane, cover bounded segment value summaries. A
+body above the value or field bound omits the field's value set, at the exact
+bounds and with Unicode lowercase growth. An omitted set never skips a segment
+for `Eq`, `In` or `NotIn`, and filters on it return the same rows, while kept
+sets and ranges still skip segments. A V4 generation requires selector reader version
+4; readers of versions 1-3 refuse it with the typed error. The manifest-version
+owner also covers all four stream1/blocks1 and complete/omitted-summary
+combinations through epoch advance, short-field append and delete-only
+publication, plus legacy version-2 and version-3 selector reopen. A V3 descriptor with
+full bodies reopens with bounded summaries, and reader-retained value bytes and
+admitted reader memory do not grow with the body length. No lane, profile or
+timeout is added. Local replay:
+`cargo test --locked -p hawdb-search --lib value_summar` and
+`cargo test --locked -p hawdb-search --lib descriptor`.
+See [the bounds](SEARCH_PROJECTION_MANIFEST_VERSION.md#segment-value-summaries).
+
 The experimental [Windows directory-custody first packet](../scripts/windows-directory-custody-probe.ps1)
 is owned by the narrowly path-filtered, same-repository
 [Directory Custody Primitive Probe](../.github/workflows/directory-custody-probe.yml)
