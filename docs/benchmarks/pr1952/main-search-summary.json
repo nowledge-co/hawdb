@@ -1,0 +1,249 @@
+[
+  {
+    "case": "sparse-1",
+    "pairs": 51,
+    "baseline_p50_ms": 1.127334,
+    "candidate_p50_ms": 1.112708,
+    "baseline_p95_ms": 1.4215,
+    "candidate_p95_ms": 1.398542,
+    "baseline_p99_ms": 1.461167,
+    "candidate_p99_ms": 1.484958,
+    "paired_median_ratio": 0.9774246985927609,
+    "paired_median_ratio_bootstrap_95": [
+      0.9690815211164117,
+      0.9918737588652482
+    ],
+    "lexical_bytes": [
+      24654012,
+      21896748
+    ]
+  },
+  {
+    "case": "sparse-4",
+    "pairs": 51,
+    "baseline_p50_ms": 2.283375,
+    "candidate_p50_ms": 1.778584,
+    "baseline_p95_ms": 2.358083,
+    "candidate_p95_ms": 1.844542,
+    "baseline_p99_ms": 2.39425,
+    "candidate_p99_ms": 1.884958,
+    "paired_median_ratio": 0.7812790126153678,
+    "paired_median_ratio_bootstrap_95": [
+      0.7711245469527963,
+      0.7939622017360647
+    ],
+    "lexical_bytes": [
+      34640067,
+      26538717
+    ]
+  },
+  {
+    "case": "sparse-8",
+    "pairs": 51,
+    "baseline_p50_ms": 3.701667,
+    "candidate_p50_ms": 2.812,
+    "baseline_p95_ms": 4.649375,
+    "candidate_p95_ms": 3.333,
+    "baseline_p99_ms": 5.329875,
+    "candidate_p99_ms": 3.878083,
+    "paired_median_ratio": 0.7643883578774021,
+    "paired_median_ratio_bootstrap_95": [
+      0.7517843594551734,
+      0.7708608395859061
+    ],
+    "lexical_bytes": [
+      48511965,
+      37388865
+    ]
+  },
+  {
+    "case": "sparse-16",
+    "pairs": 51,
+    "baseline_p50_ms": 6.894458,
+    "candidate_p50_ms": 5.248667,
+    "baseline_p95_ms": 7.260583,
+    "candidate_p95_ms": 5.473708,
+    "baseline_p99_ms": 7.918958,
+    "candidate_p99_ms": 5.719125,
+    "paired_median_ratio": 0.759733384882111,
+    "paired_median_ratio_bootstrap_95": [
+      0.7472932593869697,
+      0.7694456426827947
+    ],
+    "lexical_bytes": [
+      76319970,
+      64970787
+    ]
+  },
+  {
+    "case": "dense-1",
+    "pairs": 51,
+    "baseline_p50_ms": 1.542875,
+    "candidate_p50_ms": 1.392,
+    "baseline_p95_ms": 1.617541,
+    "candidate_p95_ms": 1.440125,
+    "baseline_p99_ms": 1.624459,
+    "candidate_p99_ms": 1.460208,
+    "paired_median_ratio": 0.9010104918032787,
+    "paired_median_ratio_bootstrap_95": [
+      0.8942799777643081,
+      0.9131687540628947
+    ],
+    "lexical_bytes": [
+      28740744,
+      23940216
+    ]
+  },
+  {
+    "case": "dense-4",
+    "pairs": 51,
+    "baseline_p50_ms": 4.050875,
+    "candidate_p50_ms": 3.584,
+    "baseline_p95_ms": 4.234166,
+    "candidate_p95_ms": 3.745375,
+    "baseline_p99_ms": 4.253917,
+    "candidate_p99_ms": 3.798666,
+    "paired_median_ratio": 0.8836673931059885,
+    "paired_median_ratio_bootstrap_95": [
+      0.8761521322677553,
+      0.8901765976214374
+    ],
+    "lexical_bytes": [
+      56270544,
+      47271696
+    ]
+  },
+  {
+    "case": "dense-8",
+    "pairs": 51,
+    "baseline_p50_ms": 7.541125,
+    "candidate_p50_ms": 6.794208,
+    "baseline_p95_ms": 7.748042,
+    "candidate_p95_ms": 6.997833,
+    "baseline_p99_ms": 7.822625,
+    "candidate_p99_ms": 7.122958,
+    "paired_median_ratio": 0.9032381304044624,
+    "paired_median_ratio_bootstrap_95": [
+      0.89242882243466,
+      0.9093833945702596
+    ],
+    "lexical_bytes": [
+      93520587,
+      84264597
+    ]
+  },
+  {
+    "case": "dense-16",
+    "pairs": 51,
+    "baseline_p50_ms": 14.331834,
+    "candidate_p50_ms": 13.0845,
+    "baseline_p95_ms": 14.634125,
+    "candidate_p95_ms": 13.386708,
+    "baseline_p99_ms": 14.683292,
+    "candidate_p99_ms": 13.473875,
+    "paired_median_ratio": 0.9114407961851944,
+    "paired_median_ratio_bootstrap_95": [
+      0.9051216852460606,
+      0.9204821470642673
+    ],
+    "lexical_bytes": [
+      168009096,
+      158746425
+    ]
+  },
+  {
+    "case": "repeated",
+    "pairs": 51,
+    "baseline_p50_ms": 0.390709,
+    "candidate_p50_ms": 0.367375,
+    "baseline_p95_ms": 0.419791,
+    "candidate_p95_ms": 0.395334,
+    "baseline_p99_ms": 0.425375,
+    "candidate_p99_ms": 0.402542,
+    "paired_median_ratio": 0.9454105365291768,
+    "paired_median_ratio_bootstrap_95": [
+      0.9300989965093717,
+      0.9601914846498117
+    ],
+    "lexical_bytes": [
+      21496500,
+      20229660
+    ]
+  },
+  {
+    "case": "chinese",
+    "pairs": 51,
+    "baseline_p50_ms": 0.416167,
+    "candidate_p50_ms": 0.385292,
+    "baseline_p95_ms": 0.462084,
+    "candidate_p95_ms": 0.409167,
+    "baseline_p99_ms": 0.470041,
+    "candidate_p99_ms": 0.432833,
+    "paired_median_ratio": 0.926971741112124,
+    "paired_median_ratio_bootstrap_95": [
+      0.9200163075131043,
+      0.9365278698403133
+    ],
+    "lexical_bytes": [
+      22314540,
+      20462322
+    ]
+  },
+  {
+    "case": "filtered",
+    "pairs": 51,
+    "baseline_p50_ms": 11.131875,
+    "candidate_p50_ms": 10.713,
+    "baseline_p95_ms": 15.582083,
+    "candidate_p95_ms": 11.517333,
+    "baseline_p99_ms": 16.506,
+    "candidate_p99_ms": 12.824417,
+    "paired_median_ratio": 0.9587882313020695,
+    "paired_median_ratio_bootstrap_95": [
+      0.9392484655452705,
+      0.9782889937806719
+    ],
+    "lexical_bytes": [
+      28435050,
+      28435050
+    ]
+  },
+  {
+    "case": "absent",
+    "pairs": 51,
+    "baseline_p50_ms": 0.030708,
+    "candidate_p50_ms": 0.023417,
+    "baseline_p95_ms": 0.0385,
+    "candidate_p95_ms": 0.031625,
+    "baseline_p99_ms": 0.045834,
+    "candidate_p99_ms": 0.03625,
+    "paired_median_ratio": 0.7728495575221239,
+    "paired_median_ratio_bootstrap_95": [
+      0.6950249283971571,
+      0.809138208998974
+    ],
+    "lexical_bytes": [
+      261324,
+      261324
+    ]
+  },
+  {
+    "case": "mixed",
+    "pairs": 51,
+    "baseline_p50_ms": 2.841834,
+    "candidate_p50_ms": 1.9625,
+    "baseline_p95_ms": 2.944042,
+    "candidate_p95_ms": 2.035625,
+    "baseline_p99_ms": 2.972708,
+    "candidate_p99_ms": 2.054042,
+    "paired_median_ratio": 0.6898801239105822,
+    "paired_median_ratio_bootstrap_95": [
+      0.6847850578906284,
+      0.6937509093451726
+    ],
+    "lexical_bytes": [
+      42695925,
+      31642593
+    ]
+  }
+]

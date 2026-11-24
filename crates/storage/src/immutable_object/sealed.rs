@@ -21,26 +21,6 @@ fn link_source(source: &Path, destination: &Path) -> io::Result<()> {
     fs::hard_link(source, destination)
 }
 
-pub(super) const MAX_BATCH_FILES: usize = 8;
-
-/// Private to one closed producer generation; completion precedes its head.
-/// Bound retained paths and verified stamps independently of closure size.
-#[derive(Default)]
-pub(crate) struct SealedPublicationBatch {
-    namespace: NamespaceBatch,
-    mounts: Vec<(PathBuf, ImmutableFileBinding)>,
-    remaining: Option<usize>,
-}
-
-impl SealedPublicationBatch {
-    pub(crate) fn new(files: usize) -> Self {
-        Self {
-            remaining: Some(files),
-            ..Self::default()
-        }
-    }
-}
-
 impl ImmutableObjectStore {
     /// Only GraphStore's sealed checkpoint producers may use this entry point.
     /// All writable descriptors must be closed, and interrupted preparation
@@ -54,40 +34,6 @@ impl ImmutableObjectStore {
         reference: ObjectReference,
         source: &Path,
         work: BlockWork<'_>,
-    ) -> Result<PublishOutcome, ImmutableObjectError> {
-        self.publish_sealed_file(reference, source, work, None)
-    }
-
-    pub(crate) fn publish_sealed_file_in_batch(
-        &mut self,
-        reference: ObjectReference,
-        source: &Path,
-        work: BlockWork<'_>,
-        batch: &mut SealedPublicationBatch,
-    ) -> Result<PublishOutcome, ImmutableObjectError> {
-        let remaining = batch.remaining;
-        if batch.mounts.len() == MAX_BATCH_FILES {
-            self.finish_sealed_publication(std::mem::take(batch), work)?;
-            batch.remaining = remaining;
-        }
-        // A one-file window cannot coalesce barriers. Retain its direct path,
-        // including the last file after a full bounded batch.
-        let direct = remaining == Some(1) && batch.mounts.is_empty();
-        let outcome = if direct {
-            self.publish_sealed_file_with_work(reference, source, work)?
-        } else {
-            self.publish_sealed_file(reference, source, work, Some(&mut *batch))?
-        };
-        batch.remaining = remaining.map(|files| files.saturating_sub(1));
-        Ok(outcome)
-    }
-
-    fn publish_sealed_file(
-        &mut self,
-        reference: ObjectReference,
-        source: &Path,
-        work: BlockWork<'_>,
-        mut batch: Option<&mut SealedPublicationBatch>,
     ) -> Result<PublishOutcome, ImmutableObjectError> {
         if self.poisoned {
             return Err(ImmutableObjectError::PublisherPoisoned);
@@ -111,32 +57,14 @@ impl ImmutableObjectStore {
         // so unchanged row/overflow/append files keep sharing their old inode.
         let (result, mount) = if destination.exists() {
             (
-                self.validate_existing(
-                    reference,
-                    None,
-                    &destination,
-                    PublicationWork {
-                        block: work,
-                        namespace: batch.as_mut().map(|batch| &mut batch.namespace),
-                    },
-                )?,
+                self.validate_existing(reference, None, &destination, work)?,
                 true,
             )
         } else if map_io("inspect sealed checkpoint binding", handles.binding(source))?.is_some() {
             (self.publish_file_with_work(reference, source, work)?, true)
         } else if let Some((staging, stamp)) = self.stage_sealed_file(reference, source, work)? {
             (
-                self.install_staged(
-                    reference,
-                    None,
-                    Some(stamp),
-                    &staging,
-                    &destination,
-                    PublicationWork {
-                        block: work,
-                        namespace: batch.as_mut().map(|batch| &mut batch.namespace),
-                    },
-                )?,
+                self.install_staged(reference, None, Some(stamp), &staging, &destination, work)?,
                 true,
             )
         } else {
@@ -148,60 +76,13 @@ impl ImmutableObjectStore {
             reference,
             object_path: destination,
         };
-        if let Some(batch) = batch {
-            // Install COW custody before any later input or barrier can fail.
-            map_io(
-                "bind sealed checkpoint source",
-                handles.bind(source, binding.clone()),
-            )?;
-            if mount {
-                batch.mounts.push((source.to_path_buf(), binding));
-            }
-        } else if mount {
-            self.mount_sealed_source(source, binding, work)?;
-        } else {
+        if !mount {
             map_io(
                 "bind copied checkpoint source",
                 handles.bind(source, binding),
             )?;
+            return Ok(result);
         }
-        Ok(result)
-    }
-
-    pub(crate) fn finish_sealed_publication(
-        &mut self,
-        batch: SealedPublicationBatch,
-        work: BlockWork<'_>,
-    ) -> Result<(), ImmutableObjectError> {
-        if self.poisoned {
-            return Err(ImmutableObjectError::PublisherPoisoned);
-        }
-        if let Some(work) = work.0 {
-            work.checkpoint().map_err(block_work_error)?;
-        }
-        if let Err(source) = batch.namespace.finish() {
-            self.poisoned = true;
-            return Err(ImmutableObjectError::PublicationUncertain { source });
-        }
-        // Publication records become visible only after every required barrier.
-        // Mounting can now reuse those records without another full-file hash.
-        for (source, binding) in batch.mounts {
-            self.mount_sealed_source(&source, binding, work)?;
-        }
-        Ok(())
-    }
-
-    fn mount_sealed_source(
-        &self,
-        source: &Path,
-        binding: ImmutableFileBinding,
-        work: BlockWork<'_>,
-    ) -> Result<(), ImmutableObjectError> {
-        let context = map_io(
-            "resolve sealed checkpoint mount",
-            crate::file_descriptors::context_for_path(source),
-        )?;
-        let handles = context.state.immutable_handles();
         let mut control = MountWork::new(work);
         let mounted = handles.mount_controlled(source, binding.clone(), &context, &mut control);
         if mounted.is_ok() {
@@ -226,7 +107,7 @@ impl ImmutableObjectStore {
             }
             result => map_io("mount sealed checkpoint source", result)?,
         }
-        Ok(())
+        Ok(result)
     }
 
     fn stage_sealed_file(

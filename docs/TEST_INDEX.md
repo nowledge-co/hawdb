@@ -4957,49 +4957,26 @@ send JSON lines containing `query` and optional `scope`/`offset` to
 before interpreting interleaved warm-query latency. This is manual measurement,
 not a CI performance gate; opening/building and serialization are outside timing.
 
-### Sealed checkpoint namespace batches (#1942)
+### Manual performance evidence (#1940 / #1942)
 
-The existing Storage unit owner (`//crates/storage:hawdb_storage_tests`) owns
-`immutable_object::publication_profile::batch_closes_directory_barriers_once_per_namespace`:
-eight new/reused artifacts retain byte and COW checks while publishing once per
-namespace rather than once per file. The 8/9/17/64/65/129-file boundary test covers the
-eight-file publication windows and their final partial tails. Existing power-loss owners retain the new
-`power_loss::tests::sealed_batch_*` cases: unsynchronized producer bytes and
-unacknowledged names before completion, complete names after the barrier,
-failed directory synchronization, publisher poisoning, deferred publication
-records, COW custody and a fresh publisher closing an uncertain reuse barrier.
-These use the existing loss/reordering image model, not process-kill evidence.
-Replay the explicitly ignored, manual-only component profile with
-`cargo test --locked -p hawdb-storage --release --lib sealed_publication_batch_profile -- --ignored --nocapture --test-threads=1`.
-It alternates separate and batched barriers over 31 samples each of 1/8/64 new/reused
-8 KiB files, checks all bytes and later producer writes, and reports synchronized
-publication latency and directory-barrier counts. It does not measure full
-checkpoint/commit throughput, does not replace device qualification, and adds no
-CI lane, target-specific profile, timeout or production dependency.
+The source-bound paired comparison is in
+[BM25 and namespace measurements](benchmarks/pr1952/README.md). Synthetic
+Search covers 13 request shapes; SciFact covers all 300 test queries. The
+manual `compare.py` driver freezes/hashes executables and verifies complete
+query outputs before accepting timing receipts. This adds no CI lane or profile.
 
-
-The manual `crates/storage/examples/checkpoint_namespace_profile.rs` driver
-compares complete `GraphStore::checkpoint` calls between revisions under the
-same repository release profile and strict default durability. It creates fresh
-bounded fixtures from JSON lines (`rows` <= 10,000, optional `precheckpoint`),
-verifies every node before/after checkpoint and reopen, and excludes fixture
-creation, commit, reopen and cleanup from checkpoint timing. Build with
+The directory-barrier implementation was withdrawn from PR #1952 because its
+checkpoint p99 non-regression was not qualified. Its complete historical small
+and bulk distributions remain in the report, including adverse tails. The
+manual `crates/storage/examples/checkpoint_namespace_profile.rs` driver uses
+ordinary embedded `GraphStore::checkpoint` with strict default durability and
+checks every node before/after and after reopen. Build with
 `cargo build --locked -p hawdb-storage --release --example checkpoint_namespace_profile`;
-run `checkpoint_namespace_profile NEW_PARENT_DIRECTORY` and compare interleaved
-fresh-reader processes. This is manual only; ordinary CI compiles the example
-but does not run latency campaigns. Graph-only fixtures do not qualify the full
-relational/DDL schema-registry workload or device power-loss behavior.
+run `checkpoint_namespace_profile NEW_PARENT_DIRECTORY`, sending JSON lines
+with `rows`, optional `precheckpoint` and `branch`. This manual graph-only probe
+adds no Storage regression cases or CI lane and does not qualify device power
+loss, relational/DDL registry startup or transaction throughput.
 
-
-The source-bound PR #1952 manual comparison is in
-[BM25 and namespace measurements](benchmarks/pr1952/README.md). The paired
-`compare.py` driver owns executable freezing/hashing, repeated full-response
-comparison, synchronized branch checkpoints, complete before/after/reopen node
-verification and raw latency samples. Synthetic Search uses 13 request shapes;
-SciFact uses every test query without sampling; branch controls cover 0/1/128/2000
-additional nodes with and without a prior checkpoint. This is a manual evidence
-campaign, not a new CI performance gate. Repository profiles, CI assertions,
-feature matrices, timeouts and test lanes remain unchanged.
 ## Carried graph bundles (issue 1641)
 
 The existing storage unit owner (`//crates/storage:hawdb_storage_tests`)

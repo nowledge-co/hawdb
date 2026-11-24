@@ -3,14 +3,88 @@
 This is a fresh, source-bound local campaign after the temporary-directory
 samples were lost. Earlier summaries are not acceptance evidence for this run.
 
-## Environment and source
+## Delivery scope
+
+PR #1952 now delivers only BM25 query-local reuse/frontier optimization. The
+namespace batching implementation was withdrawn after the adverse checkpoint
+tails below; it is retained for separate investigation at
+[`perf/checkpoint-namespace-experiment`](https://github.com/nowledge-co/hawdb/tree/perf/checkpoint-namespace-experiment).
+No directory-barrier batching or recovery-order change is delivered by this PR.
+The Storage example remains a manual evidence/replay tool over existing APIs.
+
+Main `2da1e973349084702bdfdf55338683380f0c1b1f` subsequently merged #1934
+(graph-bundle carry) and #1938 (content blocks). Measurements below compare the
+explicit older revisions, not the updated integration head. A fresh BM25
+comparison against that main revision is recorded separately before acceptance.
+
+## Current-main BM25 qualification
+
+Baseline `2da1e973349084702bdfdf55338683380f0c1b1f` includes #1934 and #1938.
+The BM25-only candidate is that source plus `main-candidate.patch`; the complete
+production patch, source/input hashes and build configuration are captured in
+`main-source.json`. Storage production files match that main revision exactly.
+Both example drivers are identical across arms. Builds run sequentially with one
+Cargo job under the repository release profile, before any timed comparison.
+`main-requalification-build.json` records their costs separately from query time.
+New fixtures are written by this baseline's current-format generation writer;
+the old pre-content-block fixtures are not reused.
+
+All 5,183 SciFact documents and all 300 test queries use the same pinned corpus,
+ID order and parameters described below. Nine measured + three warmup pairs per
+query give 2,700 measured + 900 warmup pairs. Every returned ID, final/text/RRF
+score bit, text rank, total, truncation and document count agrees, with zero
+refusals. No token, precision, ANN or tie-policy tuning is performed.
+
+| Full SciFact ScoresOnly query | Baseline | BM25 candidate | Change |
+| --- | ---: | ---: | ---: |
+| p50 | 0.629501 ms | 0.425104 ms | -32.5% |
+| p95 | 1.238166 ms | 0.774875 ms | -37.4% |
+| p99 | 1.561500 ms | 1.012792 ms | -35.1% |
+| mean | 0.663089 ms | 0.438086 ms | -33.9% |
+| Lexical-reader bytes, measured calls | 961,473,906 | 592,155,756 | -38.4% |
+
+Three separate 300-query native RSS/equality controls observe median process
+maximum RSS 15.109375 -> 14.609375 MiB (-0.500000 MiB,
+-3.3%). They include startup/reader open and are not query-ledger peaks
+or guaranteed RSS bounds. The earlier revision showed a +0.39 MiB RSS delta;
+these small process-lifetime controls do not establish general memory reduction.
+The cache remains optional, admission-accounted and
+capped at 2 MiB and one eighth of the query/reader workspace.
+
+The 13 synthetic shapes each have 51 measured + three warmup pairs (663 + 39),
+all result-identical. Complete tails and paired-median bootstrap intervals are
+retained in `main-search-summary.json`; no samples are discarded.
+
+| Synthetic cell | Baseline p50 ms | Candidate p50 ms | Baseline p95 ms | Candidate p95 ms | Paired median ratio |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| sparse-1 | 1.127334 | 1.112708 | 1.421500 | 1.398542 | 0.977425 |
+| sparse-4 | 2.283375 | 1.778584 | 2.358083 | 1.844542 | 0.781279 |
+| sparse-8 | 3.701667 | 2.812000 | 4.649375 | 3.333000 | 0.764388 |
+| sparse-16 | 6.894458 | 5.248667 | 7.260583 | 5.473708 | 0.759733 |
+| dense-1 | 1.542875 | 1.392000 | 1.617541 | 1.440125 | 0.901010 |
+| dense-4 | 4.050875 | 3.584000 | 4.234166 | 3.745375 | 0.883667 |
+| dense-8 | 7.541125 | 6.794208 | 7.748042 | 6.997833 | 0.903238 |
+| dense-16 | 14.331834 | 13.084500 | 14.634125 | 13.386708 | 0.911441 |
+| repeated | 0.390709 | 0.367375 | 0.419791 | 0.395334 | 0.945411 |
+| chinese | 0.416167 | 0.385292 | 0.462084 | 0.409167 | 0.926972 |
+| filtered | 11.131875 | 10.713000 | 15.582083 | 11.517333 | 0.958788 |
+| absent | 0.030708 | 0.023417 | 0.038500 | 0.031625 | 0.772850 |
+| mixed | 2.841834 | 1.962500 | 2.944042 | 2.035625 | 0.689880 |
+
+These remain shared-host sequential warm-reader measurements. The reader-byte
+counter includes lexical ordinal mapping and is not physical disk I/O or body
+hydration. No cross-platform, concurrent-throughput, ANN or Mem production
+acceptance is inferred. Earlier measurements below are retained as historical
+comparisons; the withdrawn checkpoint implementation is not part of this source.
+
+## Historical campaign: environment and source
 
 - macOS 27.2.1, arm64, Apple M5 Max, 18 logical CPUs, 36 GiB RAM; shared developer host.
 - Rust 1.99.1, locked dependencies, default Search/Storage features.
 - Repository release profile: opt-level 3, one codegen unit, thin LTO, no assertions or overflow checks; no target-specific flags.
 - Baseline: `d9268486009171e9576768ac2bbfbe7eb875fb95` (main after #1944/#1948).
 - Search candidate production source: `b49f12018b805da45bdb1ad7ced9dd75e0d8e72e`.
-- Final Storage candidate: that revision plus the internal eight-file window
+- Withdrawn Storage experiment: that revision plus the internal eight-file window
   recorded in `batch8.patch` and `batch8-source.json`. Search production source
   is byte-identical; the later documentation commit contains both components.
 - The same two checked-in Rust example drivers run against both revisions.
@@ -124,11 +198,11 @@ cancellation and cache-integrity controls. Concurrent throughput, cold-storage
 latency, admitted hydration, ANN, TPC-C and Mem production acceptance are not
 measured by this campaign.
 
-## Directory-barrier controls
+## Historical directory-barrier controls (withdrawn)
 
 The existing Storage CI unit owner covers the counter and COW controls.
-The original 64-file implementation passed that owner; the eight-file boundary
-update must pass it again at the final source revision.
+The original 64-file implementation passed that owner; the eight-file
+experiment was withdrawn before final delivery. Those batch cases and counter assertions are absent from the final BM25-only source.
 These count only the final object-directory and staging-directory barriers,
 not file-content fsyncs, namespace ancestry establishment, WAL or head barriers.
 Each fixture below uses one object kind, with eight KiB per producer file.
@@ -139,7 +213,7 @@ Each fixture below uses one object kind, with eight KiB per producer file.
 | 64 | 128 -> 16 | 64 -> 8 |
 
 The same owner checks 8/9/17/64/65/129-file boundaries, full bytes and later
-producer writes. The final window is eight files; these are asserted operation
+producer writes. The withdrawn window is eight files; these are asserted operation
 counts, not a measured wall-time speedup. Mixed object kinds can require more than one destination directory;
 the implementation synchronizes each distinct required directory per bounded
 window, retains all file-content fsyncs and finishes before head publication.
@@ -188,13 +262,13 @@ results motivated testing an eight-file window instead of accepting the larger
 burst from its median alone. See `checkpoint-repeat-*` and
 `checkpoint-repeat-large-*` for both retained repeats.
 
-### Final eight-file window
+### Withdrawn eight-file window
 
-The final production change bounds each window to eight files. The two adverse
+The withdrawn production experiment bounds each window to eight files. The two adverse
 second-checkpoint shapes each have 101 measured + 3 warmup pairs; the empty additional-node
 control has 51 measured + 3 warmup pairs. There are 253 measured + 9
 warmup pairs in total. The remaining five original matrix shapes were not
-remeasured with the final window after unrelated host activity became visible;
+remeasured with the withdrawn window after unrelated host activity became visible;
 the complete initial 64-file matrix remains above. All succeed and preserve complete before/after/reopen
 node contents. `batch8.patch` records the sole production change since the
 Search candidate; `batch8-source.json` and per-case binary hashes bind this run.
@@ -205,7 +279,7 @@ Search candidate; `batch8-source.json` and per-case binary hashes bind this run.
 | 128 | True | 101 | 973.846 | 889.829 | 1467.003 | 1325.003 | 1515.776 | 1830.407 |
 | 2000 | True | 101 | 489.615 | 413.744 | 852.732 | 599.615 | 969.764 | 769.726 |
 
-The 128-node final-window p99 is 1,515.776 -> 1,830.407 ms (+20.8%);
+The 128-node eight-file p99 is 1,515.776 -> 1,830.407 ms (+20.8%);
 the zero-additional-node p99 is 1,414.497 -> 1,771.118 ms (+25.2%). These
 observations are adverse and are not hidden by the median improvements. Near
 the end of that run, native host inspection found unrelated libtest processes,

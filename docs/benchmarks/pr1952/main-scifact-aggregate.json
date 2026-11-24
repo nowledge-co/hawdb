@@ -1,0 +1,21 @@
+{
+  "case": "all-300-test-queries",
+  "pairs": 2700,
+  "baseline_p50_ms": 0.6295005,
+  "candidate_p50_ms": 0.425104,
+  "baseline_p95_ms": 1.238166,
+  "candidate_p95_ms": 0.774875,
+  "baseline_p99_ms": 1.5615,
+  "candidate_p99_ms": 1.012792,
+  "paired_median_ratio": 0.6746634917529375,
+  "paired_median_ratio_bootstrap_95": [
+    0.6700835142094776,
+    0.6787232894058564
+  ],
+  "lexical_bytes": [
+    961473906,
+    592155756
+  ],
+  "baseline_mean_ms": 0.66308947,
+  "candidate_mean_ms": 0.43808644
+}
