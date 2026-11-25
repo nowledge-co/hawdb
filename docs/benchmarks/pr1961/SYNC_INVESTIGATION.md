@@ -1,5 +1,7 @@
 # Checkpoint synchronization investigation
 
+This report covers its named historical revisions. See the [PR description](https://github.com/nowledge-co/hawdb/pull/1961) for current qualification and review gates.
+
 Issue Number: ref #1960. PR: https://github.com/nowledge-co/hawdb/pull/1961.
 
 ## Findings and changes
@@ -51,7 +53,7 @@ These are separate windows; do not add their percentage changes.
 
 ### Handoff owner reuse
 
-[Raw records and receipts](paired-handoff-suite/run-receipts.json); [all distributions](paired-handoff-suite/summary.json).
+[Raw records and receipts](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/paired-handoff-suite/run-receipts.json); [all distributions](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/paired-handoff-suite/summary.json).
 
 | Nodes / relationships | Mutation | Checkpoint paired median | Checkpoint baseline / candidate p99 (ms) | Mutation paired median | Mutation baseline / candidate p99 (ms) |
 |---|---|---:|---:|---:|---:|
@@ -62,7 +64,7 @@ These are separate windows; do not add their percentage changes.
 
 ### Direct sealed publication (mixed host load)
 
-[Raw records and receipts](paired-direct-suite/run-receipts.json); [all distributions](paired-direct-suite/summary.json).
+[Raw records and receipts](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/paired-direct-suite/run-receipts.json); [all distributions](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/paired-direct-suite/summary.json).
 
 | Nodes / relationships | Mutation | Checkpoint paired median | Checkpoint baseline / candidate p99 (ms) | Mutation paired median | Mutation baseline / candidate p99 (ms) |
 |---|---|---:|---:|---:|---:|
@@ -83,7 +85,7 @@ profiling omitted) is compared with v3 runtime `21bdf14b`. Both use identical
 SyncOnEveryWrite, OutOfCore and disabled automatic maintenance settings. The
 original `run_paired.py` controller completes all four groups, 60 measured pairs
 and two warmups each; all 480 measured operations and 16 warmups retain typed
-checks, scrub/reopen and successful exits. [Raw records and receipts](paired-full-direct-idle-suite/run-receipts.json) and [all statistics](paired-full-direct-idle-suite/summary.json) remain separate from component runs.
+checks, scrub/reopen and successful exits. [Raw records and receipts](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/paired-full-direct-idle-suite/run-receipts.json) and [all statistics](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/paired-full-direct-idle-suite/summary.json) remain separate from component runs.
 
 | Nodes / relationships | Mutation | Checkpoint baseline / candidate p50 (ms) | Checkpoint paired median | Checkpoint baseline / candidate p99 (ms) | Mutation paired median | Mutation baseline / candidate p99 (ms) |
 |---|---|---:|---:|---:|---:|---:|
@@ -108,7 +110,7 @@ mutation maximum cannot be explained by that later Java observation. None of
 these outliers has a per-call trace; do not assign their cause retrospectively.
 
 The frozen baseline harness has a portable no-op difference, recorded in
-[earlier provenance](profile-source-metadata.json). Local source comparisons
+[earlier provenance](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/profile-source-metadata.json). Local source comparisons
 remain based on `5efcc9a2`; CI integrates main `7aa7b50c`. At final observation,
 main had advanced to `6e2ff3df` through a MoonBit binding change. These local
 measurements are not exact-current-main runtime qualification.
@@ -125,7 +127,7 @@ no production dependency or CI lane. Interposition layout was checked against
 
 An initial immediate-write logger dirtied the filesystem between barriers,
 causing later full-sync calls to include logger I/O. Its timing results are
-**rejected**, including every sample in [the initial trace](handoff-sync-trace/run-receipts.json).
+**rejected**, including every sample in [the initial trace](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/handoff-sync-trace/run-receipts.json).
 Its raw logs are retained, not used for timing claims. Buffered versions store
 bounded events/paths in RAM and write at worker exit only after all timed steps
 finish. Their extra path/stat/memory work still perturbs execution; neither
@@ -146,9 +148,9 @@ Typical paths include object-file synchronization, final object directories,
 staging cleanup and mutable snapshot namespace barriers. The doubled
 `objects/objects` component reflects the actual store layout.
 
-[Trace/source hashes and host limitations](sync-source-metadata.json),
-[handoff buffered records](handoff-sync-trace-memory/run-receipts.json),
-[direct buffered records](direct-sync-trace-memory/run-receipts.json) and the
+[Trace/source hashes and host limitations](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/sync-source-metadata.json),
+[handoff buffered records](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/handoff-sync-trace-memory/run-receipts.json),
+[direct buffered records](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/direct-sync-trace-memory/run-receipts.json) and the
 complete compressed TSV logs preserve exact producers. The first buffered
 binary came from `trace-memory-captured.c`; the safe successor adds shutdown
 disabling before freeing its buffers. Their binary hashes differ. No executable
@@ -167,7 +169,7 @@ from complete durable payload after it. Broader lost/torn/reordered root
 publication cases remain with their existing owners. The model's filesystem
 synchronization assumptions remain distinct from physical device validation.
 
-[Source-bound CI receipts](ci-direct.json) record nine successful Prow jobs at
+[Source-bound CI receipts](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/ci-direct.json) record nine successful Prow jobs at
 `21bdf14b44fa882257b0cab39e432e86b179b0d9`, integrated with main `7aa7b50c`.
 Root, crates and crash clone records agree on runner
 `40e8b10a74e12cc691249380fcc4d9bca0ef0722`. Complete BEP records distinguish

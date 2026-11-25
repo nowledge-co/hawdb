@@ -4,17 +4,38 @@ Issue: https://github.com/nowledge-co/hawdb/issues/1960. PR: https://github.com/
 
 ## Qualification status
 
-The implementation remains Draft. The current prepared-WAL follow-up is `6a378114156967f45972b49d0bc29ee25ed7874b`. It removes a confirmed extra operation-array scan and passes source-bound CI. Its ordinary 60-pair-per-group foreground medians are -1.24%, -1.18%, +0.01% and +0.11%, while some mutation/checkpoint maxima still increase. The earlier 1%-2% median increases did not recur, but this does not establish a causal fix or clear no-regression/tail acceptance. Full results and limits are in the [cause investigation](CAUSE_INVESTIGATION.md). Earlier packed/unpacked datasets below are preserved separately and must not be attributed to the current follow-up.
+Current source-bound validation, performance results and remaining review gates
+are maintained in the [PR description](https://github.com/nowledge-co/hawdb/pull/1961).
+The tables below are historical measurements of the named revisions, not current
+head qualification. No unfavorable sample has been discarded.
 
-[Follow-up cause investigation and attempted fix](CAUSE_INVESTIGATION.md) documents the newly removed prepared-WAL operation scan, phase CPU/fsync counters, checkpoint synchronization stacks and source-bound CI at `6a3781141`. Its under-load diagnostic runs are separate from ordinary acceptance and do not clear the Draft gate.
+## Historical raw evidence
+
+Raw logs, per-run receipts, result dumps and traces are retained in the existing
+[immutable source archive](https://codeload.github.com/nowledge-co/hawdb/tar.gz/6c6d06d23cdbf8577903090cdf2065c814225de2) at commit `6c6d06d23cdbf8577903090cdf2065c814225de2`.
+Before removal from the current tree, all 241 evidence files were checked
+byte-for-byte against that downloaded archive. Its SHA-256 is
+`c44731685febc08e9c2eea1d03c9f72e5c066b96be6e51e6d3a6fa1e8285b7af`. Source scripts and concise reports remain here; links to raw records
+point to the frozen commit. No history was rewritten and no release was created.
+
+To inspect an earlier dataset, download and verify the archive, extract it into
+an empty scratch directory, then run the retained analyzer on that archive's
+`docs/benchmarks/pr1961/<dataset>` directory. For example:
+
+```sh
+curl --fail --location 'https://codeload.github.com/nowledge-co/hawdb/tar.gz/6c6d06d23cdbf8577903090cdf2065c814225de2' --output /tmp/pr1961-evidence.tar.gz
+echo 'c44731685febc08e9c2eea1d03c9f72e5c066b96be6e51e6d3a6fa1e8285b7af  /tmp/pr1961-evidence.tar.gz' | sha256sum --check
+archive_root="$(mktemp -d /tmp/pr1961-evidence.XXXXXX)"
+tar -xzf /tmp/pr1961-evidence.tar.gz --strip-components=1 -C "$archive_root"
+```
 
 ## Sources and protocol
 
 - Baseline: `5efcc9a2692fb7682b80093141588b2a741d52bf`; initial runtime: `b76b3809991d3aff408970070123e4d5b760c794`; packed runtime: `0d038b73e3cfb270cdfba9fc999535e2916228ae`; latest producer: `612cb32ceb778b2200b37bb8eee38980625b56ae`. The unchanged timed harness was introduced in `e26c25df3aeaae1939f6647c7eb788195b585433`.
-- Rust 1.99.1, macOS 27.2.1 arm64. Repository release profile, default Cargo example features, separate candidate Cargo target, frozen byte-identical harness in both source trees. See [metadata](metadata.json) and per-group binary hashes in the [packed receipts](paired-packed-suite/run-receipts.json) and [unpacked receipts](paired-suite/run-receipts.json).
+- Rust 1.99.1, macOS 27.2.1 arm64. Repository release profile, default Cargo example features, separate candidate Cargo target, frozen byte-identical harness in both source trees. See [metadata](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/metadata.json) and per-group binary hashes in the [packed receipts](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/paired-packed-suite/run-receipts.json) and [unpacked receipts](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/paired-suite/run-receipts.json).
 - SyncOnEveryWrite, OutOfCore, background maintenance explicitly disabled in both variants. No weaker durability setting supplies the improvement.
 - Initialize two independent fixtures, then allow only one process to execute a mutation/checkpoint at a time. Alternate A/B and B/A each round: 60 measured pairs, 30 in each order, after two warmup pairs per workload/size. Total: 480 measured and 16 warmup operations.
-- Every changed node/relationship value and count is checked outside timing. Both processes wait until timing completes before scrub and reopen. Each suite records the v2/v3 readiness preflight and its successful carry/rebuild assertions. [Earlier actual final manifests](manifest-qualification.json) also confirm baseline v2 and candidate v3.
+- Every changed node/relationship value and count is checked outside timing. Both processes wait until timing completes before scrub and reopen. Each suite records the v2/v3 readiness preflight and its successful carry/rebuild assertions. [Earlier actual final manifests](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/manifest-qualification.json) also confirm baseline v2 and candidate v3.
 - Checkpoint time includes immutable sealed-root closure validation/publication. New graph bytes count freshly created canonical/spill/projection/adjacency files, including descriptors; they are not total filesystem writes or allocated disk blocks. No CPU-time or RSS improvement is inferred.
 - This is a shared workstation, without pinned CPU/I/O isolation. Mem Bazel activity was observed after the older suite. Before and after the packed suite, no such compilation or test processes were observed; ordinary desktop load remained. Do not infer production p99, foreground throughput or LDBC/TPC-C acceptance from these samples. With 60 samples per variant/group, reported p99 is the observed maximum.
 
@@ -40,20 +61,20 @@ Foreground synchronized mutation latency:
 | 512 / 4096 | node_property | 5.552 / 5.894 / 7.172 | 5.661 / 6.354 / 43.721 | +1.51% |
 | 512 / 4096 | relationship_property | 19.623 / 27.433 / 31.782 | 19.754 / 27.042 / 30.687 | +0.82% |
 
-Node-property checkpoints again produced zero new adjacency bytes and reduced new graph-file bytes by approximately 63.8% / 61.8%. Relationship-property controls rebuilt normally, with paired checkpoint medians +0.29% / -0.26%. Node-property checkpoint gains persisted in both execution orders and halves; see the [complete packed summary](paired-packed-suite/summary.json).
+Node-property checkpoints again produced zero new adjacency bytes and reduced new graph-file bytes by approximately 63.8% / 61.8%. Relationship-property controls rebuilt normally, with paired checkpoint medians +0.29% / -0.26%. Node-property checkpoint gains persisted in both execution orders and halves; see the [complete packed summary](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/paired-packed-suite/summary.json).
 
 **Acceptance remains open.** All four foreground paired medians increased (+2.08%, +1.12%, +1.51%, +0.82%). The larger node-property mutation maximum was 43.721 ms versus 7.172 ms, and its checkpoint maximum was 713.574 ms versus 564.393 ms. Smaller node-property checkpoint p99 also increased. With 60 samples these are observed maxima, not production percentile estimates. No sample is removed, and no improvement in combined mutation/checkpoint time waives these failures. The packed representation has not established the cause of the variation. Further foreground-path diagnosis and controlled tail qualification are required before marking ready.
 
 ## Identical-binary diagnostic
 
-After the packed comparison, both A/B roles ran the same frozen baseline executable (`e108839fa0a782fd9cbc3d14a2269a56f612e1e68b790db43032ce6c60456ca8`), with separate fixtures, v2 readiness and rebuild expectations. [The exact diagnostic controller](run_null.py) limits the original protocol to node-property workloads; it changes binary/version/expectation selection only. Each size completed 60 pairs plus two warmups, including scrub and reopen. [Raw records and receipts](paired-null-suite/run-receipts.json) preserve both identical hashes.
+After the packed comparison, both A/B roles ran the same frozen baseline executable (`e108839fa0a782fd9cbc3d14a2269a56f612e1e68b790db43032ce6c60456ca8`), with separate fixtures, v2 readiness and rebuild expectations. [The exact diagnostic controller](run_null.py) limits the original protocol to node-property workloads; it changes binary/version/expectation selection only. Each size completed 60 pairs plus two warmups, including scrub and reopen. [Raw records and receipts](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/paired-null-suite/run-receipts.json) preserve both identical hashes.
 
 | Nodes / relationships | Checkpoint median paired change | Mutation median paired change | Mutation A / B p99 (ms) |
 |---|---:|---:|---:|
 | 128 / 512 | +0.04% | +0.03% | 5.170 / 8.563 |
 | 512 / 4096 | +0.67% | +1.57% | 6.679 / 9.624 |
 
-This demonstrates nonzero variation even with identical code. It does not explain every difference in the packed comparison, establish an error bar for future measurements, prove the candidate unchanged, or clear tail acceptance. It is a separate diagnostic, not a replacement dataset or a reason to discard unfavorable samples. [Complete diagnostic statistics](paired-null-suite/summary.json) retain order/half splits and all tails.
+This demonstrates nonzero variation even with identical code. It does not explain every difference in the packed comparison, establish an error bar for future measurements, prove the candidate unchanged, or clear tail acceptance. It is a separate diagnostic, not a replacement dataset or a reason to discard unfavorable samples. [Complete diagnostic statistics](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/paired-null-suite/summary.json) retain order/half splits and all tails.
 
 To replay the diagnostic with the same frozen binary directory:
 
@@ -82,13 +103,13 @@ Paired changes are medians of per-pair ratios, not ratios of the aggregate media
 | 512 / 4096 | node_property | 6.491 / 8.230 / 9.130 | 6.552 / 7.739 / 11.753 | +0.42% |
 | 512 / 4096 | relationship_property | 40.874 / 73.893 / 225.458 | 42.985 / 92.081 / 247.669 | +2.34% |
 
-Foreground wall-clock variation remains unresolved: the larger relationship-property control had a +2.34% paired median, while node-property mutation maxima also increased. [Full paired statistics](paired-suite/summary.json) retain order-specific and first/second-half medians, absolute differences, all percentiles and combined mutation/checkpoint time. The 56-byte identity revision removes avoidable metadata growth, but that alone does not establish the cause or clear this acceptance gate. The packed rerun above supersedes this remaining measurement step, but does not clear the acceptance gate.
+Foreground wall-clock variation remains unresolved: the larger relationship-property control had a +2.34% paired median, while node-property mutation maxima also increased. [Full paired statistics](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/paired-suite/summary.json) retain order-specific and first/second-half medians, absolute differences, all percentiles and combined mutation/checkpoint time. The 56-byte identity revision removes avoidable metadata growth, but that alone does not establish the cause or clear this acceptance gate. The packed rerun above supersedes this remaining measurement step, but does not clear the acceptance gate.
 
 ## Other measurements and exclusions
 
-[Whole-run exploratory data](qualified-suite/summary.json) uses common durability/residency/background settings but alternates entire runs, with 42 samples per variant/group. It showed substantial phase variation in controls and tails, motivating immediate operation pairing. It remains separate and is not substituted for the paired acceptance results.
+[Whole-run exploratory data](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/qualified-suite/summary.json) uses common durability/residency/background settings but alternates entire runs, with 42 samples per variant/group. It showed substantial phase variation in controls and tails, motivating immediate operation pairing. It remains separate and is not substituted for the paired acceptance results.
 
-An earlier candidate executable selected baseline v2 artifacts through a shared Cargo release cache and was rejected before comparative acceptance. A separate eight-run suite was rejected in full because the baseline output lacked the frozen background-maintenance configuration. Those runs and hashes remain in the local evidence archive; [metadata](metadata.json) records the exclusions. No favorable samples from either invalid qualification are used in these tables.
+An earlier candidate executable selected baseline v2 artifacts through a shared Cargo release cache and was rejected before comparative acceptance. A separate eight-run suite was rejected in full because the baseline output lacked the frozen background-maintenance configuration. Those runs and hashes remain in the local evidence archive; [metadata](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/metadata.json) records the exclusions. No favorable samples from either invalid qualification are used in these tables.
 
 Build cost is separate from execution: initial full embedded baseline build 6m07s with existing third-party artifacts; isolated candidate empty-target build 6m59s. The frozen step-mode rebuilds took 3m34s baseline and 4m36s candidate. These cache states differ and establish no build or remote CI speedup.
 
@@ -114,14 +135,14 @@ python3 docs/benchmarks/pr1961/analyze.py "$task_dir/samples"
 The reference controller uses Unix pipes/select and creates only a new explicit output root. It runs no benchmark in CI. To inspect these frozen results without changing them:
 
 ```sh
-python3 docs/benchmarks/pr1961/analyze.py docs/benchmarks/pr1961/paired-packed-suite
+python3 docs/benchmarks/pr1961/analyze.py "$archive_root/docs/benchmarks/pr1961/paired-packed-suite"
 ```
 
 ## Correctness qualification
 
-[Source-bound CI receipts](ci-qualification.json) record the initial storage execution (233.666s) and the `bb5462a13` root/crash qualification on actual runner merge `b9cd19d69ba5c57a1f6e3ab665b3eedcc41fee3f`, over main `7be31b2d`. Root: 77 targets passed, seven executed and 70 cached, including the actual general unit execution at 178.314s. These receipts precede the compact identity revision; final-head CI remains a separate gate. Required formatting, strict Clippy and hooks pass before each commit. The previously stopped heavy local Bazel/fuzz campaign was not restarted.
+[Source-bound CI receipts](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/ci-qualification.json) record the initial storage execution (233.666s) and the `bb5462a13` root/crash qualification on actual runner merge `b9cd19d69ba5c57a1f6e3ab665b3eedcc41fee3f`, over main `7be31b2d`. Root: 77 targets passed, seven executed and 70 cached, including the actual general unit execution at 178.314s. These receipts precede the compact identity revision; final-head CI remains a separate gate. Required formatting, strict Clippy and hooks pass before each commit. The previously stopped heavy local Bazel/fuzz campaign was not restarted.
 
-[Packed source-bound CI](ci-packed.json) records all nine successful Prow jobs at head `612cb32ceb778b2200b37bb8eee38980625b56ae`, integrated with base `4a2d7e0ad6762fb3f8cf93e8a61659469d622889`. Root, crates and crash clone records agree on actual runner `86f02312163d00fe3b613c0100e755ad4004c68d`; crash evidence independently reports that source. Complete BEP records distinguish root 77 targets (14 executed, 63 cached), crates 106 targets (21 executed, 85 cached), and an executed crash target at 7.930s. Cached storage-unit results are not reported as fresh executions. GitHub Actions also passed native bindings, Node/Electron, Windows contracts and iOS qualification at this head. A later documentation-only commit requires its own check status; these receipts do not assert an unmeasured future head.
+[Packed source-bound CI](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/ci-packed.json) records all nine successful Prow jobs at head `612cb32ceb778b2200b37bb8eee38980625b56ae`, integrated with base `4a2d7e0ad6762fb3f8cf93e8a61659469d622889`. Root, crates and crash clone records agree on actual runner `86f02312163d00fe3b613c0100e755ad4004c68d`; crash evidence independently reports that source. Complete BEP records distinguish root 77 targets (14 executed, 63 cached), crates 106 targets (21 executed, 85 cached), and an executed crash target at 7.930s. Cached storage-unit results are not reported as fresh executions. GitHub Actions also passed native bindings, Node/Electron, Windows contracts and iOS qualification at this head. A later documentation-only commit requires its own check status; these receipts do not assert an unmeasured future head.
 
 ## Synchronization follow-ups
 

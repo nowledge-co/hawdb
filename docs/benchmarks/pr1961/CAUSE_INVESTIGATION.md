@@ -1,5 +1,7 @@
 # Foreground latency investigation and prepared-WAL follow-up
 
+This report covers its named historical revisions. See the [PR description](https://github.com/nowledge-co/hawdb/pull/1961) for current qualification and review gates.
+
 Issue Number: ref #1960. PR: https://github.com/nowledge-co/hawdb/pull/1961.
 
 ## Outcome and acceptance boundary
@@ -60,7 +62,7 @@ carry/rebuild behavior, scrub and reopen passed in every group. Both runs were
 explicitly under host compilation/desktop load, including the local fixed
 release build during the earlier suite. They are not idle-host acceptance runs.
 There is no cross-suite causal speedup claim: even the common baseline's CPU
-and wall times changed between windows. [Source and harness identities](profile-source-metadata.json)
+and wall times changed between windows. [Source and harness identities](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/profile-source-metadata.json)
 record the frozen pre-fix harness and the final harness's portable no-op change;
 do not describe their source bytes as identical. The macOS profiling behavior
 and workloads are unchanged. The isolated fixed release rebuild took 8m40s;
@@ -75,8 +77,8 @@ compilation cost is separate from execution.
 | 512 / 4096 | node_property | 5.750 / 2.326 / 3.573 | 6.188 / 2.350 / 3.895 |
 | 512 / 4096 | relationship_property | 24.175 / 20.540 / 3.703 | 24.896 / 20.970 / 3.784 |
 
-[Raw records, per-group binary hashes and successful exit receipts](profile-prefixed-loaded/run-receipts.json)
-and [complete phase distributions](profile-prefixed-loaded/profile-summary.json)
+[Raw records, per-group binary hashes and successful exit receipts](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/profile-prefixed-loaded/run-receipts.json)
+and [complete phase distributions](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/profile-prefixed-loaded/profile-summary.json)
 are retained. In this window, candidate node-property checkpoint CPU medians
 were 51.113 / 59.642 ms, versus wall medians 404.454 / 408.003 ms.
 For 4096 relationship updates, candidate mutation CPU was 20.970 ms, so the
@@ -91,8 +93,8 @@ small-fixture fsync-dominance finding does not apply to every workload.
 | 512 / 4096 | node_property | 5.637 / 2.084 / 3.857 | 5.621 / 2.100 / 3.679 |
 | 512 / 4096 | relationship_property | 18.475 / 15.018 / 3.721 | 18.747 / 14.768 / 4.050 |
 
-[Raw records and receipts](profile-fixed-loaded/run-receipts.json) and
-[complete phase distributions](profile-fixed-loaded/profile-summary.json)
+[Raw records and receipts](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/profile-fixed-loaded/run-receipts.json) and
+[complete phase distributions](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/profile-fixed-loaded/profile-summary.json)
 retain the follow-up's controls and negatives. Its larger relationship-property
 wall median still exceeds the concurrent baseline, while CPU is lower and WAL
 fsync is higher. The smaller node-property CPU median is also higher. Do not
@@ -105,9 +107,9 @@ node-property checkpoint CPU medians were 45.099 / 53.981 ms, versus wall median
 A separate fixed-binary 512-node/4096-relationship worker was sampled for eight
 seconds at a requested 1 ms interval, after fixture preparation. The
 [exact script](sample_checkpoint.py) creates and samples only its own child.
-[Receipt](checkpoint-stack-6a/receipt.json), [worker records](checkpoint-stack-6a/worker.jsonl),
-[sampler output](checkpoint-stack-6a/sample.stderr) and the
-[complete compressed call graph](checkpoint-stack-6a/candidate-sample.txt.gz)
+[Receipt](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/checkpoint-stack-6a/receipt.json), [worker records](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/checkpoint-stack-6a/worker.jsonl),
+[sampler output](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/checkpoint-stack-6a/sample.stderr) and the
+[complete compressed call graph](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/checkpoint-stack-6a/candidate-sample.txt.gz)
 are retained. The process and sampler both exited successfully. This is
 under-load attribution, includes mutations and checkpoints, and is not a
 phase-isolated CPU or latency qualification.
@@ -140,7 +142,7 @@ batching or relaxed durability setting supplied this patch.
 
 ## Correctness and remaining work
 
-[Source-bound follow-up CI](ci-prepared-impact.json) records all nine Prow jobs
+[Source-bound follow-up CI](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/ci-prepared-impact.json) records all nine Prow jobs
 successful at head `6a378114156967f45972b49d0bc29ee25ed7874b`. Root/crates/crash
 clone records agree on runner `32f546bfb76ab81432275d6983a215f8766bfa37`.
 Complete BEP: root 77 targets (62 executed, 15 cached), crates 106 (69 executed,
@@ -155,14 +157,14 @@ A separate ordinary run used the frozen fixed executable with profiling
 omitted: no telemetry sink and no resource counter output. Four groups each
 completed 60 immediately alternating pairs after two warmups (480 measured,
 16 warmup operations); every value/count, carry/rebuild, scrub and reopen check
-passed. [Raw samples and binary receipts](paired-prepared-impact-idle-suite/run-receipts.json)
-and [full distributions/order/half splits](paired-prepared-impact-idle-suite/summary.json)
+passed. [Raw samples and binary receipts](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/paired-prepared-impact-idle-suite/run-receipts.json)
+and [full distributions/order/half splits](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/paired-prepared-impact-idle-suite/summary.json)
 are retained without filtering. The same workload and profiling code ran on
 macOS; the final harness's extra unused binding is recorded in source metadata.
 The prior frozen baseline executable is reused rather than falsely claiming it
 was rebuilt from the final harness source bytes.
 
-The [time-stamped host observations](host-prepared-impact.json) sample the top
+The [time-stamped host observations](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/host-prepared-impact.json) sample the top
 seven CPU processes by command name. They contain no active compiler/test
 workload, but include ordinary desktop and browser/Mem startup activity. These
 are sampled load observations, not continuous CPU/I/O isolation or proof that

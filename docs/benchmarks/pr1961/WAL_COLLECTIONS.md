@@ -1,5 +1,7 @@
 # WAL collection scratch reuse
 
+This report covers its named historical revisions. See the [PR description](https://github.com/nowledge-co/hawdb/pull/1961) for current qualification and review gates.
+
 Issue Number: ref #1960. PR: https://github.com/nowledge-co/hawdb/pull/1961.
 
 ## Temporal payload follow-up
@@ -104,7 +106,7 @@ cargo fmt --all -- --check
 cargo clippy --locked --workspace --all-targets --all-features -j 1 -- -D warnings
 ```
 
-[Source-bound CI receipts](ci-wal-collections.json) record all nine Prow jobs
+[Source-bound CI receipts](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/ci-wal-collections.json) record all nine Prow jobs
 passing at runtime `744f90cfee1f5d7c8803235f6eefee9f51865b49`, integrated with
 main `95f3dddb879231fb51b918bde5566ac45e91da2e`. Root/crates/crash clone records
 agree on runner `f872442a8d2136e6af08ec550820400a37c4758f`; crash evidence

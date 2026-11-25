@@ -1,5 +1,7 @@
 # Record-local WAL encoding buffers
 
+This report covers its named historical revisions. See the [PR description](https://github.com/nowledge-co/hawdb/pull/1961) for current qualification and review gates.
+
 Issue Number: ref #1960. PR: https://github.com/nowledge-co/hawdb/pull/1961.
 
 ## Source change and boundaries
@@ -72,8 +74,8 @@ candidate `ac43fe6b8`. Four groups use 60 alternating pairs plus two warmups
 each; all 480 measured operations and 16 warmups retain typed checks, scrub,
 reopen and successful exits. Other compilation, Node and virtual-machine work
 overlaps this window. It is shared-host evidence, excluded from idle acceptance.
-[Raw pairs and receipts](paired-wal-reuse-shared-suite/run-receipts.json) and
-[complete distributions](paired-wal-reuse-shared-suite/summary.json) are retained.
+[Raw pairs and receipts](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/paired-wal-reuse-shared-suite/run-receipts.json) and
+[complete distributions](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/paired-wal-reuse-shared-suite/summary.json) are retained.
 
 | Nodes / relationships | Mutation | Mutation paired median | Mutation baseline / candidate p50 (ms) | Mutation baseline / candidate p99 (ms) | Checkpoint paired median |
 |---|---|---:|---:|---:|---:|
@@ -114,9 +116,9 @@ added as an exclusive wall-time partition. Counters are process-wide; observer
 work and scheduling can perturb both variants. The reported wall-minus-fsync
 field is a residual, not an isolated CPU measurement.
 
-[All phase samples and distributions](wal-reuse-profile-trace/profile-summary.json),
-[per-call summaries](wal-reuse-profile-trace/sync-summary.json), compressed raw
-traces and [producer receipts](wal-reuse-profile-trace/run-receipts.json) remain
+[All phase samples and distributions](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/wal-reuse-profile-trace/profile-summary.json),
+[per-call summaries](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/wal-reuse-profile-trace/sync-summary.json), compressed raw
+traces and [producer receipts](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/wal-reuse-profile-trace/run-receipts.json) remain
 separate from ordinary measurements. The optional instrumentation is confined
 to the manual producer and child process; no new production control plane or
 telemetry API is added.
@@ -149,14 +151,14 @@ observations locate new slow calls without explaining the earlier uninstrumented
 Synchronization counts remain unchanged in all three instrumented groups:
 122 -> 122 (small node), 131 -> 131 (large relationship), 122 -> 122 (longer
 large-node run). This follow-up saves encoding allocations, not durability
-calls. [Complete phase records](wal-reuse-node-tail-profile/profile-summary.json),
-[raw call summary](wal-reuse-node-tail-profile/sync-summary.json), compressed
-traces and [source/binary receipts](wal-reuse-node-tail-profile/run-receipts.json)
+calls. [Complete phase records](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/wal-reuse-node-tail-profile/profile-summary.json),
+[raw call summary](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/wal-reuse-node-tail-profile/sync-summary.json), compressed
+traces and [source/binary receipts](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/wal-reuse-node-tail-profile/run-receipts.json)
 are retained. No unfavorable observation is filtered.
 
 ## Correctness qualification
 
-[Source-bound CI](ci-wal-reuse.json) records all nine Prow jobs passing at
+[Source-bound CI](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/ci-wal-reuse.json) records all nine Prow jobs passing at
 `ac43fe6b8ee51b50e4587c3509839832a7175c2d`, integrated with main `09579ce2`.
 Root/crates/crash clone records agree on runner `8fa6d6b9d4f9d240b22038b2b63965d805606f11`.
 Complete BEP distinguishes root 77 targets (62 executed,
@@ -164,7 +166,7 @@ Complete BEP distinguishes root 77 targets (62 executed,
 including a fresh storage unit execution at 238.410 s. The native allocation
 bound and independent-codec regressions are included in that owner. An executed
 crash target and its source identity are retained separately. These results do
-not establish performance acceptance. All [39 GitHub/Prow checks](checks-wal-reuse.json)
+not establish performance acceptance. All [39 GitHub/Prow checks](https://github.com/nowledge-co/hawdb/blob/6c6d06d23cdbf8577903090cdf2065c814225de2/docs/benchmarks/pr1961/checks-wal-reuse.json)
 pass at this source, including Windows, native bindings, Node/Electron and iOS.
 Independent approval is absent; later evidence-head checks remain separate. Native strict workspace Clippy, formatting and commit
 hooks pass at the source revision. No stopped local Bazel/fuzz work is resumed.
