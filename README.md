@@ -33,7 +33,7 @@ paths in [Language bindings](#language-bindings).
 
 ```toml
 [dependencies]
-hawdb = "0.39.0"
+hawdb = "0.40.0"
 ```
 
 To follow the repository tip instead of a release:
