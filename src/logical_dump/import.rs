@@ -18,11 +18,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use hawdb_core::{PropertyDefault, PropertyType, SchemaObjectState, TableKind, VectorDimension};
+use hawdb_relational::system_schema::{
+    engine_system_schema_registry_table, SystemSchemaLedger, SystemSchemaRegistry,
+};
 use hawdb_storage::mutation::GraphMutation;
 use hawdb_storage::relational::SearchIndexAnalyzer;
 use serde_json::Value as Json;
 
-use super::export::{quote_identifier, SYSTEM_SCHEMA_REGISTRY_TABLE};
+use super::export::{quote_identifier, table_model, SYSTEM_SCHEMA_REGISTRY_TABLE};
 use super::files::{read_metadata, resolve_entry_path, verify_bytes, RecordReader, Stage};
 use super::model::{
     Column, ColumnDefault, FileEntry, FileKind, GraphConstraintKind, GraphIndexKind, GraphProperty,
@@ -34,12 +37,13 @@ use super::{
     LogicalDumpImportReport, LogicalDumpOptions, LogicalDumpVerifyReport,
     LOGICAL_DUMP_FORMAT_VERSION,
 };
+use crate::api::validate_system_schema_registries;
 use crate::embedded::{HawDBEmbedded, HawDBEmbeddedOpenOptions};
 use crate::store::{DurabilityPolicy, KernelWriteBatch};
 use crate::{HawDBError, Result, Value};
 
-/// Owner of the engine's own rows in the migration registry table.
-const ENGINE_SCHEMA_OWNER: &str = hawdb_relational::system_schema::ENGINE_SYSTEM_SCHEMA_OWNER;
+/// Most migration records a dump may hold; they are validated in memory.
+const MAX_LEDGER_RECORDS: usize = 65_536;
 /// Upper bound on bound parameters in one generated INSERT statement.
 const MAX_INSERT_PARAMETERS: usize = 8192;
 
@@ -96,7 +100,8 @@ impl OpenedDump {
 /// nothing.
 pub(super) fn verify(source: &Path) -> Result<LogicalDumpVerifyReport> {
     let dump = open_dump(source)?;
-    Plan::new(&dump.manifest, &dump.schema)?;
+    let plan = Plan::new(&dump.manifest, &dump.schema)?;
+    read_ledger(source, &dump.schema, &plan)?;
     for entry in &dump.manifest.files {
         let mut reader = RecordReader::open(source, entry)?;
         while reader.next_record()?.is_some() {}
@@ -123,24 +128,33 @@ pub(super) fn import(
     source: &Path,
     destination: &Path,
     options: &LogicalDumpOptions,
+    registries: Option<&[SystemSchemaRegistry]>,
 ) -> Result<LogicalDumpImportReport> {
+    if let Some(registries) = registries {
+        validate_system_schema_registries(registries)?;
+    }
     let dump = open_dump(source)?;
     let (manifest, schema) = (&dump.manifest, &dump.schema);
     let plan = Plan::new(manifest, schema)?;
     refuse_unknown_analyzers(schema)?;
+    let ledger = read_ledger(source, schema, &plan)?;
+    if let Some(registries) = registries {
+        ledger.validate_registries(registries)?;
+    }
 
     let stage = Stage::create(destination, "import")?;
     let mut target = Target::open(stage.path(), options)?;
+    target.restore_ledger(&ledger)?;
     target.create_tables(&schema.tables)?;
     target.create_search_indexes(&schema.tables)?;
-    for table in &schema.tables {
+    for table in application_tables(&schema.tables) {
         target.load_table(source, table, plan.table_files(&table.name))?;
     }
     target.create_table_indexes(&schema.tables)?;
     target.create_graph_schema(&schema.graph)?;
     target.load_graph(source, &plan.nodes, &plan.relationships)?;
     target.finish_graph_schema(&schema.graph)?;
-    target.verify(manifest)?;
+    target.verify(manifest, &ledger)?;
     target.close()?;
     stage.publish()?;
 
@@ -287,6 +301,64 @@ fn refuse_unknown_analyzers(schema: &Schema) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The tables a dump may define. The migration registry table is the engine's:
+/// the target creates it itself and only its validated records are restored.
+fn application_tables(tables: &[Table]) -> impl Iterator<Item = &Table> {
+    tables
+        .iter()
+        .filter(|table| table.name != SYSTEM_SCHEMA_REGISTRY_TABLE)
+}
+
+/// Reads and validates the dump's migration records before anything is
+/// written. The registry table must be defined exactly as this build defines
+/// it, the engine's records must be a prefix of this build's engine registry,
+/// and every other owner's records must be ones a registry upgrade writes.
+///
+/// A dump authenticates nothing (its checksums detect damage, not a rewrite),
+/// so the records are never more than a claim: whoever supplies a registry,
+/// here or when opening the imported database, verifies them against it.
+fn read_ledger(source: &Path, schema: &Schema, plan: &Plan<'_>) -> Result<SystemSchemaLedger> {
+    let Some(table) = schema
+        .tables
+        .iter()
+        .find(|table| table.name == SYSTEM_SCHEMA_REGISTRY_TABLE)
+    else {
+        return Ok(SystemSchemaLedger::default());
+    };
+    let expected = table_model(&engine_system_schema_registry_table()?)?;
+    if *table != expected {
+        return Err(malformed(format!(
+            "table {SYSTEM_SCHEMA_REGISTRY_TABLE} does not match the engine definition"
+        )));
+    }
+    let files = plan.table_files(&table.name);
+    let records = files.iter().map(|file| file.records).sum::<u64>();
+    if records > MAX_LEDGER_RECORDS as u64 {
+        return Err(malformed(format!(
+            "table {SYSTEM_SCHEMA_REGISTRY_TABLE} holds {records} records; at most \
+             {MAX_LEDGER_RECORDS} are supported"
+        )));
+    }
+    let mut rows = Vec::new();
+    for file in files {
+        let mut reader = RecordReader::open(source, file)?;
+        while let Some(record) = reader.next_record()? {
+            // The reader compares the count only once the file ends.
+            if rows.len() == MAX_LEDGER_RECORDS {
+                return Err(malformed(format!(
+                    "{} holds more records than its manifest entry",
+                    file.path
+                )));
+            }
+            rows.push(decode_row(&record, table, file)?);
+        }
+        reader.finish()?;
+    }
+    let ledger = SystemSchemaLedger::from_rows(rows.iter().map(Vec::as_slice))?;
+    ledger.validate_engine()?;
+    Ok(ledger)
 }
 
 /// The manifest's data files, validated against the schema before any write.
@@ -749,9 +821,6 @@ struct Target {
     since_checkpoint: u64,
     /// Rows written per table, for the final count check.
     loaded_rows: BTreeMap<String, u64>,
-    /// Engine-owned registry rows the target created itself and kept.
-    engine_registry_rows: u64,
-    registry_preexisting: bool,
 }
 
 impl Target {
@@ -768,8 +837,6 @@ impl Target {
             checkpoint_records: options.import_checkpoint_records.get() as u64,
             since_checkpoint: 0,
             loaded_rows: BTreeMap::new(),
-            engine_registry_rows: 0,
-            registry_preexisting: false,
         })
     }
 
@@ -790,33 +857,32 @@ impl Target {
             .collect())
     }
 
+    /// Restores the application owners' migration records. The target's own
+    /// bootstrap already created the registry table and its engine records.
+    fn restore_ledger(&mut self, ledger: &SystemSchemaLedger) -> Result<()> {
+        self.database
+            .database_mut()
+            .restore_system_schema_ledger(ledger)
+            .map(|_| ())
+    }
+
     fn create_tables(&mut self, tables: &[Table]) -> Result<()> {
         let existing = self.existing_tables()?;
-        for table in tables {
+        for table in application_tables(tables) {
             if existing.contains(&table.name) {
-                if table.name != SYSTEM_SCHEMA_REGISTRY_TABLE {
-                    return Err(HawDBError::Storage(format!(
-                        "logical dump: fresh import target already has table {}",
-                        table.name
-                    )));
-                }
-                self.registry_preexisting = true;
-                continue;
+                return Err(HawDBError::Storage(format!(
+                    "logical dump: fresh import target already has table {}",
+                    table.name
+                )));
             }
             let sql = create_table_sql(table)?;
             self.sql(&sql, &[])?;
-        }
-        if self.registry_preexisting {
-            self.engine_registry_rows = self.count_rows(SYSTEM_SCHEMA_REGISTRY_TABLE)?;
         }
         Ok(())
     }
 
     fn create_table_indexes(&mut self, tables: &[Table]) -> Result<()> {
-        for table in tables {
-            if table.name == SYSTEM_SCHEMA_REGISTRY_TABLE && self.registry_preexisting {
-                continue;
-            }
+        for table in application_tables(tables) {
             for index in &table.indexes {
                 let include = if index.included_columns.is_empty() {
                     String::new()
@@ -849,7 +915,7 @@ impl Target {
     /// loading would backfill the whole table in one transaction, which the
     /// mutation budget refuses for a large corpus.
     fn create_search_indexes(&mut self, tables: &[Table]) -> Result<()> {
-        for table in tables {
+        for table in application_tables(tables) {
             for index in &table.search_indexes {
                 let sql = format!(
                     "CREATE SEARCH INDEX {} ON {} ({}) WITH (analyzer = {})",
@@ -876,15 +942,6 @@ impl Target {
     fn load_table(&mut self, source: &Path, table: &Table, files: &[&FileEntry]) -> Result<()> {
         let width = table.columns.len().max(1);
         let batch_rows = self.page_rows.min(MAX_INSERT_PARAMETERS / width).max(1);
-        let owner_position = (table.name == SYSTEM_SCHEMA_REGISTRY_TABLE
-            && self.registry_preexisting)
-            .then(|| {
-                table
-                    .columns
-                    .iter()
-                    .position(|column| column.name == "owner")
-            })
-            .flatten();
         let deferred = deferred_self_references(table)?;
         let mut loaded = 0u64;
         let mut batch = Vec::with_capacity(batch_rows);
@@ -893,13 +950,6 @@ impl Target {
             let mut reader = RecordReader::open(source, file)?;
             while let Some(record) = reader.next_record()? {
                 let mut values = decode_row(&record, table, file)?;
-                // The importing engine keeps its own registry rows; only the
-                // application owners' migration records come from the dump.
-                if let Some(position) = owner_position
-                    && values[position] == Value::String(ENGINE_SCHEMA_OWNER.to_string())
-                {
-                    continue;
-                }
                 if let Some(deferred) = &deferred
                     && deferred
                         .columns
@@ -1241,12 +1291,11 @@ impl Target {
         self.graph_batch(&mut nodes, &mut relationships)
     }
 
-    fn verify(&mut self, manifest: &Manifest) -> Result<()> {
-        for (table, loaded) in self.loaded_rows.clone() {
-            let mut expected = loaded;
-            if table == SYSTEM_SCHEMA_REGISTRY_TABLE && self.registry_preexisting {
-                expected += self.engine_registry_rows;
-            }
+    fn verify(&mut self, manifest: &Manifest, ledger: &SystemSchemaLedger) -> Result<()> {
+        self.database
+            .database_mut()
+            .verify_restored_system_schema_ledger(ledger)?;
+        for (table, expected) in self.loaded_rows.clone() {
             let counted = self.count_rows(&table)?;
             if counted != expected {
                 return Err(HawDBError::StorageIntegrity(format!(

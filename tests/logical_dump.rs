@@ -20,6 +20,8 @@
 
 #[path = "logical_dump/support.rs"]
 mod logical_dump_support;
+#[path = "logical_dump/system_schema.rs"]
+mod system_schema;
 
 use std::collections::BTreeMap;
 use std::fs;

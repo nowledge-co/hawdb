@@ -21,6 +21,7 @@ excludes = [
     # The golden logical dump's bytes are pinned by the SHA-256 values in its
     # own manifest; every later release must import them unchanged.
     "tests/logical_dump/golden_v1/**",
+    "tests/logical_dump/golden_v1_host_ledger/**",
     # MoonBit rewrites these interface snapshots during `moon info` and `moon check`.
     "**/pkg.generated.mbti",
     # Compiler output and downloaded MoonBit dependencies are not project source.

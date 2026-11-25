@@ -12,15 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::Database;
+use super::{Database, DatabaseTransaction};
 use crate::error::{HawDBError, Result};
 use crate::value::Value;
 use hawdb_relational::system_schema::{
     decode_applied_system_schema_migration_query_row, engine_system_schema_registry,
     is_engine_system_schema_bootstrap, read_applied_system_schema_migrations,
-    state_with_engine_system_schema, validate_applied_system_schema_migrations,
-    validate_engine_system_schema_registry_table, validate_engine_system_schema_state,
-    validate_system_schema_registry, AppliedSystemSchemaMigration, ENGINE_SYSTEM_SCHEMA_OWNER,
+    state_with_engine_system_schema, system_schema_migration_id,
+    validate_applied_system_schema_migrations, validate_engine_system_schema_registry_table,
+    validate_engine_system_schema_state, validate_system_schema_registry,
+    AppliedSystemSchemaMigration, SystemSchemaLedger, ENGINE_SYSTEM_SCHEMA_OWNER,
     ENGINE_SYSTEM_SCHEMA_REGISTRY_INSERT_SQL, ENGINE_SYSTEM_SCHEMA_REGISTRY_TABLE,
 };
 pub use hawdb_relational::{
@@ -35,7 +36,143 @@ struct SystemSchemaPlan<'a> {
     pending: Vec<&'a SystemSchemaMigration>,
 }
 
+/// Validates a set of registries a host supplied together.
+pub(crate) fn validate_system_schema_registries(registries: &[SystemSchemaRegistry]) -> Result<()> {
+    let engine_registry = engine_system_schema_registry();
+    let mut owners = std::collections::BTreeSet::new();
+    for registry in registries {
+        validate_system_schema_registry(registry)?;
+        if registry.owner() == ENGINE_SYSTEM_SCHEMA_OWNER && registry != &engine_registry {
+            return Err(HawDBError::Semantic(format!(
+                "system schema owner {ENGINE_SYSTEM_SCHEMA_OWNER} is reserved by the engine"
+            )));
+        }
+        if !owners.insert(registry.owner()) {
+            return Err(HawDBError::Semantic(format!(
+                "system schema owner {} is registered more than once",
+                registry.owner()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Writes one migration record through the privileged registry path, the only
+/// one that may write the registry table.
+fn insert_migration_record(
+    transaction: &mut DatabaseTransaction<'_>,
+    owner: &str,
+    version: u64,
+    name: &str,
+    checksum: &str,
+) -> Result<()> {
+    let bound_version = i64::try_from(version).map_err(|_| {
+        HawDBError::Semantic(format!(
+            "system schema {owner} migration version {version} exceeds BIGINT"
+        ))
+    })?;
+    transaction.query_system_schema_sql_with_params(
+        ENGINE_SYSTEM_SCHEMA_REGISTRY_INSERT_SQL,
+        &[
+            Value::String(system_schema_migration_id(owner, version)),
+            Value::String(owner.to_string()),
+            Value::Int(bound_version),
+            Value::String(name.to_string()),
+            Value::String(checksum.to_string()),
+        ],
+    )?;
+    Ok(())
+}
+
 impl Database {
+    /// Restores the application owners' migration records of a logical dump
+    /// into this fresh import target, in one transaction, and returns how many
+    /// were written. The target keeps the engine records its own bootstrap
+    /// wrote, and it must hold no other record.
+    ///
+    /// Only logical dump import calls this, with a ledger it has validated.
+    /// It reaches the registry table through fixed INSERTs of typed records
+    /// and executes nothing else from the dump.
+    pub(crate) fn restore_system_schema_ledger(
+        &mut self,
+        ledger: &SystemSchemaLedger,
+    ) -> Result<u64> {
+        let engine = engine_system_schema_registry();
+        let bootstrapped = self
+            .plan_system_schema_registry(&engine)?
+            .pending
+            .is_empty();
+        let records = self.system_schema_record_count()?;
+        if !bootstrapped || records != engine.current_version() {
+            return Err(HawDBError::Storage(
+                "system schema records can only be restored into a fresh database".to_string(),
+            ));
+        }
+        let mut written = 0;
+        let mut transaction = self.begin_transaction()?;
+        for (owner, applied) in ledger.application_owners() {
+            for record in applied {
+                insert_migration_record(
+                    &mut transaction,
+                    owner,
+                    record.version(),
+                    record.name(),
+                    record.checksum(),
+                )?;
+                written += 1;
+            }
+        }
+        if written == 0 {
+            transaction.rollback();
+        } else {
+            transaction.commit()?;
+        }
+        Ok(written)
+    }
+
+    /// Requires the registry table to hold the engine's records and exactly
+    /// the application records of `ledger`.
+    pub(crate) fn verify_restored_system_schema_ledger(
+        &mut self,
+        ledger: &SystemSchemaLedger,
+    ) -> Result<()> {
+        let engine = engine_system_schema_registry();
+        let mut expected = engine.current_version();
+        let mut matches = self
+            .plan_system_schema_registry(&engine)?
+            .pending
+            .is_empty();
+        for (owner, applied) in ledger.application_owners() {
+            expected += applied.len() as u64;
+            matches &= self
+                .read_applied_migrations_query(owner, applied.len().saturating_add(1))?
+                .as_slice()
+                == applied;
+        }
+        if !matches || self.system_schema_record_count()? != expected {
+            return Err(HawDBError::StorageIntegrity(
+                "restored system schema records do not match their source".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn system_schema_record_count(&mut self) -> Result<u64> {
+        let output = self.query_sql("SELECT COUNT(*) AS n FROM hawdb_schema_migrations")?;
+        let count = output
+            .value_rows()
+            .next()
+            .and_then(|row| match row.first() {
+                Some(Value::Int(count)) => u64::try_from(*count).ok(),
+                _ => None,
+            });
+        count.ok_or_else(|| {
+            HawDBError::StorageIntegrity(
+                "COUNT(*) on the system schema registry returned no count".to_string(),
+            )
+        })
+    }
+
     pub(super) fn apply_engine_system_schema(&mut self) -> Result<SystemSchemaUpgradeReport> {
         let mut reports =
             self.apply_system_schema_registries_inner(&[&engine_system_schema_registry()])?;
@@ -77,21 +214,7 @@ impl Database {
         registries: &[SystemSchemaRegistry],
     ) -> Result<Vec<SystemSchemaUpgradeReport>> {
         let engine_registry = engine_system_schema_registry();
-        let mut owners = std::collections::BTreeSet::new();
-        for registry in registries {
-            validate_system_schema_registry(registry)?;
-            if registry.owner() == ENGINE_SYSTEM_SCHEMA_OWNER && registry != &engine_registry {
-                return Err(HawDBError::Semantic(format!(
-                    "system schema owner {ENGINE_SYSTEM_SCHEMA_OWNER} is reserved by the engine"
-                )));
-            }
-            if !owners.insert(registry.owner()) {
-                return Err(HawDBError::Semantic(format!(
-                    "system schema owner {} is registered more than once",
-                    registry.owner()
-                )));
-            }
-        }
+        validate_system_schema_registries(registries)?;
         // Application registries are recorded in the engine registry table,
         // so the engine schema must be current before they are planned.
         let engine_report = self
@@ -158,22 +281,12 @@ impl Database {
                             transaction.query_sql(statement)?;
                         }
                     }
-                    let version = i64::try_from(migration.version()).map_err(|_| {
-                        HawDBError::Semantic(format!(
-                            "system schema {} migration version {} exceeds BIGINT",
-                            registry.owner(),
-                            migration.version()
-                        ))
-                    })?;
-                    transaction.query_system_schema_sql_with_params(
-                        ENGINE_SYSTEM_SCHEMA_REGISTRY_INSERT_SQL,
-                        &[
-                            Value::String(format!("{}:{}", registry.owner(), migration.version())),
-                            Value::String(registry.owner().to_string()),
-                            Value::Int(version),
-                            Value::String(migration.name().to_string()),
-                            Value::String(migration.checksum(registry.owner())),
-                        ],
+                    insert_migration_record(
+                        &mut transaction,
+                        registry.owner(),
+                        migration.version(),
+                        migration.name(),
+                        &migration.checksum(registry.owner()),
                     )?;
                     versions.push(migration.version());
                 }

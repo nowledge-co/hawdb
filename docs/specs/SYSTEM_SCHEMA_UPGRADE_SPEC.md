@@ -61,6 +61,15 @@ export state without mutating its live commit epoch. Initial import accepts a
 target containing only the verified engine bootstrap, but rejects a stream
 that omits or drifts the engine registry.
 
+Logical dump import ([LOGICAL_DUMP.md](../LOGICAL_DUMP.md#system-schema-registries))
+restores application records into its fresh, unpublished target through the
+engine's registry insert, never through a statement from the dump. It validates
+the table definition, the engine's records and the shape of every other record
+before it writes, keeps the target's own engine records, and verifies the
+restored records before publication. Import runs no migration. A host that
+passes its registries gets rule 3 before any write; otherwise rule 3 applies
+when the host registers them on open.
+
 `ALTER TABLE ... ADD COLUMN` is durable through the same WAL transaction. It
 rewrites immutable relational rows with the declared default (or `NULL`) and
 is admitted against row and full resident-rewrite byte limits. Adding a
@@ -121,6 +130,8 @@ Focused HawDB tests must prove:
 - failed DDL does not publish a migration version;
 - read-only open rejects pending upgrades;
 - ordinary SQL and application migrations cannot modify the engine registry;
+- logical dump import restores application records, installed and pending,
+  and refuses forged or corrupt records before writing;
 - pure schema commits do not create search mutations or projection work.
 
 The Mem adapter must separately prove:

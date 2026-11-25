@@ -1127,3 +1127,42 @@ fn batched_system_schema_crash_recovers_every_owner_or_none() {
         std::fs::remove_dir_all(path).unwrap();
     }
 }
+
+/// Restoring a dump's records is not a second way to write the registry
+/// table of a live database.
+#[test]
+fn ledger_restore_is_limited_to_a_fresh_database() {
+    use hawdb_relational::system_schema::SystemSchemaLedger;
+
+    let root = std::env::temp_dir().join(format!(
+        "hawdb-ledger-restore-{}-{}",
+        std::process::id(),
+        hawdb_core::generate_uuidv7().unwrap()
+    ));
+    let row = [
+        Value::String("example.host:1".to_string()),
+        Value::String("example.host".to_string()),
+        Value::Int(1),
+        Value::String("create_host".to_string()),
+        Value::String("0".repeat(64)),
+    ];
+    let ledger = SystemSchemaLedger::from_rows([&row[..]]).unwrap();
+    let mut database = Database::open(&root).unwrap();
+    assert!(database
+        .verify_restored_system_schema_ledger(&ledger)
+        .is_err());
+    database
+        .verify_restored_system_schema_ledger(&SystemSchemaLedger::default())
+        .unwrap();
+    assert_eq!(database.restore_system_schema_ledger(&ledger).unwrap(), 1);
+    database
+        .verify_restored_system_schema_ledger(&ledger)
+        .unwrap();
+    assert!(database
+        .verify_restored_system_schema_ledger(&SystemSchemaLedger::default())
+        .is_err());
+    let error = database.restore_system_schema_ledger(&ledger).unwrap_err();
+    assert!(error.to_string().contains("fresh database"), "{error}");
+    drop(database);
+    std::fs::remove_dir_all(root).unwrap();
+}

@@ -4893,6 +4893,30 @@ Specification: [LOGICAL_DUMP.md](LOGICAL_DUMP.md).
     case above fails verification without writing, and
     `confirm_logical_dump_publication` is idempotent on an export and an
     import, changes no byte, and refuses a missing path or a file.
+  - host system schema registries (#1975,
+    `tests/logical_dump/system_schema.rs`, filter `system_schema::`):
+    `dump_of_an_older_persistent_format_restores_installed_migrations` imports
+    the checked-in dump that v0.37.0 (persistent format 5) wrote of two
+    registries (`golden_v1_host_ledger/`; these bytes must never change) and
+    checks the migration records, the owned tables' rows, keys, foreign key
+    and covering index, that installed migrations do not run again and that a
+    pending one does, and that SQL still cannot write the registry table.
+    `same_format_round_trip_restores_installed_and_pending_migrations` covers
+    eleven versions, import with and without registries, and a byte-identical
+    re-export. `forged_or_corrupt_ledgers_are_refused_before_anything_is_written`
+    rewrites the records and the table definition with consistent manifest
+    hashes (19 record edits, 6 definition edits; `verify_logical_dump` and
+    import refuse each and publish nothing), fails a host table after the
+    records were restored, then imports at the same destination.
+    `host_registries_decide_whether_restored_records_are_trusted` covers a
+    drifted, short, missing, reserved and repeated registry, and a well-formed
+    forgery that the registry refuses on import or on open. The record decoder
+    is covered by the `hawdb-relational` unit
+    `external_ledger_rows_must_be_ones_a_registry_upgrade_writes`, the
+    fresh-target restriction by the root unit
+    `ledger_restore_is_limited_to_a_fresh_database`, and the C ABI path by
+    `host_system_schema_records_survive_export_and_import` in
+    `bindings/ffi/src/dump_tests.rs`. No new lane or timeout.
   - the checked-in golden format 1 dump (`tests/logical_dump/golden_v1/`)
     imports with exact values. These bytes must never change. Regenerate a
     new golden version only with the `#[ignore]`d `write_golden_format_1_dump`
