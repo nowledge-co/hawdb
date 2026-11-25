@@ -42,6 +42,24 @@ vector, and traversal continues when the worst case of the rest of the scan
 exceeds the remaining work limit. Larger graphs always use traversal. The
 candidate window is a floor for the beam.
 
+The graphs of a segmented generation are searched in layer order and share a
+result bound (#1918). Once earlier graphs returned as many hits as the query
+keeps (its rank window or limit), the raw distance of the worst of them bounds
+each later unfiltered graph. That graph may end its traversal when all of these hold:
+the nearest quarter of its beam, at least 64 candidates, is expanded; the
+nearest unexpanded candidate is more than 1.2 times as far as the bound (chord
+length for cosine); the nearest candidate found is within that reach, so the
+traversal has arrived in the region of the query; and the candidate window can
+be filled from the beam. The first graph, a single-graph generation, filtered
+traversal and every spread-probe decision are unchanged. Work is charged per
+vector as before, and admission still covers the full beam. Results are
+deterministic, but they depend on layer order. Reported scores stay exact.
+
+These constants are also empirical heuristics, not a recall guarantee. A closer
+vertex that only a worse frontier reaches is missed, as behind a full beam.
+Candidates beyond the kept results only fill the window and can be less
+accurate than with an unshortened traversal.
+
 ## Architecture decision
 
 Implement Vamana construction and multi-hop filtered search in the existing

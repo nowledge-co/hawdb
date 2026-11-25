@@ -145,19 +145,25 @@ impl Projection {
         }
     }
     /// `navigation_beam` is the DiskANN traversal beam; RaBitQ layers
-    /// ignore it.
+    /// ignore it. `result_bound` is the raw distance of the worst result kept
+    /// from earlier layers; only DiskANN layers use it.
     pub(super) fn search(
         &self,
         query: &[f32],
         top_k: usize,
         options: ProjectionSearchOptions<'_>,
         navigation_beam: usize,
+        result_bound: Option<f64>,
     ) -> hawdb_vector_projection::Result<ProjectionSearchOutput> {
         match self {
             Self::Ordinary(value) => value.search(query, top_k, options),
             Self::Admitted(value) => value.search(query, top_k, options),
-            Self::DiskAnn(value) => value.search(query, top_k, options, navigation_beam),
-            Self::AdmittedDiskAnn(value) => value.search(query, top_k, options, navigation_beam),
+            Self::DiskAnn(value) => {
+                value.search(query, top_k, options, navigation_beam, result_bound)
+            }
+            Self::AdmittedDiskAnn(value) => {
+                value.search(query, top_k, options, navigation_beam, result_bound)
+            }
         }
     }
 }
