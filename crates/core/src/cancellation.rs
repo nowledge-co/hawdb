@@ -622,6 +622,11 @@ impl RuntimeTaskContext {
         self.work_budget.as_ref().map_or(0, |budget| budget.used())
     }
 
+    /// Work still chargeable under every enclosing limit, or `None` without one.
+    pub fn remaining_work(&self) -> Option<usize> {
+        self.work_budget.as_ref().map(|budget| budget.remaining())
+    }
+
     /// Preserve a typed refusal across adapters whose error transport is text.
     pub fn check_work_limit(&self) -> crate::Result<()> {
         match self

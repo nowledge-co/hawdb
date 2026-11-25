@@ -17,18 +17,12 @@ impl FilteredFeedback {
         ordinal_ids: bool,
         report: &DiskAnnSearchReport,
     ) -> Self {
-        // One iteration, at most log2(N)+1 ID reads, and one new visit per ID.
-        // Missing IDs and repeated seeds only reduce this conservative bound.
-        let lookup_steps = if ordinal_ids {
-            0
-        } else {
-            nodes.checked_ilog2().unwrap_or(0) as usize + 1
-        };
         Self {
             initial_visits: report.visited_nodes,
             initial_scores: report.distance_comparisons,
             eligible_count,
-            exact_work: eligible_count.saturating_mul(lookup_steps + 2),
+            // Missing IDs and repeated seeds only reduce this conservative bound.
+            exact_work: super::exact::filtered_work(nodes, eligible_count, ordinal_ids),
         }
     }
 
