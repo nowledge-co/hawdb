@@ -5172,3 +5172,19 @@ also owns manual v3/v3 handoff/publication comparisons and bounded macOS arm64
 per-call tracing. These are diagnostic artifacts outside CI. Traced timings and
 the rejected immediate-write logger never replace ordinary performance gates;
 complete raw pairs, compressed trace logs and ABI probe provenance are retained.
+
+### WAL batch encoding buffers
+
+The ordinary `//crates/storage:hawdb_storage_tests` owner covers record-local
+operation/value buffer reuse, independent checkpoint-codec byte equality after
+large-to-small payload transitions, and bounded native scalar-batch allocation
+counts. Existing all-operation/value wire fixtures, invalid nesting, replay and
+power-loss tests remain active. Scratch buffers above 64 KiB are released after
+each frame; no process/thread cache or persisted format is added.
+
+`cargo bench --locked -p hawdb-storage --bench wal_batch_encode -- <node|relationship|large-small> <operations> <rounds>`
+builds the manual step-controlled encoding-only diagnostic. After readiness,
+write one `step` per round plus two warmups to stdin. Its borrowed input setup,
+wire roundtrip and complete byte checks remain outside its encode timer. This
+is not synchronized commit throughput, query latency or tail acceptance. Keep
+it outside CI; strict workspace all-target Clippy still checks its source.
