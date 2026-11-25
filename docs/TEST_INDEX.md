@@ -5006,6 +5006,29 @@ and no legacy `relational.N.hawdb` file; persistent format 6.
 No new lane, profile, timeout or feature. Recorder images do not qualify
 physical devices.
 
+## Leftover publication candidates (#1979)
+
+- Storage unit owner (`cargo test --locked -p hawdb-storage --lib`, no feature):
+  `branch_head::tests::publication_skips_a_crashed_process_candidate` occupies
+  earlier-version and reused-PID candidate names; the publication succeeds at
+  the first attempt and a failed one removes only its own file.
+  `durability::tests::candidate_creation_skips_and_keeps_names_it_does_not_own`
+  covers the helper shared with catalog, identity and object staging files.
+- Root power-loss family `api::tests::power_loss::checkpoint_leftovers`
+  (`cargo test --locked -p hawdb --features test-support --lib api::tests::power_loss::checkpoint_leftovers`)
+  complements `checkpoint_temporaries` (#1974): it cuts a manual, an automatic
+  and a child-branch checkpoint after every file creation, and a manual and an
+  automatic one before every rename, and requires all 13 exclusively created
+  kinds among the cuts. Manual creation cuts are recovered as a killed process
+  by each of `Database`, `EmbeddedStoreHandle` (main branch) and the automatic
+  owner; the other schedules rotate them. Every cut is also recovered as a
+  power loss by `Database`: the first checkpoint must succeed and a
+  further reopen must read every row. It falls in the Windows `remaining`
+  partition.
+
+No new lane, profile, timeout or feature. Recorder images do not qualify
+physical devices.
+
 ## Relational row-root checkpoint compatibility
 
 Root unit owner `api::tests::relational_checkpoint_layout_refusal`

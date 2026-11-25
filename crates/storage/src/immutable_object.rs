@@ -1427,15 +1427,19 @@ impl ImmutableObjectStore {
         Ok(destination)
     }
 
-    fn stage_payload(&self, payload: &[u8]) -> Result<StagedFile, ImmutableObjectError> {
+    fn create_staging_file(&self) -> Result<(StagedFile, File), ImmutableObjectError> {
         let staging_directory = self.root.join(OBJECTS_DIRECTORY).join(STAGING_DIRECTORY);
-        let sequence = STAGING_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let path = staging_directory.join(format!("{}-{sequence}.stage", std::process::id()));
-        let mut file = map_io(
+        let (path, file) = map_io(
             "create immutable object staging file",
-            OpenOptions::new().write(true).create_new(true).open(&path),
+            crate::durability::create_candidate_file(&STAGING_SEQUENCE, |sequence| {
+                staging_directory.join(format!("{}-{sequence}.stage", std::process::id()))
+            }),
         )?;
-        let path = StagedFile(path);
+        Ok((StagedFile(path), file))
+    }
+
+    fn stage_payload(&self, payload: &[u8]) -> Result<StagedFile, ImmutableObjectError> {
+        let (path, mut file) = self.create_staging_file()?;
         if let Err(error) = file.write_all(payload).and_then(|_| file.sync_all()) {
             drop(file);
             return Err(ImmutableObjectError::Io {
@@ -1453,14 +1457,7 @@ impl ImmutableObjectStore {
         work: BlockWork<'_>,
     ) -> Result<(StagedFile, Option<published::WrittenStamp>), ImmutableObjectError> {
         let mut input = map_io("open immutable object source", File::open(source))?;
-        let staging_directory = self.root.join(OBJECTS_DIRECTORY).join(STAGING_DIRECTORY);
-        let sequence = STAGING_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let path = staging_directory.join(format!("{}-{sequence}.stage", std::process::id()));
-        let mut file = map_io(
-            "create immutable object staging file",
-            OpenOptions::new().write(true).create_new(true).open(&path),
-        )?;
-        let path = StagedFile(path);
+        let (path, mut file) = self.create_staging_file()?;
         let copied = (|| -> Result<Option<published::WrittenStamp>, ImmutableObjectError> {
             let mut identity = ObjectReferenceWriter::new(
                 reference.kind,
