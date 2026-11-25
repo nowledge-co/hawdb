@@ -1138,7 +1138,8 @@ fn diskann_small_domain_scan_finds_a_neighbor_that_traversal_cannot_reach() {
     assert!(!narrow.report.adaptive_exact_scan);
     assert!(narrow.report.expanded_nodes >= 48);
     assert!(narrow.hits.iter().all(|hit| hit.id != target));
-    // A non-selective filter has the same gap and the same guarantee.
+    // A non-selective filter has the same gap. This probe also sees wide
+    // spreading here, so the filtered search finishes exactly too.
     let eligible: Vec<_> = (0..=target).filter(|id| id % 10 != 3).collect();
     let filtered = search_diskann(
         &graph,
