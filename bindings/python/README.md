@@ -350,8 +350,14 @@ print(result.columns)      # ['s.code']
 print(result.fetchall())   # [{'s.code': '603122'}]
 
 db.execute_sql("SELECT 1")
+db.checkpoint()  # e.g. before a backup or shutdown
 db.close()
 ```
+
+`db.checkpoint()` publishes the committed state of a persistent database and
+returns once that checkpoint is durable. It blocks the calling thread, passes no
+query admission, and is refused while a transaction is open, on a read-only
+database and after `close()`. An in-memory database has nothing to publish.
 
 `db.transaction()` opens the engine's single user transaction: statements
 inside the `with` block see their own writes, a clean exit publishes them as

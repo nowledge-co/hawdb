@@ -3127,6 +3127,16 @@ surface as NotFound for the child. Preserve the requested absolute path in that
 refusal and leave the existing file untouched. The release profile and feature
 set match the existing Linux wheel lane.
 
+The same Python binding family covers explicit `Database.checkpoint()` in
+`test_file.py`: publication followed by read-only graph/SQL reopen, read-only,
+open-write-transaction and closed-handle refusals, and an in-memory no-op.
+`test_stubs.py` checks that the method's type-stub signature matches the native
+binding. These cases use the existing `//bindings/python:hawdb_python_tests`
+target and Python Bindings workflow lanes, with no profile or scheduling
+changes. Replay `pytest tests/test_file.py -k checkpoint` and
+`pytest tests/test_stubs.py` from `bindings/python` with the corresponding
+installed wheel. Ref [#1455](https://github.com/nowledge-co/hawdb/issues/1455).
+
 The same Python path family covers explicit `namespace_durability_anchor`
 forwarding through `open`, `Database` and DB-API `connect`: graph/SQL commit,
 writable/read-only reopen, string/PathLike boundaries, preservation of read

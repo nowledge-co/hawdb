@@ -254,6 +254,48 @@ def test_deferred_admission_keeps_metadata_and_retries_after_busy_writer(tmp_pat
         writer.close()
 
 
+def _project_files(path):
+    return {
+        (file.relative_to(path).as_posix(), file.stat().st_size)
+        for file in path.rglob("*")
+        if file.is_file()
+    }
+
+
+def test_checkpoint_publishes_committed_state(tmp_path):
+    path = tmp_path / "checkpointed"
+    with hawdb.open(path) as db:
+        db.execute("CREATE (:Memory {id: 1})")
+        db.execute_sql("CREATE TABLE records (id BIGINT PRIMARY KEY)")
+        db.execute_sql("INSERT INTO records VALUES (1)")
+        before = _project_files(path)
+        assert db.checkpoint() is None
+        assert _project_files(path) != before
+
+    with hawdb.open(path, read_only=True) as db:
+        assert db.execute("MATCH (n:Memory) RETURN n.id AS id").fetchall() == [
+            {"id": 1}
+        ]
+        assert db.execute_sql("SELECT id FROM records").fetchall() == [{"id": 1}]
+        with pytest.raises(exceptions.ExecutionError, match="read-only"):
+            db.checkpoint()
+
+
+def test_checkpoint_refusals_and_in_memory(tmp_path):
+    with hawdb.open() as memory:
+        assert memory.checkpoint() is None
+
+    db = hawdb.open(tmp_path / "refusals")
+    with db.transaction() as tx:
+        tx.execute("CREATE (:Memory {id: 1})")
+        with pytest.raises(RuntimeError, match="a transaction is open"):
+            db.checkpoint()
+    db.checkpoint()
+    db.close()
+    with pytest.raises(RuntimeError, match="database is closed"):
+        db.checkpoint()
+
+
 def test_sql_nested_branch_schema_data_and_reopen(tmp_path):
     path = tmp_path / "branches"
     create = "CREATE BRANCH NAME $1 FROM ID $2 AT REVISION $3 REQUEST KEY $4"
