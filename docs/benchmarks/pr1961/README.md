@@ -130,3 +130,7 @@ python3 docs/benchmarks/pr1961/analyze.py docs/benchmarks/pr1961/paired-packed-s
 ## WAL encoding follow-up
 
 [Record-local buffer reuse](WAL_ENCODING.md) records current source, encoding-only before/after measurements, separately instrumented phase evidence, correctness CI and the remaining ordinary-query acceptance gate. Earlier datasets qualify their own revisions only.
+
+## Collection allocation follow-up on a busy host
+
+[WAL collection scratch reuse](WAL_COLLECTIONS.md) extends reuse to List/Map/property entries and records source-bound CI allocation-count inequalities. No elapsed-time benchmark is run for this revision; earlier latency numbers retain their earlier source scope.

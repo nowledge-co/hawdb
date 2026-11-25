@@ -1,7 +1,8 @@
 {
   "CAUSE_INVESTIGATION.md": "ae3517dfb2d536507b0f3312cf2312b57a26263505266442a1d340def31f486d",
-  "README.md": "dea6306564b98334a72b3e48b43f871fdbd435e7ae8e5970bfdb199b0151a8ae",
+  "README.md": "487dc914b779273cac9482774659496ddf20fd3095fac81e73951f957cc24510",
   "SYNC_INVESTIGATION.md": "1955fa5b86dc2f8c1c856e5ec407533581b8a56dea23b75de2a88eeeac4a0522",
+  "WAL_COLLECTIONS.md": "1aa183a0c92534e66e63a847219a95d0524103977b3d6d5eb28f7be1e9af0c83",
   "WAL_ENCODING.md": "7ec701474f7cf1f2e24b8c4355ca98b0080c01c581f0987fd4dc94cb15e31fe7",
   "analyze.py": "4fdc426cc468ce78a6759d7a8bb788ab9d266eb3a32dbb2da0e7b72da84bd9b6",
   "analyze_profile.py": "e017c902dc3268bbbdfd4bd5f7c68a94f2c27a7bd7de4d57ae8977524f163192",
@@ -18,6 +19,7 @@
   "ci-packed.json": "426dbfdadc62c3602089e22045bb41488331e5048b1a21cf352c59a1d112fd79",
   "ci-prepared-impact.json": "120eef92f9ae36e98f3a00648957480149779ccd987e99fe9eae7d97ac0a36a0",
   "ci-qualification.json": "92422cd5c5b3257743d7da64b9bc58646d4e44222ada995a5ea45b76114cf8d2",
+  "ci-wal-collections.json": "3ec82f1d5db3d2e1cf94292bc9a16123d3de0ecd0c3c2571964e29c9d89be260",
   "ci-wal-reuse.json": "adb8b50db3b529371f4c6873d0f2177de9417a7067a01a11ffdb1622bdedc6c7",
   "direct-smoke/paired-16-64-node_property-baseline.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "direct-smoke/paired-16-64-node_property-candidate.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
