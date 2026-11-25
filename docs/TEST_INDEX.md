@@ -5222,7 +5222,8 @@ performance acceptance remains separate from these allocation contracts.
 The same unit owner covers direct fixed-width temporal payload encoding for all
 five temporal kinds, including negative durations and offset/calendar edges.
 A preallocated output with an existing prefix must encode without allocating
-and preserve the former framed bytes. One- and 4096-value scalar batches,
+and preserve the former framed bytes; an empty output must allocate once for
+the complete frame without intermediate payload growth. One- and 4096-value scalar batches,
 Lists, Maps and node property records must use fewer than 64 allocations and
 match the independent checkpoint encoder, prepared/ordinary bytes and decode
 roundtrips. These bounds include output growth; they do not measure live memory.

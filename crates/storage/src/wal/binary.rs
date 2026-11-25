@@ -430,16 +430,7 @@ fn encode_value_message(value: &Value, out: &mut Vec<u8>) {
         | Value::LocalTime(_)
         | Value::LocalDateTime(_)
         | Value::DateTime(_)
-        | Value::Duration(_) => {
-            let kind = hawdb_core::temporal::codec::TemporalValueKind::of(value)
-                .expect("temporal values have a kind");
-            // Fixed-width payloads can follow their length prefix directly;
-            // a temporary Vec would allocate once for every temporal value.
-            encode_tag(temporal_value_field(kind), WIRE_TYPE_LEN, out);
-            encode_varint_u64(kind.payload_len() as u64, out);
-            hawdb_core::temporal::codec::encode_payload(value, out)
-                .expect("temporal values have a payload");
-        }
+        | Value::Duration(_) => encode_temporal_value_message(value, out),
         Value::List(values) => {
             let mut body = Vec::new();
             for value in values {
@@ -462,6 +453,23 @@ fn encode_value_message(value: &Value, out: &mut Vec<u8>) {
             }
         }
     }
+}
+
+// Keep fixed-width framing out of the recursive scalar/container dispatcher.
+#[inline(never)]
+fn encode_temporal_value_message(value: &Value, out: &mut Vec<u8>) {
+    let kind = hawdb_core::temporal::codec::TemporalValueKind::of(value)
+        .expect("temporal values have a kind");
+    let field = temporal_value_field(kind);
+    let payload_len = kind.payload_len();
+    // Temporal field tags and lengths each occupy one byte. Reserve the whole
+    // frame so an empty output does not grow between payload components.
+    debug_assert!(field < 16 && payload_len < 128);
+    out.reserve(2 + payload_len);
+    encode_tag(field, WIRE_TYPE_LEN, out);
+    encode_varint_u64(payload_len as u64, out);
+    hawdb_core::temporal::codec::encode_payload(value, out)
+        .expect("temporal values have a payload");
 }
 
 fn decode_value_message(bytes: &[u8], depth: usize) -> Result<Value> {
@@ -1062,6 +1070,24 @@ mod tests {
             encode_value_message(&value, &mut actual);
             let allocations = observation.finish();
             assert_eq!(allocations, 0, "encoding {value:?}");
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn temporal_value_encoding_allocates_empty_output_once() {
+        for value in temporal_values() {
+            let mut payload = Vec::with_capacity(28);
+            let kind = hawdb_core::temporal::codec::encode_payload(&value, &mut payload).unwrap();
+            let mut expected = Vec::new();
+            encode_len_field(temporal_value_field(kind), &payload, &mut expected);
+            let mut actual = Vec::new();
+            let observation = crate::test_allocator::AllocationObservation::start_all();
+            encode_value_message(&value, &mut actual);
+            let allocations = observation.finish_stats();
+            assert_eq!(allocations.allocations, 1, "encoding {value:?}");
+            assert_eq!(allocations.allocated_bytes, expected.len().max(8));
             assert_eq!(actual, expected);
         }
     }

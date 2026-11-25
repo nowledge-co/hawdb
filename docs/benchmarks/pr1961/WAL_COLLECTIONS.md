@@ -11,11 +11,15 @@ encoder now writes its existing tag and length followed by the payload directly
 into the output buffer. It uses the same payload codec; no temporal bytes,
 field IDs, validation, operation order or synchronization behavior changes.
 There is no additional retained buffer or public API.
+The encoder reserves the complete fixed-width frame before writing its
+components, so an empty output needs only one allocation. Temporal framing
+stays outside the recursive value dispatcher to limit its instruction footprint.
 
 The existing storage unit owner covers all five kinds, negative durations,
 calendar/offset values, appending to an existing output prefix, and scalar
 batches, Lists, Maps and node property records at one and 4096 values. An
 already sufficient output capacity must require zero allocation requests.
+An empty output must allocate once, without intermediate payload growth.
 Prepared batches must require fewer than 64 requests, including output growth,
 and match ordinary encoding, the independent checkpoint codec and roundtrips.
 
