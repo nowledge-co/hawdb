@@ -121,8 +121,16 @@ fn shadow_reader(wait: Duration) -> RuntimeTaskContext {
 }
 
 fn wait_for_queue(governor: &RuntimeGovernor, waiters: usize) {
+    // A waiter joins the queue before its first attempt. Wait for a refusal per
+    // waiter as well, or capacity released here admits it without queueing.
     let started = Instant::now();
-    while governor.snapshot().queued_admission_waiters < waiters {
+    loop {
+        let snapshot = governor.snapshot();
+        if snapshot.queued_admission_waiters >= waiters
+            && snapshot.retryable_admission_rejections >= waiters as u64
+        {
+            break;
+        }
         assert!(started.elapsed() < PROMPT, "admission waiters never queued");
         thread::yield_now();
     }
@@ -777,7 +785,9 @@ fn shadow_search_runs_at_background_priority_and_waits() {
         let context = shadow_reader(PROMPT).with_admission_trace(trace.clone());
         move || handle.search_candidates_with_report_context(&request, &context)
     });
-    while governor.snapshot().queued_admission_waiters < 1 {
+    while governor.snapshot().queued_admission_waiters < 1
+        || governor.snapshot().retryable_admission_rejections < 1
+    {
         assert!(
             !shadow.is_finished(),
             "{:?}",

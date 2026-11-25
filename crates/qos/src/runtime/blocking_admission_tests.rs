@@ -29,8 +29,18 @@ fn request(priority: RuntimeWorkPriority) -> RuntimeWorkRequest {
 }
 
 fn wait_for_queue(governor: &RuntimeGovernor, waiters: usize) {
+    // A waiter joins the queue before its first attempt. Wait for that attempt
+    // too, or capacity released here admits it without queueing.
     let started = Instant::now();
-    while governor.snapshot().queued_admission_waiters < waiters {
+    loop {
+        let attempted = mutex_lock(&governor.inner.state)
+            .admission_waiters
+            .iter()
+            .filter(|waiter| waiter.last_request.is_some())
+            .count();
+        if attempted >= waiters {
+            break;
+        }
         assert!(started.elapsed() < PROMPT, "waiters never queued");
         thread::yield_now();
     }
