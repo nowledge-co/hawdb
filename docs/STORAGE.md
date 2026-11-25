@@ -335,6 +335,18 @@ Stable-ID mapping publication uses the same synced temp-file rename and parent
 directory sync boundary as checkpointed artifacts. It is intentionally outside
 the graph WAL: first physical export may create mapping entries, but that action
 does not mutate graph records or increase WAL replay work.
+
+Writable recovery holds the database directory lease while reclaiming abandoned
+checkpoint preparations. It also removes regular `.hawdb.tmp` files whose base
+names belong to known generation-bound storage artifacts, including the selected
+and older generations. These names are never published recovery inputs. A crash
+before their rename must not permanently prevent the next exclusive create
+([#1974](https://github.com/nowledge-co/hawdb/issues/1974)). The sweep synchronizes
+the directory before returning. Read-only admission leaves these files intact;
+unknown names, symbolic links and unexpected temporary-file directories remain
+untouched. Individual writers still refuse an existing unowned temporary file
+instead of truncating or deleting it during a live preparation.
+
 Search projection snapshots use the same temporary-file, file sync, atomic
 rename, and parent-directory sync boundary when `SearchIndex::checkpoint`
 publishes `search_projection.hawdb`; the snapshot uses the same zstd envelope

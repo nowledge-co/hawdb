@@ -1,5 +1,26 @@
 # Test ownership and known slow paths
 
+Checkpoint crash temporaries ([#1974](https://github.com/nowledge-co/hawdb/issues/1974))
+are covered by `artifact_files::checkpoint_cleanup_tests` in the existing
+`//crates/storage:hawdb_storage_tests` crates presubmit. These cases preserve
+published bytes, read-only admission, unknown names, directories and Unix
+symlinks while reclaiming known temporary files from older, selected and future
+generations. A legacy store reopens, checkpoints and reads the recovered nodes.
+Replay with `cargo test --locked -p hawdb-storage --lib checkpoint_cleanup_tests`.
+The existing `api::tests::power_loss::checkpoint_temporaries` recorder family
+captures real create/write/file-sync boundaries for checkpoint, append,
+property and canonical manifests, before the first checkpoint and after an
+earlier checkpoint. Its 48 process-crash images are each reopened through the
+same producer API (`Database` or `EmbeddedStoreHandle`) with manual and automatic
+checkpointing (96 recovery cases with `background-maintenance`), then written,
+checkpointed, read and reopened again. This uses the existing optional/weekly
+power-loss qualification lane (`remaining` on Windows); it is not part of ordinary
+root Bazel discovery without `test-support`. Replay with `cargo test --locked
+-p hawdb --features test-support --lib api::tests::power_loss::checkpoint_temporaries
+-- --test-threads=1`. Persist-all snapshots model process death with surviving
+page cache; they do not establish lost-write or device power-loss behavior. No
+test profile, timeout, or CI selection changes.
+
 PostgreSQL partial indexes ([#1872](https://github.com/nowledge-co/hawdb/issues/1872))
 use the existing SQL, relational, storage, row-page checkpoint, and index-shadow
 unit owners. SQL compatibility tests own `WHERE` preservation and explicit
