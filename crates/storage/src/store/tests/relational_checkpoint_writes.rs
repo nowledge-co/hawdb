@@ -377,7 +377,8 @@ fn interrupted_incremental_relational_checkpoint_recovers_every_committed_row() 
 fn legacy_full_row_checkpoint_reopens_and_moves_to_incremental_checkpoints() {
     let path = unique_test_dir("checkpoint-writes-legacy-upgrade");
     {
-        // The explicit downgrade option writes exactly the earlier format.
+        // The option writes exactly the earlier full-row file, but under the
+        // current storage manifest, so it is not a downgrade path (#1976).
         let (mut store, mut catalog) = open_with(&path, WalReplayConfig::default());
         store.set_legacy_relational_checkpoint_file_enabled(true);
         store
@@ -397,6 +398,12 @@ fn legacy_full_row_checkpoint_reopens_and_moves_to_incremental_checkpoints() {
                 "relational.{}.hawdb",
                 checkpoint_generation(&store)
             )]
+        );
+        let manifest = std::fs::read_to_string(path.join("manifest.hawdb")).unwrap();
+        assert_eq!(
+            manifest.lines().nth(1),
+            Some("version\thawdb-storage-v2"),
+            "docs/STORAGE.md says a checkpoint with the legacy file is still one-way"
         );
         // Earlier releases leave a WAL tail after their full-row checkpoint.
         update(&mut store, &mut catalog, &[50, 51], 1);

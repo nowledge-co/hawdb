@@ -131,10 +131,10 @@ pub struct DatabaseConfig {
     /// checkpoint. Off by default: the canonical row-page and overflow roots
     /// carry the complete relational state, so a checkpoint writes only the
     /// row pages and overflow extents changed since the previous one (#1737).
-    /// Enable it only while a host must keep downgrading to a persistent
-    /// format 5 release (HawDB 0.37), which needs the full-row file unless it
-    /// opens with OutOfCore residency and Authoritative relational indexes. Each
-    /// checkpoint then rewrites the whole relational state.
+    /// This does not keep a downgrade path to HawDB 0.37: the checkpoint still
+    /// publishes a v2 storage manifest, which 0.37 refuses (#1976; see
+    /// docs/STORAGE.md, "The first checkpoint by 0.38 or later is one-way").
+    /// Each checkpoint then rewrites the whole relational state.
     pub legacy_relational_checkpoint_file: bool,
     pub max_search_projection_change_log_entries: Option<usize>,
     pub max_search_projection_change_log_bytes: Option<usize>,

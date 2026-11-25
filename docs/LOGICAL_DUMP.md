@@ -47,6 +47,14 @@ fails with `unsupported_storage_format` naming the format and both versions
 version 1`). The open writes nothing and the old data stays intact, so the host
 can still go back to the old library for step 3.
 
+Some format changes are readable forward: the new library opens the old
+database in place instead of refusing it. HawDB 0.38 and later do this with
+0.37 databases. Such an open is not a trial run. The first checkpoint, which
+may be automatic and needs no write by the host, makes the database unreadable
+to the old library. Export, or copy the closed database directory, before the
+new library first opens it for writing. See
+[STORAGE.md](STORAGE.md#the-first-checkpoint-by-038-or-later-is-one-way).
+
 The export must run with the library that wrote the database, because only
 that library can read it. A host that may skip releases must therefore export
 before every update whose format version differs from the running one. It
