@@ -1,0 +1,112 @@
+[
+  {
+    "trace_library_sha256": "498e12cb81e14ceef07083ef35e55bef6524a2396a84043be41980278f1eef93",
+    "purpose": "per-call synchronization attribution only; observer overhead excludes acceptance",
+    "group": "paired-128-512-node_property",
+    "nodes": 128,
+    "edges": 512,
+    "workload": "node_property",
+    "measured_pairs": 12,
+    "warmup_pairs": 2,
+    "raw": "paired-128-512-node_property.jsonl",
+    "ready": {
+      "baseline": {
+        "automatic_checkpoint": false,
+        "protocol": "hawdb-checkpoint-pair-v1",
+        "ready": "node_property",
+        "storage_version": "hawdb-storage-v3"
+      },
+      "candidate": {
+        "automatic_checkpoint": false,
+        "protocol": "hawdb-checkpoint-pair-v1",
+        "ready": "node_property",
+        "storage_version": "hawdb-storage-v3"
+      }
+    },
+    "commands": {
+      "baseline": [
+        "/Users/hawkingrei/devel/opensource/skein/.context/perf-recovery-20261124/evidence/incremental-adjacency/handoff-bin/embedded-paired-baseline",
+        "/Users/hawkingrei/devel/opensource/skein/.context/perf-recovery-20261124/evidence/incremental-adjacency/handoff-sync-trace/paired-128-512-node_property-baseline-fixture",
+        "128",
+        "512",
+        "12",
+        "carry",
+        "step-node"
+      ],
+      "candidate": [
+        "/Users/hawkingrei/devel/opensource/skein/.context/perf-recovery-20261124/evidence/incremental-adjacency/handoff-bin/embedded-paired-candidate",
+        "/Users/hawkingrei/devel/opensource/skein/.context/perf-recovery-20261124/evidence/incremental-adjacency/handoff-sync-trace/paired-128-512-node_property-candidate-fixture",
+        "128",
+        "512",
+        "12",
+        "carry",
+        "step-node"
+      ]
+    },
+    "started": "2026-11-24T16:09:17.120180+00:00",
+    "elapsed_seconds": 23.101168957997288,
+    "exit_codes": {
+      "baseline": 0,
+      "candidate": 0
+    },
+    "binary_sha256": {
+      "baseline": "dcae1ed367aef60f6f60e874767a2927633293974bad94f20651d24b587b62bf",
+      "candidate": "e8ed149dc000e990068f94ab3742723cbdc971c133ef372e736371ffb4d3d2d3"
+    }
+  },
+  {
+    "trace_library_sha256": "498e12cb81e14ceef07083ef35e55bef6524a2396a84043be41980278f1eef93",
+    "purpose": "per-call synchronization attribution only; observer overhead excludes acceptance",
+    "group": "paired-512-4096-relationship_property",
+    "nodes": 512,
+    "edges": 4096,
+    "workload": "relationship_property",
+    "measured_pairs": 12,
+    "warmup_pairs": 2,
+    "raw": "paired-512-4096-relationship_property.jsonl",
+    "ready": {
+      "baseline": {
+        "automatic_checkpoint": false,
+        "protocol": "hawdb-checkpoint-pair-v1",
+        "ready": "relationship_property",
+        "storage_version": "hawdb-storage-v3"
+      },
+      "candidate": {
+        "automatic_checkpoint": false,
+        "protocol": "hawdb-checkpoint-pair-v1",
+        "ready": "relationship_property",
+        "storage_version": "hawdb-storage-v3"
+      }
+    },
+    "commands": {
+      "baseline": [
+        "/Users/hawkingrei/devel/opensource/skein/.context/perf-recovery-20261124/evidence/incremental-adjacency/handoff-bin/embedded-paired-baseline",
+        "/Users/hawkingrei/devel/opensource/skein/.context/perf-recovery-20261124/evidence/incremental-adjacency/handoff-sync-trace/paired-512-4096-relationship_property-baseline-fixture",
+        "512",
+        "4096",
+        "12",
+        "carry",
+        "step-relationship"
+      ],
+      "candidate": [
+        "/Users/hawkingrei/devel/opensource/skein/.context/perf-recovery-20261124/evidence/incremental-adjacency/handoff-bin/embedded-paired-candidate",
+        "/Users/hawkingrei/devel/opensource/skein/.context/perf-recovery-20261124/evidence/incremental-adjacency/handoff-sync-trace/paired-512-4096-relationship_property-candidate-fixture",
+        "512",
+        "4096",
+        "12",
+        "carry",
+        "step-relationship"
+      ]
+    },
+    "started": "2026-11-24T16:09:40.244125+00:00",
+    "elapsed_seconds": 59.79260458299541,
+    "exit_codes": {
+      "baseline": 0,
+      "candidate": 0
+    },
+    "binary_sha256": {
+      "baseline": "dcae1ed367aef60f6f60e874767a2927633293974bad94f20651d24b587b62bf",
+      "candidate": "e8ed149dc000e990068f94ab3742723cbdc971c133ef372e736371ffb4d3d2d3"
+    }
+  }
+]

@@ -5166,3 +5166,9 @@ exploratory whole-run data and the remaining packed-identity acceptance gate
 are recorded in [PR #1961 evidence](benchmarks/pr1961/README.md). Its reference
 controller/analysis scripts remain manual developer artifacts; they add no CI
 job, scheduled campaign or production dependency.
+
+The [checkpoint synchronization investigation](benchmarks/pr1961/SYNC_INVESTIGATION.md)
+also owns manual v3/v3 handoff/publication comparisons and bounded macOS arm64
+per-call tracing. These are diagnostic artifacts outside CI. Traced timings and
+the rejected immediate-write logger never replace ordinary performance gates;
+complete raw pairs, compressed trace logs and ABI probe provenance are retained.
