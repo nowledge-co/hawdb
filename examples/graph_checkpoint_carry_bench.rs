@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Manual embedded checkpoint benchmark, including sealed-root publication.
-use hawdb::{BranchSelector, Database, DatabaseConfig, StorageResidencyMode, Value};
+use hawdb::{
+    BranchSelector, Database, DatabaseConfig, DurabilityPolicy, StorageResidencyMode, Value,
+};
 use hawdb_storage::durable_manifest::DurableManifest;
 use serde_json::json;
 use std::io::{BufRead, Write};
@@ -13,17 +15,51 @@ use std::time::Instant;
 
 fn main() {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
-    assert!(matches!(args.len(), 5..=7),
-        "usage: graph_checkpoint_carry_bench <new-root> <nodes> <edges> <rounds> <carry|rebuild> [step-node|step-relationship] [cpu-profile]");
-    let profile = args.get(6).is_some_and(|option| {
-        assert_eq!(option, "cpu-profile");
-        true
-    });
-    let selected = args.get(5).map(|mode| match mode.as_str() {
-        "step-node" => "node_property",
-        "step-relationship" => "relationship_property",
-        _ => panic!("unknown step mode"),
-    });
+    assert!(matches!(args.len(), 5..=9),
+        "usage: graph_checkpoint_carry_bench <new-root> <nodes> <edges> <rounds> <carry|rebuild> [step-node|step-relationship] [cpu-profile] [sync-every-write|sync-on-checkpoint] [checkpoint-every=N]");
+    let mut profile = false;
+    let mut selected = None;
+    let mut durability_option = None;
+    let mut checkpoint_interval_option = None;
+    for option in &args[5..] {
+        match option.as_str() {
+            "step-node" | "step-relationship" => {
+                assert!(selected.is_none(), "duplicate step mode");
+                selected = Some(if option == "step-node" {
+                    "node_property"
+                } else {
+                    "relationship_property"
+                });
+            }
+            "cpu-profile" => {
+                assert!(!profile, "duplicate profile option");
+                profile = true;
+            }
+            "sync-every-write" | "sync-on-checkpoint" => {
+                assert!(durability_option.is_none(), "duplicate durability option");
+                durability_option = Some(if option == "sync-every-write" {
+                    DurabilityPolicy::SyncOnEveryWrite
+                } else {
+                    DurabilityPolicy::SyncOnCheckpoint
+                });
+            }
+            _ => {
+                let interval = option
+                    .strip_prefix("checkpoint-every=")
+                    .unwrap_or_else(|| panic!("unknown option: {option}"));
+                assert!(
+                    checkpoint_interval_option.is_none(),
+                    "duplicate checkpoint interval"
+                );
+                let interval: usize = interval.parse().expect("invalid checkpoint interval");
+                assert!(interval > 0, "checkpoint interval must be positive");
+                checkpoint_interval_option = Some(interval);
+            }
+        }
+    }
+    let durability = durability_option.unwrap_or_default();
+    let durability_name = format!("{durability:?}");
+    let checkpoint_interval = checkpoint_interval_option.unwrap_or(1);
     let stdin = std::io::stdin();
     let mut input = stdin.lock();
     let root = Path::new(&args[0]);
@@ -44,7 +80,8 @@ fn main() {
         };
         // Keep all checkpoint work inside the explicit timed calls.
         config.runtime_capabilities.background_maintenance = false;
-        let mut db = Database::open_with_config(&path, config.clone()).unwrap();
+        let mut db =
+            Database::open_with_durability_and_config(&path, durability, config.clone()).unwrap();
         let telemetry = Arc::new(ProfileTelemetry::default());
         if profile {
             db.set_telemetry_sink(Some(telemetry.clone()));
@@ -71,7 +108,7 @@ fn main() {
         if selected.is_some() {
             println!(
                 "{}",
-                json!({"protocol":"hawdb-checkpoint-pair-v1","ready":workload,"storage_version":db.storage_version().unwrap(),"automatic_checkpoint":false})
+                json!({"protocol":"hawdb-checkpoint-pair-v1","ready":workload,"storage_version":db.storage_version().unwrap(),"automatic_checkpoint":false,"durability":durability_name,"checkpoint_interval":checkpoint_interval})
             );
             std::io::stdout().flush().unwrap();
         }
@@ -100,8 +137,16 @@ fn main() {
             let mutation_usage_after = process_usage(profile, &telemetry);
             let checkpoint_usage_before = process_usage(profile, &telemetry);
             let started = Instant::now();
-            db.checkpoint().unwrap();
-            let elapsed = started.elapsed();
+            // End warmup with a clean checkpoint boundary. Always checkpoint
+            // the final measured write before scrub and reopen validation.
+            let checkpoint_performed =
+                round < 2 || (round - 1).is_multiple_of(checkpoint_interval) || round == rounds + 1;
+            let elapsed = if checkpoint_performed {
+                db.checkpoint().unwrap();
+                started.elapsed()
+            } else {
+                std::time::Duration::ZERO
+            };
             let checkpoint_usage_after = process_usage(profile, &telemetry);
             let manifest = DurableManifest::load(&manifest_path).unwrap();
             let binding = manifest.canonical_adjacency_generation_artifacts.unwrap();
@@ -118,8 +163,9 @@ fn main() {
                 let entry = entry.unwrap();
                 let name = entry.file_name();
                 let name = name.to_str().unwrap();
-                if hawdb_storage::artifact_files::parse_graph_generation_file(name)
-                    == Some(manifest.checkpoint_epoch)
+                if checkpoint_performed
+                    && hawdb_storage::artifact_files::parse_graph_generation_file(name)
+                        == Some(manifest.checkpoint_epoch)
                 {
                     let bytes = entry.metadata().unwrap().len();
                     graph_bytes += bytes;
@@ -128,7 +174,7 @@ fn main() {
                     }
                 }
             }
-            let mut row = json!({"api":"Database::checkpoint","automatic_checkpoint":false,"workload":workload,"nodes":nodes,"edges":edges,"round":round,"warmup":round<2,"checkpoint_ns":elapsed.as_nanos(),"mutation_ns":mutation_elapsed.as_nanos(),"new_graph_bytes":graph_bytes,"new_adjacency_bytes":adjacency_bytes,"durability":"SyncOnEveryWrite","residency":"OutOfCore"});
+            let mut row = json!({"api":"Database::checkpoint","automatic_checkpoint":false,"workload":workload,"nodes":nodes,"edges":edges,"round":round,"warmup":round<2,"checkpoint_ns":elapsed.as_nanos(),"checkpoint_performed":checkpoint_performed,"checkpoint_interval":checkpoint_interval,"mutation_ns":mutation_elapsed.as_nanos(),"new_graph_bytes":graph_bytes,"new_adjacency_bytes":adjacency_bytes,"durability":durability_name,"residency":"OutOfCore"});
             if profile {
                 row["process_usage"] = json!({
                     "scope": "RUSAGE_SELF",
@@ -148,7 +194,8 @@ fn main() {
         }
         db.scrub_storage().unwrap();
         drop(db);
-        let mut reopened = Database::open_with_config(&path, config).unwrap();
+        let mut reopened =
+            Database::open_with_durability_and_config(&path, durability, config).unwrap();
         assert_eq!(
             reopened
                 .query("MATCH (n:Note) RETURN n.id")
@@ -165,6 +212,16 @@ fn main() {
                 .len(),
             edges
         );
+        let (verify, count) = if workload == "node_property" {
+            ("MATCH (n:Note) RETURN n.value AS value", nodes)
+        } else {
+            ("MATCH ()-[r:LINK]->() RETURN r.weight AS value", edges)
+        };
+        let rows = reopened.query(verify).unwrap().rows;
+        assert_eq!(rows.len(), count);
+        assert!(rows
+            .iter()
+            .all(|row| row["value"] == Value::Int(rounds as i64 + 2)));
         reopened.scrub_storage().unwrap();
     }
 }

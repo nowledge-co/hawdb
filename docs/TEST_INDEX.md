@@ -5109,8 +5109,25 @@ checkpoint work inside explicit calls, and records synchronized mutation time
 separately. It uses identical workload and warmup conventions through fixture
 Cypher and the public `Database::checkpoint` API. Timed work excludes queries
 and record assertions; output labels the API explicitly. Keep these results
-separate from the low-level GraphStore measurement. Both preserve the default
-SyncOnEveryWrite policy and verify records, scrub and reopen outside timing.
+separate from the low-level GraphStore measurement. Both default to
+SyncOnEveryWrite and verify records, scrub and reopen outside timing.
+The embedded example accepts `sync-every-write` or `sync-on-checkpoint` after
+the required arguments, independently of pacing and profiling options. The
+latter uses the existing typed durability policy: complete transaction WAL
+writes reach the OS cache before acknowledgment, without per-commit sync.
+Power loss may discard recent acknowledged writes; checkpoint/seal and branch
+publication retain their durability barriers. Ready and result rows identify
+the selected policy, which is also used for reopen. Compare modes on the same
+binary and report mutation and checkpoint tails separately; these are different
+durability guarantees, not an equivalent-durability performance improvement.
+Use `checkpoint-every=N` (positive integer, default 1) to compare repeated
+writes between barriers. Both warmups and the final measured write checkpoint;
+otherwise checkpoints follow the measured-write interval. Rows explicitly mark
+`checkpoint_performed`; skipped checkpoints have zero duration and new bytes
+and must be excluded from checkpoint percentiles. Include every mutation in
+write percentiles, including the first write after each checkpoint. Reopen also
+verifies every final updated property value. Keep interval and policy identical
+when comparing source revisions, and report both when comparing modes.
 
 The same embedded example supports optional `step-node` / `step-relationship`
 stdin pacing for immediate A/B and B/A operation pairs. Workers announce
@@ -5127,7 +5144,8 @@ cumulative WAL append/flush durations and bytes. Subtract before/after counters
 per phase; process CPU includes all threads, and wall time minus CPU is not an
 I/O-only measurement. Telemetry and sampling overhead make these diagnostic
 runs distinct from ordinary acceptance measurements. Default runs install no
-sink and retain their existing JSONL schema and timing boundaries.
+sink and retain their timing boundaries; durability and checkpoint-interval
+fields are present independently of profiling.
 
 The existing storage WAL binary unit owner also checks pre-encoded adjacency
 impact for empty, node-only, mixed and relationship-property batches, together
