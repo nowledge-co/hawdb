@@ -116,6 +116,27 @@ pub(super) fn complete(
     let mut retained = std::mem::take(&mut scratch.beam);
     retained.truncate(limit);
     let mut nearest = BinaryHeap::from(retained);
+    let mut pending = Pending::default();
+    let mut scorer = QueryScorer {
+        graph,
+        query,
+        task: options.task,
+    };
+    let mut evaluate = |ordinal, report: &mut DiskAnnSearchReport| -> Result<()> {
+        charge_query_work(options, report)?;
+        report.visited_nodes += 1;
+        report.predicate_checks += 1;
+        pending.push(ordinal, graph.id(ordinal)?);
+        if pending.len == 4 {
+            let distances = scorer.four(pending.ordinals)?;
+            for (slot, distance) in distances.into_iter().enumerate() {
+                let (ordinal, id) = (pending.ordinals[slot], pending.ids[slot]);
+                retain_nearest(ordinal, id, distance, &mut nearest, limit, report)?;
+            }
+            pending.len = 0;
+        }
+        Ok(())
+    };
     if let Some((candidates, ordinal_ids)) = filter {
         for &id in candidates.ids {
             charge_query_work(options, report)?;
@@ -128,36 +149,38 @@ pub(super) fn complete(
             if let Some(ordinal) = ordinal
                 && scratch.seen.state(ordinal) == 0
             {
-                evaluate(graph, query, ordinal, &mut nearest, limit, options, report)?;
+                evaluate(ordinal, report)?;
             }
         }
     } else {
         for ordinal in 0..graph.len() as u32 {
             if scratch.seen.state(ordinal) == 0 {
-                evaluate(graph, query, ordinal, &mut nearest, limit, options, report)?;
+                evaluate(ordinal, report)?;
             }
         }
+    }
+    for slot in 0..pending.len {
+        let (ordinal, id) = (pending.ordinals[slot], pending.ids[slot]);
+        checkpoint(options.task)?;
+        let distance = scorer.one(ordinal)?;
+        retain_nearest(ordinal, id, distance, &mut nearest, limit, report)?;
     }
     scratch.beam = nearest.into_sorted_vec();
     Ok(())
 }
 
-fn evaluate(
-    graph: &impl DiskAnnRead,
-    query: &hawdb_core::vector::PreparedVectorQuery<'_>,
+fn retain_nearest(
     ordinal: u32,
+    id: u64,
+    distance: f64,
     nearest: &mut BinaryHeap<Neighbor>,
     limit: usize,
-    options: DiskAnnSearchOptions<'_>,
     report: &mut DiskAnnSearchReport,
 ) -> Result<()> {
-    charge_query_work(options, report)?;
-    report.visited_nodes += 1;
-    report.predicate_checks += 1;
     let candidate = Neighbor {
         ordinal,
-        id: graph.id(ordinal)?,
-        distance: checked_distance(graph.distance_prepared(query, ordinal, options.task)?)?,
+        id,
+        distance: checked_distance(distance)?,
         expanded: false,
     };
     report.distance_comparisons += 1;

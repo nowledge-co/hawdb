@@ -447,6 +447,42 @@ impl<'a> PreparedVectorQuery<'a> {
         self.distance_to_vector_with_work(metric, right, checkpoint)
     }
 
+    /// Scores four encoded vectors as `distance_to_encoded_with_work` would, with
+    /// the same bits. Errors are those of the first failing vector.
+    pub fn distances_to_encoded_with_work(
+        &self,
+        metric: VectorDistance,
+        encoded: [&[u8]; 4],
+        mut checkpoint: impl FnMut() -> Result<()>,
+    ) -> Result<[f64; 4]> {
+        let dimension = self.coordinates.len();
+        let shaped = encoded.iter().all(|bytes| {
+            VectorRef::from_encoded_shape(bytes)
+                .is_ok_and(|vector| vector.dimension.get() as usize == dimension)
+        });
+        if shaped {
+            let mode = match metric {
+                VectorDistance::Cosine => Mode::PreparedCosine,
+                VectorDistance::Euclidean => Mode::Euclidean,
+            };
+            let rows = encoded.map(|bytes| Input::Encoded(&bytes[4..]));
+            if let Some(sums) =
+                kernel::calculate_four(self.coordinates, rows, mode, &mut checkpoint)?
+            {
+                let mut distances = [0.0; 4];
+                for (distance, sums) in distances.iter_mut().zip(&sums) {
+                    *distance = finish_distance(metric, sums, self.norm)?;
+                }
+                return Ok(distances);
+            }
+        }
+        let mut distances = [0.0; 4];
+        for (distance, bytes) in distances.iter_mut().zip(encoded) {
+            *distance = self.distance_to_encoded_with_work(metric, bytes, &mut checkpoint)?;
+        }
+        Ok(distances)
+    }
+
     fn distance_input(
         &self,
         metric: VectorDistance,
@@ -610,6 +646,91 @@ mod tests {
                 assert!(query
                     .distance_to_encoded_with_work(metric, &encoded, || Err(invalid("stop")))
                     .is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn four_encoded_distances_match_single_bits_errors_and_work() {
+        for dimension in [
+            2usize, 15, 16, 17, 18, 19, 20, 37, 128, 1024, 3275, 3276, 3277, 9001,
+        ] {
+            let left: Vec<f32> = (0..dimension)
+                .map(|i| ((i * 173 + 19) as f32).sin())
+                .collect();
+            // Unaligned rows with cancellation, signed zero and extreme values.
+            let rows: Vec<Vec<u8>> = (0..4usize)
+                .map(|row| {
+                    let mut values: Vec<f32> = (0..dimension)
+                        .map(|i| ((i * 97 + row * 31 + 3) as f32).cos() * 10f32.powi(row as i32))
+                        .collect();
+                    values[dimension / 2] =
+                        [f32::MAX, -0.0, f32::MIN_POSITIVE, f32::from_bits(1)][row];
+                    let mut bytes = vec![7u8; row];
+                    bytes.extend_from_slice(Vector::new(&values).unwrap().encoded());
+                    bytes
+                })
+                .collect();
+            let encoded: [&[u8]; 4] = std::array::from_fn(|row| &rows[row][row..]);
+            for metric in [VectorDistance::Cosine, VectorDistance::Euclidean] {
+                let query = PreparedVectorQuery::for_distance(metric, &left, || Ok(())).unwrap();
+                let four = |rows: [&[u8]; 4]| {
+                    query.distances_to_encoded_with_work(metric, rows, || Ok(()))
+                };
+                let one = |row: &[u8]| query.distance_to_encoded_with_work(metric, row, || Ok(()));
+                assert_eq!(
+                    four(encoded).unwrap().map(f64::to_bits),
+                    encoded.map(|row| one(row).unwrap().to_bits()),
+                    "{metric:?} {dimension}"
+                );
+                for lane in 0..4 {
+                    for (position, value) in [
+                        (0, f32::NAN),
+                        (dimension / 2, f32::INFINITY),
+                        (dimension - 1, f32::NEG_INFINITY),
+                    ] {
+                        let mut damaged = encoded[lane].to_vec();
+                        damaged[4 + position * 4..8 + position * 4]
+                            .copy_from_slice(&value.to_le_bytes());
+                        let mut rows = encoded;
+                        rows[lane] = &damaged;
+                        assert_eq!(
+                            four(rows).unwrap_err().to_string(),
+                            one(&damaged).unwrap_err().to_string()
+                        );
+                    }
+                    let short = &encoded[lane][..encoded[lane].len() - 1];
+                    let zero = Vector::new(&vec![0.0; dimension]).unwrap();
+                    for bad in [short, zero.encoded()] {
+                        let mut rows = encoded;
+                        rows[lane] = bad;
+                        assert_eq!(
+                            four(rows).map_err(|error| error.to_string()).err(),
+                            one(bad).map_err(|error| error.to_string()).err()
+                        );
+                    }
+                }
+                // Cancellation at every checkpoint refuses without a result.
+                let mut checks = 0;
+                query
+                    .distances_to_encoded_with_work(metric, encoded, || {
+                        checks += 1;
+                        Ok(())
+                    })
+                    .unwrap();
+                for stop in 0..checks {
+                    let mut seen = 0;
+                    assert!(query
+                        .distances_to_encoded_with_work(metric, encoded, || {
+                            seen += 1;
+                            if seen > stop {
+                                Err(invalid("stop"))
+                            } else {
+                                Ok(())
+                            }
+                        })
+                        .is_err());
+                }
             }
         }
     }

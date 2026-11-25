@@ -56,6 +56,21 @@ pub trait DiskAnnRead {
     ) -> Result<f64> {
         self.distance(query.coordinates(), ordinal, task)
     }
+    /// Four `distance_prepared` results with the same bits. Providers with a
+    /// batched kernel override this.
+    fn distances_prepared(
+        &self,
+        query: &hawdb_core::vector::PreparedVectorQuery<'_>,
+        ordinals: [u32; 4],
+        task: Option<&RuntimeTaskContext>,
+    ) -> Result<[f64; 4]> {
+        let mut distances = [0.0; 4];
+        for (distance, ordinal) in distances.iter_mut().zip(ordinals) {
+            checkpoint(task)?;
+            *distance = self.distance_prepared(query, ordinal, task)?;
+        }
+        Ok(distances)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -193,7 +208,11 @@ pub fn search_diskann(
                 .then(|| exact::SpreadProbe::new(graph, graph.len(), 0, options))
                 .flatten(),
             |id| Ok(candidates.is_none_or(|set| set.ids.binary_search(&id).is_ok())),
-            |ordinal| graph.distance_prepared(&query, ordinal, options.task),
+            QueryScorer {
+                graph,
+                query: &query,
+                task: options.task,
+            },
         )?;
         if report.adaptive_exact_scan {
             exact::complete(
@@ -349,7 +368,7 @@ fn traverse(
     options: DiskAnnSearchOptions<'_>,
     probe: Option<exact::SpreadProbe>,
     allowed: impl FnMut(u64) -> Result<bool>,
-    score: impl FnMut(u32) -> Result<f64>,
+    score: impl Scorer,
 ) -> Result<DiskAnnSearchReport> {
     scratch.reset(options.task)?;
     let mut report = DiskAnnSearchReport::default();
@@ -383,7 +402,11 @@ fn traverse_filtered(
             == (graph.len() - 1) as u64;
     let mut policy = VisitPolicy {
         allowed: |id| Ok(candidates.ids.binary_search(&id).is_ok()),
-        score: |ordinal| graph.distance_prepared(query, ordinal, options.task),
+        score: QueryScorer {
+            graph,
+            query,
+            task: options.task,
+        },
         expand_rejected: true,
     };
     let complete_domain = ordinal_ids
@@ -485,7 +508,7 @@ fn walk(
     scratch: &mut Scratch,
     options: DiskAnnSearchOptions<'_>,
     mut report: DiskAnnSearchReport,
-    mut policy: VisitPolicy<impl FnMut(u64) -> Result<bool>, impl FnMut(u32) -> Result<f64>>,
+    mut policy: VisitPolicy<impl FnMut(u64) -> Result<bool>, impl Scorer>,
     feedback: Option<feedback::FilteredFeedback>,
     probe: Option<exact::SpreadProbe>,
 ) -> Result<DiskAnnSearchReport> {
@@ -510,12 +533,27 @@ fn walk(
         };
         policy.expand_rejected = feedback.is_none() || !bridge;
         report.expanded_nodes += 1;
+        // Feedback may stop after any neighbor, so it scores one at a time.
+        let batch = if feedback.is_some() { 1 } else { 4 };
+        let mut pending = Pending::default();
         for (index, neighbor) in graph.neighbors(ordinal)?.enumerate() {
             report.neighbor_reads += 1;
             if index >= graph.max_degree() {
                 return Err(corrupt("DiskANN degree exceeds the provider bound"));
             }
-            discover(graph, neighbor, scratch, options, &mut report, &mut policy)?;
+            if let Some(id) = admit(graph, neighbor, scratch, options, &mut report, &mut policy)? {
+                pending.push(neighbor, id);
+            }
+            if pending.len == batch {
+                score_pending(
+                    graph,
+                    &mut pending,
+                    scratch,
+                    options,
+                    &mut report,
+                    &mut policy,
+                )?;
+            }
             if feedback
                 .as_ref()
                 .is_some_and(|feedback| feedback.should_scan(&report, options.max_visited))
@@ -524,8 +562,66 @@ fn walk(
                 return Ok(report);
             }
         }
+        score_pending(
+            graph,
+            &mut pending,
+            scratch,
+            options,
+            &mut report,
+            &mut policy,
+        )?;
     }
     Ok(report)
+}
+
+/// Discovered vertices whose distances are not yet known.
+#[derive(Default)]
+struct Pending {
+    ordinals: [u32; 4],
+    ids: [u64; 4],
+    len: usize,
+}
+
+impl Pending {
+    fn push(&mut self, ordinal: u32, id: u64) {
+        self.ordinals[self.len] = ordinal;
+        self.ids[self.len] = id;
+        self.len += 1;
+    }
+}
+
+/// Distances of one or four vertices. Four at once must equal four single ones.
+trait Scorer {
+    fn one(&mut self, ordinal: u32) -> Result<f64>;
+    fn four(&mut self, ordinals: [u32; 4]) -> Result<[f64; 4]> {
+        let mut distances = [0.0; 4];
+        for (distance, ordinal) in distances.iter_mut().zip(ordinals) {
+            *distance = self.one(ordinal)?;
+        }
+        Ok(distances)
+    }
+}
+
+impl<F: FnMut(u32) -> Result<f64>> Scorer for F {
+    fn one(&mut self, ordinal: u32) -> Result<f64> {
+        self(ordinal)
+    }
+}
+
+struct QueryScorer<'a, 'q, G> {
+    graph: &'a G,
+    query: &'a hawdb_core::vector::PreparedVectorQuery<'q>,
+    task: Option<&'a RuntimeTaskContext>,
+}
+
+impl<G: DiskAnnRead> Scorer for QueryScorer<'_, '_, G> {
+    fn one(&mut self, ordinal: u32) -> Result<f64> {
+        self.graph.distance_prepared(self.query, ordinal, self.task)
+    }
+    fn four(&mut self, ordinals: [u32; 4]) -> Result<[f64; 4]> {
+        self.graph
+            .distances_prepared(self.query, ordinals, self.task)
+    }
 }
 
 struct VisitPolicy<F, S> {
@@ -534,14 +630,15 @@ struct VisitPolicy<F, S> {
     expand_rejected: bool,
 }
 
-fn discover(
+/// Marks and charges a new vertex and returns its ID when it must be scored.
+fn admit(
     graph: &impl DiskAnnRead,
     ordinal: u32,
     scratch: &mut Scratch,
     options: DiskAnnSearchOptions<'_>,
     report: &mut DiskAnnSearchReport,
-    policy: &mut VisitPolicy<impl FnMut(u64) -> Result<bool>, impl FnMut(u32) -> Result<f64>>,
-) -> Result<()> {
+    policy: &mut VisitPolicy<impl FnMut(u64) -> Result<bool>, impl Scorer>,
+) -> Result<Option<u64>> {
     checkpoint(options.task)?;
     if ordinal as usize >= graph.len() {
         return Err(corrupt("DiskANN link is outside its pinned graph"));
@@ -554,7 +651,7 @@ fn discover(
             scratch.seen.set(ordinal, 3);
             scratch.bridges.push(ordinal);
         }
-        return Ok(());
+        return Ok(None);
     }
     charge_query_work(options, report)?;
     scratch.seen.set(ordinal, 1);
@@ -569,9 +666,63 @@ fn discover(
             scratch.bridges.push(ordinal);
         }
         report.bridge_nodes += 1;
-        return Ok(());
+        return Ok(None);
     }
-    let distance = checked_distance((policy.score)(ordinal)?)?;
+    Ok(Some(id))
+}
+
+fn discover(
+    graph: &impl DiskAnnRead,
+    ordinal: u32,
+    scratch: &mut Scratch,
+    options: DiskAnnSearchOptions<'_>,
+    report: &mut DiskAnnSearchReport,
+    policy: &mut VisitPolicy<impl FnMut(u64) -> Result<bool>, impl Scorer>,
+) -> Result<()> {
+    let mut pending = Pending::default();
+    if let Some(id) = admit(graph, ordinal, scratch, options, report, policy)? {
+        pending.push(ordinal, id);
+    }
+    score_pending(graph, &mut pending, scratch, options, report, policy)
+}
+
+/// Scores admitted vertices in order. Retention depends only on distance and ID.
+fn score_pending(
+    graph: &impl DiskAnnRead,
+    pending: &mut Pending,
+    scratch: &mut Scratch,
+    options: DiskAnnSearchOptions<'_>,
+    report: &mut DiskAnnSearchReport,
+    policy: &mut VisitPolicy<impl FnMut(u64) -> Result<bool>, impl Scorer>,
+) -> Result<()> {
+    if pending.len == 4 {
+        let distances = policy.score.four(pending.ordinals)?;
+        for (slot, distance) in distances.into_iter().enumerate() {
+            let (ordinal, id) = (pending.ordinals[slot], pending.ids[slot]);
+            retain(graph, ordinal, id, distance, scratch, options, report)?;
+        }
+    } else {
+        for slot in 0..pending.len {
+            let (ordinal, id) = (pending.ordinals[slot], pending.ids[slot]);
+            checkpoint(options.task)?;
+            let distance = policy.score.one(ordinal)?;
+            retain(graph, ordinal, id, distance, scratch, options, report)?;
+        }
+    }
+    pending.len = 0;
+    Ok(())
+}
+
+fn retain(
+    graph: &impl DiskAnnRead,
+    ordinal: u32,
+    id: u64,
+    distance: f64,
+    scratch: &mut Scratch,
+    options: DiskAnnSearchOptions<'_>,
+    report: &mut DiskAnnSearchReport,
+) -> Result<()> {
+    let distance = checked_distance(distance)?;
     report.distance_comparisons += 1;
     if scratch.collect_visited {
         scratch.visited.push(ordinal);

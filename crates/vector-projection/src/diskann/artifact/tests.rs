@@ -183,6 +183,71 @@ fn diskann_file_preserves_parameters_links_raw_distances_and_filtered_navigation
     }
 }
 
+/// The in-memory graph scores one vertex at a time and the mapped graph four.
+#[test]
+fn diskann_batched_mapped_scores_match_single_scores_and_reports() {
+    const DIMENSION: usize = 35;
+    let mut random = 0x5ca1_ab1e_0000_0001u64;
+    let mut next = || {
+        random ^= random << 13;
+        random ^= random >> 7;
+        random ^= random << 17;
+        (random % 10_000) as f32 / 5000.0 - 1.0
+    };
+    // Repeated vectors make ties decide the order.
+    let distinct: Vec<Vec<f32>> = (0..250)
+        .map(|_| (0..DIMENSION).map(|_| next()).collect())
+        .collect();
+    let queries: Vec<Vec<f32>> = (0..6)
+        .map(|_| (0..DIMENSION).map(|_| next()).collect())
+        .collect();
+    let every: Vec<u64> = (0..400).collect();
+    let most: Vec<u64> = (0..400).filter(|id| id % 5 != 2).collect();
+    let mut switched = [0; 2];
+    for metric in [VectorDistance::Cosine, VectorDistance::Euclidean] {
+        let graph = DiskAnnIndex::build(
+            DIMENSION,
+            metric,
+            (0..400u64)
+                .map(|id| (id, distinct[id as usize % 250].clone()))
+                .collect(),
+            DiskAnnBuildConfig {
+                max_degree: 12,
+                build_beam: 48,
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        let mut bytes = Vec::new();
+        graph.write_artifact(&mut bytes, identity(), None).unwrap();
+        let source = Source::new(&bytes);
+        let admission = Admission::default();
+        let mapped = source.open(identity(), &admission).unwrap();
+        for query in &queries {
+            for filter in [None, Some(&every), Some(&most)] {
+                let filter = filter.map(|ids| CandidateSet::exact(ids));
+                // Beam 40 stays above the cap; beam 128 is below it.
+                for beam_width in [40, 128] {
+                    let options = DiskAnnSearchOptions {
+                        beam_width,
+                        ..Default::default()
+                    };
+                    let single = search_diskann(&graph, query, 20, filter, options).unwrap();
+                    let batched = search_diskann(&mapped, query, 20, filter, options).unwrap();
+                    assert_eq!(batched.report, single.report);
+                    assert_eq!(batched.hits.len(), single.hits.len());
+                    assert!(batched.hits.iter().zip(&single.hits).all(|(left, right)| {
+                        left.id == right.id && left.distance.to_bits() == right.distance.to_bits()
+                    }));
+                    switched[usize::from(single.report.adaptive_exact_scan)] += 1;
+                }
+            }
+        }
+    }
+    assert!(switched.iter().all(|count| *count > 0), "{switched:?}");
+}
+
 #[test]
 fn diskann_mapped_successor_matches_a_fresh_artifact_without_reconstruction() {
     for metric in [VectorDistance::Cosine, VectorDistance::Euclidean] {
