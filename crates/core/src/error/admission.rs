@@ -15,12 +15,19 @@ use std::fmt::{Display, Formatter};
 /// the capacity, or the host's free memory is low): drop the refused request
 /// and retry it later unchanged. When false the request can never fit the
 /// configured limits and must be made smaller.
+///
+/// `waited` is `None` for an immediate refusal. It is the time spent queued
+/// when the caller chose to wait for admission (see
+/// `RuntimeTaskContext::with_admission_wait`) and the refusal came from the
+/// queue: a retryable refusal with `waited` set means the wait deadline
+/// expired while queued, and `code` is the last resource still short.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RuntimeAdmissionRefusal {
     pub code: &'static str,
     pub requested: u64,
     pub available: u64,
     pub retryable: bool,
+    pub waited: Option<crate::time::Duration>,
 }
 
 impl Display for RuntimeAdmissionRefusal {
@@ -29,7 +36,11 @@ impl Display for RuntimeAdmissionRefusal {
             formatter,
             "runtime admission {}: requested {}, available {}",
             self.code, self.requested, self.available
-        )
+        )?;
+        match self.waited {
+            Some(waited) => write!(formatter, ", after {} ms queued", waited.as_millis()),
+            None => Ok(()),
+        }
     }
 }
 

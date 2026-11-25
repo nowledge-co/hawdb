@@ -19,6 +19,7 @@ mod capacity_wait;
 mod foreground;
 mod notifications;
 mod preparation_backoff;
+mod queued_callers;
 use std::sync::mpsc::{self, Receiver, Sender};
 
 fn pause() -> (Arc<OwnerPauseProbe>, Receiver<()>, Sender<()>) {

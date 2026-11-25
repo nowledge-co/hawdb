@@ -647,16 +647,31 @@ impl EmbeddedStoreHandle {
     /// checkpoint so the shadow build never issues a nested admission
     /// against the permit this method already holds.
     pub fn checkpoint(&self) -> Result<()> {
+        self.checkpoint_context(&RuntimeTaskContext::default())
+    }
+
+    /// Runs [`Self::checkpoint`] under the caller's admission policy,
+    /// cancellation and deadline.
+    ///
+    /// The task context's admission priority and wait (see
+    /// [`RuntimeTaskContext::with_admission_wait`]) apply to the maintenance
+    /// admission; no store guard is held while it waits. Cancellation and the
+    /// deadline are honoured until the checkpoint starts; a started
+    /// checkpoint runs to completion.
+    pub fn checkpoint_context(&self, task_context: &RuntimeTaskContext) -> Result<()> {
+        task_context.checkpoint()?;
         let shadow_admission_bytes = self
             .read_store()?
             .graph
             .database()
             .columnar_shadow_admission_bytes()?;
-        let _permit = self.admit_typed_maintenance(
+        let _permit = self.admit_typed_maintenance_context(
             RuntimeWorkPriority::Foreground,
             usize::try_from(shadow_admission_bytes).unwrap_or(usize::MAX),
             1,
+            task_context,
         )?;
+        task_context.checkpoint()?;
         self.write_store()?
             .graph_mut()
             .database_mut()
@@ -825,13 +840,28 @@ impl EmbeddedStoreHandle {
         document_ids: &[String],
         max_documents: usize,
     ) -> Result<SearchHydrationOutput> {
+        self.search_projection_documents_with_report_context(
+            document_ids,
+            max_documents,
+            &RuntimeTaskContext::default(),
+        )
+    }
+
+    /// Runs [`Self::search_projection_documents_with_report`] under the
+    /// caller's admission policy, cancellation and deadline.
+    pub fn search_projection_documents_with_report_context(
+        &self,
+        document_ids: &[String],
+        max_documents: usize,
+        task_context: &RuntimeTaskContext,
+    ) -> Result<SearchHydrationOutput> {
         if document_ids.len() > max_documents {
             return Err(HawDBError::Execution(format!(
                 "search projection document hydration requested {} rows, limit is {max_documents}",
                 document_ids.len()
             )));
         }
-        self.with_admitted_search(|read| read.hydrate(document_ids))
+        self.with_admitted_search_context(task_context, |read| read.hydrate(document_ids))
     }
 
     /// Lists one ordered page of Search projection document IDs for the
@@ -915,7 +945,7 @@ impl EmbeddedStoreHandle {
             )
         };
 
-        let permit = try_admit_runtime(&governor, request)?;
+        let permit = admit_runtime(&governor, request, task_context)?;
         let task = permit.bind_task_context(task_context.clone());
         enum Source {
             Resident(crate::search::SearchProjectionIdBatch),
@@ -1022,7 +1052,7 @@ impl EmbeddedStoreHandle {
         statements: &[NowledgeGraphStatement],
     ) -> Result<crate::NowledgeGraphTransactionOutput> {
         task_context.checkpoint()?;
-        let permit = self.admit_transaction(statements)?;
+        let permit = self.admit_transaction(statements, task_context)?;
         let _unwind = concurrent_owner::PublicationUnwindGuard(&self.read_publication_failed);
         let mut transaction = self.concurrent.begin_admitted_transaction(
             crate::ConcurrentTransactionOptions::default(),
@@ -1062,6 +1092,11 @@ impl EmbeddedStoreHandle {
     /// Runs [`Self::with_transaction`] under the caller's deadline and
     /// cancellation.
     ///
+    /// The context's admission priority and wait apply to the transaction's
+    /// runtime admission, as described on
+    /// [`Self::with_bounded_read_snapshot_context`]; a waiting writer holds no
+    /// store guard and no write locks while queued.
+    ///
     /// They are honored up to the commit boundary: before runtime admission,
     /// while waiting for another writer's locks, during each statement, when
     /// the commit is about to run, and while a commit waits for live-overlay
@@ -1076,7 +1111,7 @@ impl EmbeddedStoreHandle {
         operation: impl FnOnce(&mut crate::ConcurrentDatabaseTransaction) -> Result<T>,
     ) -> Result<T> {
         task_context.checkpoint()?;
-        let permit = self.admit_typed_transaction()?;
+        let permit = self.admit_typed_transaction(task_context)?;
         let _unwind = concurrent_owner::PublicationUnwindGuard(&self.read_publication_failed);
         let mut transaction = self.concurrent.begin_admitted_transaction(
             crate::ConcurrentTransactionOptions::default(),
@@ -1118,6 +1153,44 @@ impl EmbeddedStoreHandle {
 
     /// Executes one bounded App read snapshot under the caller's cancellation,
     /// deadline, and resource reservation context.
+    ///
+    /// The context also selects the admission policy: an opportunistic read
+    /// can rank behind other work with
+    /// [`RuntimeTaskContext::with_admission_queue_priority`] and wait in the
+    /// governor's priority queue with
+    /// [`RuntimeTaskContext::with_admission_wait`] instead of being refused
+    /// at once. Prefer the queue rank to
+    /// [`RuntimeTaskContext::with_admission_priority`]: the latter moves a
+    /// read into the Background pool, which automatic checkpoints share (one
+    /// task below eight CPUs), so a long read there delays the checkpoint
+    /// that committing writers may wait for. The context never
+    /// moves a transaction into the Background pool; one whose statements all
+    /// plan as Background work (or that has none) is admitted there as before.
+    ///
+    /// Recommended host tiering: user requests use the default context
+    /// (immediate, Foreground) on a governor with
+    /// `RuntimeGovernor::set_foreground_preempts_queued_background(true)`; a
+    /// replay writer and shadow-comparison reads rank `Background` with a
+    /// wait. Users then never yield to queued ranked work, the writer is
+    /// FIFO with waiting shadow reads, and maintenance keeps
+    /// its own pool. The same policy applies to the handle's other context-taking
+    /// admissions: bounded and graph read snapshots, admitted queries and
+    /// streaming reads, `transaction_context` and `with_transaction_context`,
+    /// typed search (`search_candidates_with_report_context`,
+    /// `retrieve_knowledge_with_report_context`,
+    /// `search_projection_documents_with_report_context`), search projection
+    /// ID pages, `checkpoint_context` and
+    /// `compact_search_projection_segments_with_context`. Other typed
+    /// maintenance and context-free methods keep the default (immediate,
+    /// operation priority). No store guard or publication lock is held while
+    /// queued. An admission wait that ends returns the typed
+    /// `RuntimeAdmissionRefused` with `waited` set; cancellation or the task
+    /// deadline while queued returns `RuntimeTaskStopped`.
+    ///
+    /// Do not wait for a nested admission inside the `operation` callback
+    /// (or a transaction callback): the outer permit stays held, so on a
+    /// one-CPU governor an `Unbounded` nested wait without a task deadline
+    /// never returns. Use a bounded wait, or admit sequentially.
     pub fn with_bounded_read_snapshot_context<T>(
         &self,
         budget: EmbeddedReadSnapshotBudget,
@@ -1191,7 +1264,7 @@ impl EmbeddedStoreHandle {
             );
             return self.finish_canonical_read(operation(&mut snapshot));
         }
-        let permit = self.admit_typed_read(budget.max_payload_bytes)?;
+        let permit = self.admit_typed_read(budget.max_payload_bytes, task_context)?;
         let task_context = permit.bind_task_context(task_context.clone());
         let _permit = permit;
         let (view, identity, resident, projection) = {
@@ -1521,6 +1594,17 @@ impl EmbeddedStoreHandle {
         self.with_admitted_search(|read| read.search_candidates(request))
     }
 
+    /// Runs [`Self::search_candidates_with_report`] under the caller's
+    /// admission policy (priority and wait), cancellation and deadline, so a
+    /// shadow-comparison search can run at Background priority.
+    pub fn search_candidates_with_report_context(
+        &self,
+        request: &SearchCandidateRequest,
+        task_context: &RuntimeTaskContext,
+    ) -> Result<SearchCandidateOutput> {
+        self.with_admitted_search_context(task_context, |read| read.search_candidates(request))
+    }
+
     pub fn validate_sampled_vector_recall(
         &self,
         options: VectorRecallValidationOptions,
@@ -1554,6 +1638,16 @@ impl EmbeddedStoreHandle {
         request: &KnowledgeRetrievalRequest,
     ) -> Result<RetrievalOutput> {
         self.with_admitted_search(|read| read.retrieve(request))
+    }
+
+    /// Runs [`Self::retrieve_knowledge_with_report`] under the caller's
+    /// admission policy, cancellation and deadline.
+    pub fn retrieve_knowledge_with_report_context(
+        &self,
+        request: &KnowledgeRetrievalRequest,
+        task_context: &RuntimeTaskContext,
+    ) -> Result<RetrievalOutput> {
+        self.with_admitted_search_context(task_context, |read| read.retrieve(request))
     }
 
     pub fn search_candidate_readiness(
@@ -1976,7 +2070,10 @@ impl EmbeddedStoreHandle {
             .catch_up_search_projection_scheduled(max_operations_per_batch, max_batches)
     }
 
-    pub(super) fn admit_typed_transaction(&self) -> Result<RuntimePermit> {
+    pub(super) fn admit_typed_transaction(
+        &self,
+        task_context: &RuntimeTaskContext,
+    ) -> Result<RuntimePermit> {
         let (governor, request) = {
             let published = self.lock_published_read()?;
             let published = published.as_ref().ok_or_else(|| {
@@ -2005,12 +2102,13 @@ impl EmbeddedStoreHandle {
                     .with_blocking(true),
             )
         };
-        try_admit_runtime(&governor, request)
+        admit_runtime(&governor, request, task_context)
     }
 
     pub(super) fn admit_typed_read(
         &self,
         max_estimated_payload_bytes: usize,
+        task_context: &RuntimeTaskContext,
     ) -> Result<RuntimePermit> {
         let (governor, request) = {
             let publication = self.lock_published_read()?;
@@ -2026,7 +2124,7 @@ impl EmbeddedStoreHandle {
                 )?,
             )
         };
-        try_admit_runtime(&governor, request)
+        admit_runtime(&governor, request, task_context)
     }
 
     pub(super) fn lock_published_read(
@@ -2097,12 +2195,7 @@ impl EmbeddedStoreHandle {
                 )?,
             )
         };
-        let permit = governor.try_admit(request).map_err(|error| {
-            if error.is_retryable() {
-                governor.record_admission_wait(request, error.code, 0);
-            }
-            HawDBError::from(error)
-        })?;
+        let permit = admit_runtime(&governor, request, task_context)?;
         // Capture after admission so a write completed during admission is visible.
         // Snapshot construction and observation refresh run after unlocking.
         let (view, identity) = {
@@ -2147,26 +2240,64 @@ impl EmbeddedStoreHandle {
         estimated_input_bytes: usize,
         io_slots: usize,
     ) -> Result<RuntimePermit> {
-        let store = self.read_store()?;
-        let config = store.graph.database().config();
-        let working_memory_bytes =
-            u64::try_from(config.execution_memory.blocking_operator_bytes.get())
-                .unwrap_or(u64::MAX);
+        self.admit_typed_maintenance_context(
+            priority,
+            estimated_input_bytes,
+            io_slots,
+            &RuntimeTaskContext::default(),
+        )
+    }
+
+    pub(super) fn admit_typed_maintenance_context(
+        &self,
+        priority: RuntimeWorkPriority,
+        estimated_input_bytes: usize,
+        io_slots: usize,
+        task_context: &RuntimeTaskContext,
+    ) -> Result<RuntimePermit> {
+        // Release the store guard before admission: a queued caller must not
+        // block the writer whose permit it is waiting for.
+        let (governor, working_memory_bytes) = {
+            let store = self.read_store()?;
+            let config = store.graph.database().config();
+            (
+                store.graph.runtime_governor().clone(),
+                u64::try_from(config.execution_memory.blocking_operator_bytes.get())
+                    .unwrap_or(u64::MAX),
+            )
+        };
         let estimated_input_bytes = u64::try_from(estimated_input_bytes).unwrap_or(u64::MAX);
-        store.graph.try_admit_runtime(
+        admit_runtime(
+            &governor,
             RuntimeWorkRequest::new(priority, RuntimeWorkKind::Maintenance)
                 .with_cpu_slots(1)
                 .with_memory_bytes(working_memory_bytes.saturating_add(estimated_input_bytes))
                 .with_io_slots(io_slots)
                 .with_blocking(true),
+            task_context,
         )
     }
 
     pub(super) fn admit_transaction(
         &self,
         statements: &[NowledgeGraphStatement],
+        task_context: &RuntimeTaskContext,
     ) -> Result<RuntimePermit> {
-        let store = self.read_store()?;
+        let (governor, request) = {
+            let store = self.read_store()?;
+            (
+                store.graph.runtime_governor().clone(),
+                Self::transaction_request(&store, statements)?,
+            )
+        };
+        // The store guard is released: waiting here never blocks a writer.
+        admit_runtime(&governor, request, task_context)
+    }
+
+    fn transaction_request(
+        store: &EmbeddedStore,
+        statements: &[NowledgeGraphStatement],
+    ) -> Result<RuntimeWorkRequest> {
         let db = store.graph.database();
         let config = db.config();
         let mut priority = RuntimeWorkPriority::Background;
@@ -2192,13 +2323,12 @@ impl EmbeddedStoreHandle {
             result_bytes = result_bytes
                 .saturating_add(u64::try_from(statement_result_bytes).unwrap_or(u64::MAX));
         }
-        let request = RuntimeWorkRequest::new(priority, RuntimeWorkKind::Mutation)
+        Ok(RuntimeWorkRequest::new(priority, RuntimeWorkKind::Mutation)
             .with_cpu_slots(1)
             .with_memory_bytes(estimated_memory_bytes)
             .with_io_slots(io_slots)
             .with_result_bytes(result_bytes)
-            .with_blocking(true);
-        store.graph.try_admit_runtime(request)
+            .with_blocking(true))
     }
 
     pub(super) fn read_store(
@@ -2244,6 +2374,84 @@ pub(super) fn try_admit_runtime(
         }
         HawDBError::from(error)
     })
+}
+
+/// Applies the caller's task-context admission policy (#1947).
+///
+/// The context can only lower the request's priority. With the default
+/// [`RuntimeAdmissionWait::Refuse`] policy this is [`try_admit_runtime`];
+/// otherwise the calling thread waits in the governor's priority queue.
+/// Callers must not hold a store guard or the publication lock here.
+pub(super) fn admit_runtime(
+    governor: &RuntimeGovernor,
+    request: RuntimeWorkRequest,
+    task_context: &RuntimeTaskContext,
+) -> Result<RuntimePermit> {
+    let request = prioritized_request(request, task_context);
+    let wait_until = match task_context.admission_wait() {
+        RuntimeAdmissionWait::Refuse => {
+            let permit = try_admit_runtime_ranked(governor, request, task_context)?;
+            task_context.record_admission(std::time::Duration::ZERO);
+            return Ok(permit);
+        }
+        RuntimeAdmissionWait::Until(deadline) => Some(deadline),
+        RuntimeAdmissionWait::Unbounded => None,
+    };
+    governor
+        .admit_waiting(request, task_context, wait_until)
+        .map_err(|error| match error {
+            RuntimeAdmissionWaitError::Refused { error, waited } => match HawDBError::from(error) {
+                HawDBError::RuntimeAdmissionRefused(refusal) => {
+                    HawDBError::RuntimeAdmissionRefused(crate::RuntimeAdmissionRefusal {
+                        waited,
+                        ..refusal
+                    })
+                }
+                other => other,
+            },
+            RuntimeAdmissionWaitError::Stopped(reason) => HawDBError::RuntimeTaskStopped(reason),
+        })
+}
+
+/// Applies the context's resource-pool priority. A mutation stays in its own
+/// pool: its commit can wait for Background maintenance (the automatic
+/// checkpoint), which must never wait for the slot the writer holds. Its
+/// queue rank is still lowered (see [`queue_rank`]).
+pub(super) fn prioritized_request(
+    mut request: RuntimeWorkRequest,
+    task_context: &RuntimeTaskContext,
+) -> RuntimeWorkRequest {
+    if request.kind != RuntimeWorkKind::Mutation {
+        request.priority = request
+            .priority
+            .lowered_by(task_context.admission_priority());
+    }
+    request
+}
+
+/// The queue rank of an admission: the pool priority lowered by both the
+/// context's queue priority and its pool priority.
+pub(super) fn queue_rank(
+    request: RuntimeWorkRequest,
+    task_context: &RuntimeTaskContext,
+) -> RuntimeWorkPriority {
+    hawdb_qos::RuntimeGovernor::effective_queue_rank(request.priority, task_context)
+}
+
+/// [`try_admit_runtime`] at the context's queue rank.
+pub(super) fn try_admit_runtime_ranked(
+    governor: &RuntimeGovernor,
+    request: RuntimeWorkRequest,
+    task_context: &RuntimeTaskContext,
+) -> Result<RuntimePermit> {
+    governor
+        .try_admit_ranked(request, queue_rank(request, task_context))
+        .map_err(|error| {
+            if error.is_retryable() {
+                governor.record_admission_wait(request, error.code, 0);
+            }
+            HawDBError::from(error)
+        })
 }
 
 pub(super) fn typed_read_request(

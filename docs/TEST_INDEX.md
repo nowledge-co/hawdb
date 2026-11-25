@@ -550,6 +550,83 @@ host itself is under critical memory pressure. No new lane, profile or timeout.
 Replay with `cargo test --locked -p hawdb-qos --lib host_refresh_tests` and
 `cargo test --locked -p hawdb --lib stale_memory_pressure_tests`.
 
+Synchronous admission waits ([#1947](https://github.com/nowledge-co/hawdb/issues/1947))
+use the existing `//crates/qos:hawdb_qos_tests`, core and root
+`//:hawdb_unit_general_tests` owners. QoS `runtime::blocking_admission_tests`
+drive `RuntimeGovernor::admit_waiting` on a one-CPU governor: a parked caller is
+admitted after a release; a later Foreground waiter precedes an unaged
+Background one (its enqueue time is pinned so slow hosts cannot age it); an
+aged Background waiter wakes itself without a release; same-priority waiters
+are FIFO and an immediate request yields `queued_ahead` to a queued waiter
+even with free capacity; an aged queued Background waiter makes an immediate
+Foreground request yield by default but not under strict Foreground precedence
+(`set_foreground_preempts_queued_background`), while an immediate Background
+request always yields; a
+short-deadline Foreground waiter takes the slot a running Background task
+releases ahead of a queued Background waiter and its trace records the queued
+time; the admission deadline returns the retryable refusal with `waited`; an
+unsatisfiable request is refused without queueing (`waited` absent); and
+cancellation or the task deadline while queued return the typed stop. Three or more aged Background
+waiters overtake one short-deadline Foreground waiter at most once (default
+and strict precedence), a later Foreground waiter may again be overtaken once,
+and an immediate request yields `queued_ahead` only when it competes with the
+selected waiter for a scarce resource (checkpoint-like maintenance passes a
+waiter short of Foreground I/O but not one short of the only CPU; on two
+CPUs it passes a waiter short only of I/O while a writer holds the other
+CPU); a waiter short of process resident memory is not overtaken by small
+memory-reserving requests; and a Background-ranked waiter in the Foreground
+pool is ordered behind users and ahead of Background-ranked immediates without
+taking the Background pool. Every case leaves the queue empty. The unit-test build raises the bounded re-check
+interval to 60 s, so the 20 s completion bounds prove signal wake-ups rather
+than polling. Core `cancellation::tests::admission_policy_*` pin the
+task-context defaults, scoping and shared admission trace. Root
+`embedded_store::admission_wait_tests` open a handle on a one-CPU governor
+(one Background task): the default context still refuses at once with no
+`waited`; Background reads and queries run in the Background pool; a waiting
+bounded read is admitted after release and traced; the wait deadline (with
+`waited`), cancellation and the task deadline return their typed errors;
+queued statement transactions and typed maintenance hold no store guard (a
+third thread takes the write guard within the bound); a reader queues behind an
+open transaction. Host-shaped loops: a waiting Foreground writer completes 300
+commits beside a greedy immediate Foreground reader; waiting reader and writer
+alternate FIFO; a waiting reader completes 100 reads beside two greedy readers
+saturating a one-slot I/O depth on seven CPUs; on a governor with strict
+Foreground precedence a user read is admitted while a Background replay is
+queued past aging (by default it yields `queued_ahead`) and a Background shadow
+read yields `queued_ahead`; a waiting Background replay completes 300 commits
+beside a greedy Background shadow reader; greedy user reads never see
+`queued_ahead` from a queued Background replay; a short-deadline Foreground mailbox read is
+admitted when a Background task releases the CPU; a Background shadow search
+(`search_candidates_with_report_context`) queues on a held Background pool while
+the Foreground search runs, then completes and is traced; and a Background shadow
+reader beside a Foreground writer paced 1 ms apart never refuses the writer
+while the reader progresses. `admission_wait_tests::recommended_tiering`
+(feature `background-maintenance`) runs the recommended host tiering on a
+durable four-CPU handle with the default one-task Background pool and 20 ms
+automatic checkpoints: a Background-ranked replay writer commits 100 times
+beside two Background-ranked shadow readers that hold each read open for 20 ms
+and a greedy user reader; checkpoints keep completing, users never see
+`queued_ahead`; the same holds for a writer given
+`with_admission_priority(Background)`. Parked writers are covered by
+`automatic_checkpoint::tests::headroom::queued_callers`: a real commit waits for
+the paused checkpoint owner near capacity, with the writer on four CPUs at the
+default Background limit, beside a long shadow read, and on two CPUs with a
+caller queued for I/O; the owner's first attempt must be admitted and the commit
+must succeed. Root
+`api::tests::checkpoint_beside_queued_waiters` (feature
+`background-maintenance`) open a durable database with a 20 ms automatic
+checkpoint age on a four-CPU governor with one Foreground I/O slot and write
+until automatic checkpoints complete: with a waiter queued for the held I/O
+slot, beside three callers that keep re-queuing for it, and on two CPUs while
+writer A holds one CPU and the I/O slot and B is queued; before the
+contention rule the checkpoint was refused `queued_ahead` indefinitely. Only
+that pacing and one 150 ms aging pause sleep; no new lane, profile or timeout.
+Replay with `cargo test --locked -p hawdb --all-features --lib
+checkpoint_beside_queued_waiters`,
+`cargo test --locked -p hawdb-qos --lib blocking_admission_tests`,
+`cargo test --locked -p hawdb-core --lib admission_policy` and
+`cargo test --locked -p hawdb --lib admission_wait_tests`.
+
 `embedded_store::tests::storage_pressure_tests` (`nowledge-co/hawdb#1725`)
 belongs to the existing root `//:hawdb_unit_general_tests` owner. It opens a
 durable handle with explicit checkpoints only and pins

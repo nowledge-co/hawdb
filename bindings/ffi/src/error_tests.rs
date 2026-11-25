@@ -290,6 +290,7 @@ fn runtime_admission_refusal_is_delivered_as_its_own_kind() {
         requested: 4096,
         available: 0,
         retryable: true,
+        waited: None,
     });
     let delivered = delivered(FfiError::open(&error));
     assert_eq!(

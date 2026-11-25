@@ -43,10 +43,11 @@ pub mod vector_index;
 
 pub use access_control::QueryAccessControlContext;
 pub use cancellation::{
-    RuntimeCancellationFuture, RuntimeCancellationReason, RuntimeCancellationToken,
-    RuntimeIoWaveController, RuntimeIoWaveError, RuntimeIoWavePermit, RuntimeIoWaveTryAcquire,
-    RuntimeMemoryController, RuntimeMemoryError, RuntimeMemoryPermit, RuntimeMemoryReservation,
-    RuntimeMemoryTarget, RuntimeTaskContext,
+    RuntimeAdmissionTrace, RuntimeAdmissionWait, RuntimeCancellationFuture,
+    RuntimeCancellationReason, RuntimeCancellationToken, RuntimeIoWaveController,
+    RuntimeIoWaveError, RuntimeIoWavePermit, RuntimeIoWaveTryAcquire, RuntimeMemoryController,
+    RuntimeMemoryError, RuntimeMemoryPermit, RuntimeMemoryReservation, RuntimeMemoryTarget,
+    RuntimeTaskContext, RuntimeWorkPriority,
 };
 pub use capability::{RuntimeCapabilities, RuntimeCapability};
 pub use conversion_function::ConversionFunction;

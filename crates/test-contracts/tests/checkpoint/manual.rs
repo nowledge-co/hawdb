@@ -322,6 +322,7 @@ fn embedded_checkpoint_retains_foreground_io_refusal_and_refunds() {
                     requested: 1,
                     available: 0,
                     retryable: true,
+                    waited: None,
                 }
             ))
         ),

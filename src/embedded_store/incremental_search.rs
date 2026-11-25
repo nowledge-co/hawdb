@@ -108,7 +108,11 @@ impl EmbeddedStoreHandle {
         hint: hawdb_qos::BackgroundWorkHint,
         task: RuntimeTaskContext,
     ) -> Result<crate::search::ScheduledSearchOutOfCoreSegmentCompactionReport> {
-        let permit = self.admit_search_projection_maintenance(0)?;
+        let permit = self.admit_search_projection_maintenance_context(
+            RuntimeWorkPriority::Background,
+            0,
+            &task,
+        )?;
         let (path, options, scheduler) = {
             let store = self.read_store()?;
             store.graph.check_runtime_context(&task)?;
@@ -162,20 +166,40 @@ impl EmbeddedStoreHandle {
         priority: RuntimeWorkPriority,
         input_bytes: usize,
     ) -> Result<RuntimePermit> {
-        let store = self.read_store()?;
-        let configured = store.incremental_search_memory_bytes();
-        let working = u64::try_from(
-            store
-                .graph
-                .database()
-                .config()
-                .execution_memory
-                .blocking_operator_bytes
-                .get(),
+        self.admit_search_projection_maintenance_context(
+            priority,
+            input_bytes,
+            &RuntimeTaskContext::default(),
         )
-        .unwrap_or(u64::MAX)
-        .max(configured);
-        store.graph.try_admit_runtime(
+    }
+
+    /// Admits search projection maintenance under the caller's admission
+    /// policy. The store guard is released before admission, so a waiting
+    /// caller never blocks the writer whose permit it waits for.
+    pub(super) fn admit_search_projection_maintenance_context(
+        &self,
+        priority: RuntimeWorkPriority,
+        input_bytes: usize,
+        task_context: &RuntimeTaskContext,
+    ) -> Result<RuntimePermit> {
+        let (governor, working) = {
+            let store = self.read_store()?;
+            let configured = store.incremental_search_memory_bytes();
+            let working = u64::try_from(
+                store
+                    .graph
+                    .database()
+                    .config()
+                    .execution_memory
+                    .blocking_operator_bytes
+                    .get(),
+            )
+            .unwrap_or(u64::MAX)
+            .max(configured);
+            (store.graph.runtime_governor().clone(), working)
+        };
+        admit_runtime(
+            &governor,
             RuntimeWorkRequest::new(priority, RuntimeWorkKind::Maintenance)
                 .with_cpu_slots(1)
                 .with_memory_bytes(
@@ -183,6 +207,7 @@ impl EmbeddedStoreHandle {
                 )
                 .with_io_slots(1)
                 .with_blocking(true),
+            task_context,
         )
     }
 }

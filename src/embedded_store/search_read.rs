@@ -53,6 +53,19 @@ impl EmbeddedStoreHandle {
         &self,
         operation: impl FnOnce(&AdmittedSearchRead) -> Result<T>,
     ) -> Result<T> {
+        self.with_admitted_search_context(&RuntimeTaskContext::default(), operation)
+    }
+
+    /// Typed search under the caller's admission policy, cancellation and
+    /// deadline (#1947).
+    pub(super) fn with_admitted_search_context<T>(
+        &self,
+        task_context: &RuntimeTaskContext,
+        operation: impl FnOnce(&AdmittedSearchRead) -> Result<T>,
+    ) -> Result<T> {
+        task_context
+            .checkpoint()
+            .map_err(HawDBError::RuntimeTaskStopped)?;
         // Admission may invoke host callbacks. Carry metadata only across it,
         // so a writer can replace and retire the previously published source.
         let (identity, config, governor, request, resident_kind) = {
@@ -66,7 +79,7 @@ impl EmbeddedStoreHandle {
                 published.resident_projection.is_some(),
             )
         };
-        let permit = try_admit_runtime(&governor, request)?;
+        let permit = admit_runtime(&governor, request, task_context)?;
         let (view, mode, resident, out_of_core, advisor) = {
             let published = self.lock_published_read()?;
             let published = published.as_ref().ok_or_else(source_changed)?;
@@ -102,7 +115,7 @@ impl EmbeddedStoreHandle {
             resident,
             out_of_core,
             advisor,
-            task: permit.bind_task_context(RuntimeTaskContext::default()),
+            task: permit.bind_task_context(task_context.clone()),
             permit: &permit,
         };
         self.finish_canonical_read(operation(&read))
