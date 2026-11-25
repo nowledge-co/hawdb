@@ -5,7 +5,7 @@ load("@rules_python//python:defs.bzl", "py_test")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//:benchmarks.bzl", "HAWDB_BENCHMARKS", "HAWDB_BENCHMARK_TARGETS", "hawdb_benchmark_binaries")
-load("//:windows_native_features.bzl", "WINDOWS_NATIVE_FEATURE_PROFILES", "windows_native_features")
+load("//:windows_native_features.bzl", "WINDOWS_NATIVE_FEATURE_PROFILES", "feature_profile_test_binary", "windows_native_features")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -487,6 +487,40 @@ rust_test(
     for partition in ["general", "concurrent", "checkpoint_lifecycle", "checkpoint_large_commit", "checkpoint_large_commit_interrupted", "analytics_core_general", "analytics_rss", "recovery"]
 ]
 
+# The ordinary root binary with `test-support`, as `cargo test -p hawdb
+# --features test-support --lib` builds it. The feature reaches `hawdb_storage`,
+# so its dependents are configured with it rather than declared a second time.
+feature_profile_test_binary(
+    name = "hawdb_unit_test_support_binary",
+    testonly = True,
+    binary = ":hawdb_unit_test_binary",
+    profile = "facade_test_support",
+    tags = ["manual"],
+)
+
+# Cases that exist only with `test-support`, less the weekly power-loss matrix (#1965).
+sh_test(
+    name = "hawdb_unit_test_support_tests",
+    size = "large",
+    timeout = "long",
+    srcs = ["scripts/run-root-test-support.sh"],
+    args = [
+        "$(rootpath :hawdb_unit_test_support_binary)",
+        "$(rootpath :hawdb_unit_test_binary)",
+    ],
+    data = [
+        ":hawdb_unit_test_binary",
+        ":hawdb_unit_test_support_binary",
+    ],
+)
+
+sh_test(
+    name = "root_test_support_script_test",
+    size = "small",
+    srcs = ["scripts/run-root-test-support.test.sh"],
+    data = ["scripts/run-root-test-support.sh"],
+)
+
 # Keep the growing-table workload and the remaining headroom controls as
 # explicit targets so CI can isolate them in different Pods. Both reuse the
 # same checked root carrier and preserve serial libtest execution.
@@ -838,7 +872,9 @@ test_suite(
         ":hawdb_search_lexical_corpus_qualification_tests",
         ":hawdb_wasm_playground_bridge_tests",
         ":hawdb_unit_fast_tests",
+        ":hawdb_unit_test_support_tests",
         ":root_unit_partition_script_test",
+        ":root_test_support_script_test",
         ":native_release_package_script_test",
         ":native_release_mode_script_test",
         ":pypi_publish_script_test",

@@ -81,6 +81,7 @@ def expected_features(initial, development):
 for name, initial, development in [
     ("facade_all", features["hawdb"], True),
     ("facade_default", ["default"], True),
+    ("facade_test_support", ["default", "test-support"], True),
     ("facade_minimal", [], True),
     ("bindings", ["default"], False),
 ]:

@@ -191,6 +191,44 @@ impl Drop for HandoffPauseForTest {
     }
 }
 
+#[cfg(all(
+    test,
+    feature = "background-maintenance",
+    feature = "test-support",
+    not(target_arch = "wasm32")
+))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct OwnerProgress {
+    phase: Phase,
+    selected: bool,
+    retired: bool,
+    running: bool,
+    attempts_started: u64,
+    retirement_deferrals: u64,
+    work_progress: u64,
+    report: AutomaticCheckpointReport,
+}
+
+#[cfg(all(
+    test,
+    feature = "background-maintenance",
+    feature = "test-support",
+    not(target_arch = "wasm32")
+))]
+impl OwnerProgress {
+    pub(super) fn completed_checkpoints(&self) -> u64 {
+        self.report.completed_checkpoints
+    }
+
+    pub(super) fn advance_work_for_test(&mut self, step: u64) {
+        self.work_progress += step;
+    }
+
+    pub(super) fn is_idle(&self) -> bool {
+        self.phase == Phase::Idle && !self.selected && !self.retired && !self.running
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct Source {
     store: GraphStore,
@@ -812,6 +850,34 @@ impl Control {
             && state.selected.is_none()
             && state.retired.is_none()
             && state.task.is_none())
+    }
+
+    /// Everything that changes while the owner works, or `None` while another
+    /// thread holds the state. Never waits, so a wedged owner cannot also stop
+    /// its observer (#1985).
+    #[cfg(all(
+        test,
+        feature = "background-maintenance",
+        feature = "test-support",
+        not(target_arch = "wasm32")
+    ))]
+    pub(super) fn owner_progress_for_test(&self) -> Result<Option<OwnerProgress>> {
+        self.ensure_healthy()?;
+        let state = match self.state.try_lock() {
+            Ok(state) => state,
+            Err(TryLockError::WouldBlock) => return Ok(None),
+            Err(TryLockError::Poisoned(_)) => return Err(Self::poisoned()),
+        };
+        Ok(Some(OwnerProgress {
+            phase: state.phase,
+            selected: state.selected.is_some(),
+            retired: state.retired.is_some(),
+            running: state.task.is_some(),
+            attempts_started: state.attempts_started,
+            retirement_deferrals: state.retirement_deferrals,
+            work_progress: self.work_progress.load(Ordering::Relaxed),
+            report: state.report.clone(),
+        }))
     }
 
     #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
