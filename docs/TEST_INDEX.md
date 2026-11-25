@@ -5194,3 +5194,21 @@ encoding-only pair controller, shared-host ordinary query pairs and separately
 instrumented 24/120-pair CPU/WAL/call diagnostics. These add no CI execution
 lane. Keep the measured byte checks, large-first payload control, source hashes,
 all unfavorable samples and compiler-idle acceptance blocker explicit.
+
+### Recursive WAL collection buffers
+
+The same `//crates/storage:hawdb_storage_tests` owner covers List/Map/property
+entry scratch reuse. A frozen allocating container control checks complete wire
+bytes and native allocation traffic: 4096 scalar elements or empty child containers must require at least
+4096 control allocation requests, fewer than 64 optimized requests, and no
+increase in total requested bytes. Counts are thread-local allocator requests,
+not elapsed time, live memory or process RSS, and remain useful on a busy host.
+
+Portable regressions cover empty containers, length-prefix transitions at
+127/128 and 16383/16384, oversized payloads followed by recursive/small values,
+independent checkpoint-codec equality and decode roundtrips. Scratch capacities
+above 64 KiB are released after each element/entry; before encoding a nonempty recursive
+child, preceding scalar capacity is released even below that cap. Empty child
+containers keep the nonrecursive reuse path. No new CI
+lane, persistent format or benchmark run is added. Compiler-idle full-query
+performance acceptance remains separate from these allocation contracts.

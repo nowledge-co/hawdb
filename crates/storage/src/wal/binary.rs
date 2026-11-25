@@ -224,7 +224,7 @@ impl PreparedWalBatch {
         bytes.extend_from_slice(&0u64.to_le_bytes());
         bytes.extend_from_slice(&count.to_le_bytes());
         let mut changes_adjacency = false;
-        let mut buffers = OpEncodeBuffers::default();
+        let mut buffers = MessageEncodeBuffers::default();
         for op in ops {
             encode_op_frame(op, &mut bytes, &mut buffers)?;
             // Classify while each operation is already resident for encoding.
@@ -257,7 +257,7 @@ pub fn encode_binary_wal_record(entry: &WalEntry, commit_epoch: u64) -> Result<V
     validate_wal_op_values(std::slice::from_ref(&entry.op))?;
     let mut out = Vec::with_capacity(64);
     out.extend_from_slice(&entry.lsn.to_le_bytes());
-    let mut buffers = OpEncodeBuffers::default();
+    let mut buffers = MessageEncodeBuffers::default();
     match &entry.op {
         WalOp::Batch(ops) => {
             out.push(RECORD_KIND_BATCH);
@@ -289,27 +289,50 @@ fn decode_binary_wal_record_inner(bytes: &[u8]) -> Result<BinaryWalRecordDecode>
     record_decode::decode_record(bytes, &OrdinaryOpDecoder)
 }
 
-// Retain only bounded scratch space for this record. A large early value must
-// not stay resident while later operations grow the complete record buffer.
-const MAX_RETAINED_OP_BUFFER_BYTES: usize = 64 * 1024;
+// Bound cached scratch between operations or collection entries. Oversized
+// values must not retain their capacity solely for later siblings.
+const MAX_RETAINED_MESSAGE_BUFFER_BYTES: usize = 64 * 1024;
 
 #[derive(Default)]
-struct OpEncodeBuffers {
+struct MessageEncodeBuffers {
     body: Vec<u8>,
     value: Vec<u8>,
 }
 
-impl OpEncodeBuffers {
+impl MessageEncodeBuffers {
     fn release_large_buffers(&mut self) {
         for buffer in [&mut self.body, &mut self.value] {
-            if buffer.capacity() > MAX_RETAINED_OP_BUFFER_BYTES {
-                *buffer = Vec::new();
-            }
+            release_large_message_buffer(buffer);
         }
     }
 }
 
-fn encode_op_frame(op: &WalOp, out: &mut Vec<u8>, buffers: &mut OpEncodeBuffers) -> Result<()> {
+fn release_large_message_buffer(buffer: &mut Vec<u8>) {
+    if buffer.capacity() > MAX_RETAINED_MESSAGE_BUFFER_BYTES {
+        *buffer = Vec::new();
+    }
+}
+
+fn prepare_value_buffer(buffer: &mut Vec<u8>, value: &Value) {
+    // Match the former fresh-buffer lifetime before recursion. Retaining a
+    // preceding scalar's capacity at every ancestor would inflate deep values.
+    let recursive = match value {
+        Value::List(values) => !values.is_empty(),
+        Value::Map(values) => !values.is_empty(),
+        _ => false,
+    };
+    if recursive {
+        *buffer = Vec::new();
+    } else {
+        buffer.clear();
+    }
+}
+
+fn encode_op_frame(
+    op: &WalOp,
+    out: &mut Vec<u8>,
+    buffers: &mut MessageEncodeBuffers,
+) -> Result<()> {
     buffers.body.clear();
     let op_code = encode_op_body_into(op, &mut buffers.body, &mut buffers.value)?;
     encode_varint_u64(op_code, out);
@@ -414,10 +437,12 @@ fn encode_value_message(value: &Value, out: &mut Vec<u8>) {
             encode_len_field(temporal_value_field(kind), &payload, out);
         }
         Value::List(values) => {
+            let mut body = Vec::new();
             for value in values {
-                let mut body = Vec::new();
+                prepare_value_buffer(&mut body, value);
                 encode_value_message(value, &mut body);
                 encode_len_field(VALUE_FIELD_ELEMENT, &body, out);
+                release_large_message_buffer(&mut body);
             }
             // A list is identified by its elements; an empty list needs an
             // explicit marker so it does not decode as Null.
@@ -426,16 +451,10 @@ fn encode_value_message(value: &Value, out: &mut Vec<u8>) {
             }
         }
         Value::Map(values) => {
-            for (key, value) in values {
-                let mut body = Vec::new();
-                encode_string_field(ENTRY_FIELD_KEY, key, &mut body);
-                let mut value_body = Vec::new();
-                encode_value_message(value, &mut value_body);
-                encode_len_field(ENTRY_FIELD_VALUE, &value_body, &mut body);
-                encode_len_field(VALUE_FIELD_MAP_ENTRY, &body, out);
-            }
             if values.is_empty() {
                 encode_len_field(VALUE_FIELD_MAP_ENTRY, &[], out);
+            } else {
+                encode_properties_fields(VALUE_FIELD_MAP_ENTRY, values, out);
             }
         }
     }
@@ -463,19 +482,21 @@ fn encode_properties_fields(
     properties: &BTreeMap<String, Value>,
     out: &mut Vec<u8>,
 ) {
+    let mut buffers = MessageEncodeBuffers::default();
     for (key, value) in properties {
-        let mut body = Vec::new();
-        encode_string_field(ENTRY_FIELD_KEY, key, &mut body);
-        let mut value_body = Vec::new();
-        encode_value_message(value, &mut value_body);
-        encode_len_field(ENTRY_FIELD_VALUE, &value_body, &mut body);
-        encode_len_field(field_id, &body, out);
+        prepare_value_buffer(&mut buffers.body, value);
+        prepare_value_buffer(&mut buffers.value, value);
+        encode_string_field(ENTRY_FIELD_KEY, key, &mut buffers.body);
+        encode_value_message(value, &mut buffers.value);
+        encode_len_field(ENTRY_FIELD_VALUE, &buffers.value, &mut buffers.body);
+        encode_len_field(field_id, &buffers.body, out);
+        buffers.release_large_buffers();
     }
 }
 
 #[cfg(test)]
 fn encode_op_body(op: &WalOp) -> Result<(u64, Vec<u8>)> {
-    let mut buffers = OpEncodeBuffers::default();
+    let mut buffers = MessageEncodeBuffers::default();
     let code = encode_op_body_into(op, &mut buffers.body, &mut buffers.value)?;
     Ok((code, buffers.body))
 }
@@ -1471,9 +1492,9 @@ mod tests {
         let large = WalOp::SetNodeProperty {
             id: NodeId(u64::MAX),
             property: "body".into(),
-            value: Value::Binary(vec![7; 2 * MAX_RETAINED_OP_BUFFER_BYTES]),
+            value: Value::Binary(vec![7; 2 * MAX_RETAINED_MESSAGE_BUFFER_BYTES]),
         };
-        let mut buffers = OpEncodeBuffers::default();
+        let mut buffers = MessageEncodeBuffers::default();
         encode_op_frame(&large, &mut Vec::new(), &mut buffers).unwrap();
         assert_eq!(buffers.body.capacity(), 0);
         assert_eq!(buffers.value.capacity(), 0);
@@ -1541,6 +1562,133 @@ mod tests {
                 "{count} operations allocated {allocations} times"
             );
             assert_eq!(prepared.operation_count(), count);
+        }
+    }
+
+    // Frozen pre-reuse container encoding is the allocation control. Scalar
+    // encoding is unchanged; checkpoint encoding independently checks wire bytes.
+    fn allocating_container_control(value: &Value, out: &mut Vec<u8>) {
+        match value {
+            Value::List(values) => {
+                for value in values {
+                    let mut body = Vec::new();
+                    allocating_container_control(value, &mut body);
+                    encode_len_field(VALUE_FIELD_ELEMENT, &body, out);
+                }
+                if values.is_empty() {
+                    encode_len_field(VALUE_FIELD_ELEMENT, &[], out);
+                }
+            }
+            Value::Map(values) => {
+                for (key, value) in values {
+                    let mut body = Vec::new();
+                    encode_string_field(ENTRY_FIELD_KEY, key, &mut body);
+                    let mut value_body = Vec::new();
+                    allocating_container_control(value, &mut value_body);
+                    encode_len_field(ENTRY_FIELD_VALUE, &value_body, &mut body);
+                    encode_len_field(VALUE_FIELD_MAP_ENTRY, &body, out);
+                }
+                if values.is_empty() {
+                    encode_len_field(VALUE_FIELD_MAP_ENTRY, &[], out);
+                }
+            }
+            _ => encode_value_message(value, out),
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn flat_collection_encoding_allocations_do_not_scale_per_element() {
+        let count = 4096;
+        for value in [
+            Value::List(vec![Value::Int(7); count]),
+            Value::List(vec![Value::List(Vec::new()); count]),
+            Value::List(vec![Value::Map(BTreeMap::new()); count]),
+            Value::Map(
+                (0..count)
+                    .map(|id| (format!("{id:04}"), Value::Int(7)))
+                    .collect(),
+            ),
+        ] {
+            let mut expected = Vec::new();
+            let control = crate::test_allocator::AllocationObservation::start_all();
+            allocating_container_control(&value, &mut expected);
+            let before = control.finish_stats();
+            let mut actual = Vec::new();
+            let observation = crate::test_allocator::AllocationObservation::start_all();
+            encode_value_message(&value, &mut actual);
+            let after = observation.finish_stats();
+            assert_eq!(actual, expected);
+            assert!(before.allocations >= count, "control: {before:?}");
+            assert!(after.allocations < 64, "optimized: {after:?}");
+            assert!(
+                after.allocated_bytes <= before.allocated_bytes,
+                "allocation traffic increased: {before:?} -> {after:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn reused_collection_buffers_preserve_recursive_values_and_length_boundaries() {
+        for length in [
+            0,
+            127,
+            128,
+            16_383,
+            16_384,
+            MAX_RETAINED_MESSAGE_BUFFER_BYTES + 1,
+        ] {
+            let mut value = Value::List(vec![
+                Value::Binary(vec![7; length]),
+                Value::Map(BTreeMap::from([
+                    ("a".into(), Value::Binary(vec![8; length])),
+                    ("b".into(), Value::List(vec![Value::Null, Value::Int(-7)])),
+                    ("c".into(), Value::String(String::new())),
+                ])),
+                Value::List(Vec::new()),
+                Value::Map(BTreeMap::new()),
+            ]);
+            for _ in 0..3 {
+                value = Value::Map(BTreeMap::from([
+                    ("a".into(), Value::Binary(vec![9; 1024])),
+                    ("b".into(), value),
+                    ("c".into(), Value::Int(0)),
+                ]));
+            }
+            let mut expected = Vec::new();
+            allocating_container_control(&value, &mut expected);
+            let mut actual = Vec::new();
+            encode_value_message(&value, &mut actual);
+            assert_eq!(actual, expected);
+            assert_eq!(decode_value_message(&actual, 1).unwrap(), value);
+            let entry = WalEntry {
+                lsn: 7,
+                op: WalOp::SetNodeProperty {
+                    id: NodeId(1),
+                    property: "nested".into(),
+                    value,
+                },
+            };
+            let independent = checkpoint::encode_binary_wal_record_with_work_context(
+                &entry,
+                11,
+                &crate::background::CheckpointWorkContext::default(),
+            )
+            .unwrap();
+            assert_eq!(encode_binary_wal_record(&entry, 11).unwrap(), &*independent);
+        }
+    }
+
+    #[test]
+    fn collection_scratch_does_not_retain_scalar_capacity_across_recursion() {
+        for value in [
+            Value::List(vec![Value::Null]),
+            Value::Map(BTreeMap::from([("key".into(), Value::Null)])),
+        ] {
+            let mut buffer = Vec::with_capacity(MAX_RETAINED_MESSAGE_BUFFER_BYTES);
+            buffer.push(7);
+            prepare_value_buffer(&mut buffer, &value);
+            assert_eq!(buffer.capacity(), 0);
         }
     }
 
