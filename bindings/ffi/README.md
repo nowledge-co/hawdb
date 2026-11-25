@@ -85,6 +85,9 @@ The on-disk format carries no compatibility promise until HawDB declares one.
   `search_production_qualification_refused`; both are stale or insufficient
   qualifications, not storage failures, and keep their previous message text:
   qualify again and reopen;
+  a read-only open of a database with pending system-schema migrations is
+  `system_schema_upgrade_required`, which is not a storage failure and keeps
+  its previous message text: open the database writable to upgrade;
   `invalid_argument` marks caller-side contract violations,
   `transaction_open` / `no_transaction` transaction-state misuse, and `panic`
   a contained Rust panic.

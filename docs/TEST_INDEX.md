@@ -5117,6 +5117,21 @@ durability policies, and checks that rows committed after the batch survive
 whole or not at all. Fsync counts are measured with a local profiling harness,
 not in CI. No new lane, fixture, feature or timeout.
 
+## Pending system schema on read-only handles (#1950)
+
+Root unit owner `api::tests::system_schema_registry`
+(`cargo test --locked -p hawdb --lib system_schema_registry`).
+`read_only_database_rejects_pending_application_system_schema_upgrade` and
+`read_only_open_reports_a_pending_engine_system_schema` require the typed
+`SystemSchemaUpgradeRequired` with its owner and versions for a host registry
+and for an engine registry missing from a store written without the facade, the
+unchanged message text, and a usable handle or store afterwards.
+`system_schema_status_reports_every_owner_without_writing` compares the status
+query with the upgrade refusal on writable, `Materialized` and `OutOfCore`
+read-only, and in-memory handles. Error kinds are owned by the existing C ABI
+(`error_tests`), Python (`errors::tests`) and MoonBit native unit tests. No new
+lane, fixture, feature or timeout.
+
 
 ### Query-local posting reuse and multi-term merge (#1940)
 

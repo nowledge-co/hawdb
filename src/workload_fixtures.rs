@@ -720,6 +720,7 @@ fn error_class(error: &crate::HawDBError) -> String {
         | crate::HawDBError::SearchProjectionPrefixBehindSource { .. }
         | crate::HawDBError::SearchProjectionBatchBudgetExceeded { .. }
         | crate::HawDBError::SearchProductionQualificationGraphEpochMismatch { .. }
+        | crate::HawDBError::SystemSchemaUpgradeRequired { .. }
         | crate::HawDBError::SearchProductionQualificationRefused { .. } => "execution",
         crate::HawDBError::Storage(_)
         | crate::HawDBError::Constraint {

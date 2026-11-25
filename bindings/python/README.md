@@ -584,6 +584,12 @@ raises `ExecutionError` with
 for the release. Both were a `StorageError` in 0.37 and earlier but are not storage
 failures and keep their message text: qualify again and reopen.
 
+A read-only open of a database with pending system-schema migrations raises
+`ExecutionError` with `kind == "system_schema_upgrade_required"`, `owner`,
+`installed_version`, `expected_version` and `retryable == False`. The exception
+class and message text are unchanged; nothing was written and nothing is
+damaged. Open the database writable to upgrade it.
+
 Memory-ledger and spill-quota refusals, and the read ceilings described under
 [Read budgets](#read-budgets-and-query-plans), raise `exceptions.ResourceBudgetError`,
 a subclass of `ExecutionError`, with `resource`, `scope`, `owner`,

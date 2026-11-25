@@ -126,6 +126,17 @@ pub struct SystemSchemaUpgradeReport {
     pub commit_epoch_after: u64,
 }
 
+/// One owner's installed and expected system schema versions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemSchemaStatus {
+    pub owner: String,
+    /// The last applied version, 0 when none is.
+    pub installed_version: u64,
+    /// The version the registry ends at.
+    pub expected_version: u64,
+    pub pending: bool,
+}
+
 /// A durable migration record decoded from the engine registry table.
 ///
 /// The embedded facade owns query execution; relational owns the registry

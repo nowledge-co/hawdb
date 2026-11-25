@@ -54,7 +54,9 @@ pub use append::{
     compile_prepared_append_statement_sql, format_append_explain, project_append_rows,
     AppendExplainPlan, AppendSelectPlan,
 };
-pub use system_schema::{SystemSchemaMigration, SystemSchemaRegistry, SystemSchemaUpgradeReport};
+pub use system_schema::{
+    SystemSchemaMigration, SystemSchemaRegistry, SystemSchemaStatus, SystemSchemaUpgradeReport,
+};
 
 // These are internal ownership seams. Hosts continue to use the embedded facade.
 #[doc(hidden)]

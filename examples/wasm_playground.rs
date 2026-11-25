@@ -127,6 +127,9 @@ impl QueryBridge {
                     HawDBError::SearchProductionQualificationRefused { .. } => {
                         "search_production_qualification_refused"
                     }
+                    HawDBError::SystemSchemaUpgradeRequired { .. } => {
+                        "system_schema_upgrade_required"
+                    }
                     HawDBError::BranchBusy { .. } => "branch_busy",
                     HawDBError::BranchReclamationBlocked { .. } => "branch_reclamation_blocked",
                     HawDBError::BranchEvidenceBudgetExceeded { .. } => {

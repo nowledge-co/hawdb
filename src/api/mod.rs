@@ -321,7 +321,10 @@ pub use source_candidates::{
     KnowledgeSourceCandidateScanOutput, KnowledgeSourceCandidateScanRequest,
 };
 pub(crate) use system_schema::validate_system_schema_registries;
-pub use system_schema::{SystemSchemaMigration, SystemSchemaRegistry, SystemSchemaUpgradeReport};
+pub use system_schema::{
+    engine_system_schema_expected_version, SystemSchemaMigration, SystemSchemaRegistry,
+    SystemSchemaStatus, SystemSchemaUpgradeReport,
+};
 pub use system_variables::QuerySystemVariables;
 
 fn hawdb_lightning_initial_import_source_fingerprint_key(

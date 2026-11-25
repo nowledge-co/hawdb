@@ -89,7 +89,7 @@ pub use analytics::{
 };
 pub use api::SearchProjectionEpochAdvanceVerification;
 pub use api::{
-    hawdb_lightning_initial_import_advance_checkpoint,
+    engine_system_schema_expected_version, hawdb_lightning_initial_import_advance_checkpoint,
     hawdb_lightning_initial_import_advance_durable_state_streaming,
     hawdb_lightning_initial_import_advance_durable_state_with_search_projection_batch,
     hawdb_lightning_initial_import_checkpoint_readiness,
@@ -198,7 +198,7 @@ pub use api::{
     SearchProjectionDefinition, SearchProjectionGraphDeltaRequest, SearchProjectionInitializer,
     SearchProjectionRelationalDelta, SessionConfig, SlowQueryLogExportOptions,
     SlowQueryLogRecordSummary, SqlQueryRequest, SqlStatementResult, StorageResourceProfileLimits,
-    StorageResourceProfileReport, SystemSchemaMigration, SystemSchemaRegistry,
+    StorageResourceProfileReport, SystemSchemaMigration, SystemSchemaRegistry, SystemSchemaStatus,
     SystemSchemaUpgradeReport, TransactionCommitResult, TransactionIsolation,
     TransactionReadDependencyLimits, TransactionReadDependencyUsage, WalGroupCommitActivation,
     WalGroupCommitAdaptiveColdStartEvidence, WalGroupCommitAdaptivePolicyEvidence,
