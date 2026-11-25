@@ -4991,7 +4991,8 @@ and no legacy `relational.N.hawdb` file; persistent format 6.
   checkpoint; `interrupted_incremental_relational_checkpoint_recovers_every_committed_row`
   reuses the `CheckpointPublishStage` failpoints (persisted, WAL prepared,
   manifest published); `legacy_full_row_checkpoint_reopens_and_moves_to_incremental_checkpoints`
-  writes the pre-format-6 full-row layout with `legacy_relational_checkpoint_file`, reopens it
+  writes the pre-format-6 full-row layout with `legacy_relational_checkpoint_file` (under a v2
+  storage manifest, so it is no downgrade path, #1976), reopens it
   with a WAL tail, and checks that overflow values stay readable in the same
   session after reclamation removes the old full-row file;
   `row_root_rebuild_and_overflow_rebind_keep_descriptor_exhaustion_typed`
