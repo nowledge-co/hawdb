@@ -320,6 +320,7 @@ pub use source_candidates::{
     KnowledgeSourceCandidateRow, KnowledgeSourceCandidateScanOrigin,
     KnowledgeSourceCandidateScanOutput, KnowledgeSourceCandidateScanRequest,
 };
+pub(crate) use system_schema::validate_system_schema_registries;
 pub use system_schema::{SystemSchemaMigration, SystemSchemaRegistry, SystemSchemaUpgradeReport};
 pub use system_variables::QuerySystemVariables;
 

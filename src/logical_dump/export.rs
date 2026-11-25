@@ -44,7 +44,8 @@ use crate::store::GraphStore;
 use crate::{HawDBError, Result, Value};
 
 /// The engine-owned migration registry. Its rows are exported like any table;
-/// import keeps the importing engine's own rows (see import.rs).
+/// import keeps the importing engine's own rows and restores the others
+/// through the registry's own write path (see import.rs).
 pub(super) const SYSTEM_SCHEMA_REGISTRY_TABLE: &str =
     hawdb_relational::system_schema::ENGINE_SYSTEM_SCHEMA_REGISTRY_TABLE;
 
@@ -199,7 +200,7 @@ fn referential_action(action: RelationalReferentialAction) -> ReferentialAction 
     }
 }
 
-fn table_model(schema: &RelationalTableSchema) -> Result<Table> {
+pub(super) fn table_model(schema: &RelationalTableSchema) -> Result<Table> {
     let columns = schema
         .columns
         .iter()

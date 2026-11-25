@@ -12,13 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::BTreeMap;
+
 use hawdb_core::{HawDBError, Result, Value};
 use hawdb_executor::QueryRowRef;
 use hawdb_integrity::IntegrityHasher;
 use hawdb_sql::SqlStatement;
 use hawdb_storage::relational::{
-    RelationalMutationLimits, RelationalOverflowConfig, RelationalState, RelationalTransaction,
-    RelationalValue, RelationalWrite,
+    RelationalMutationLimits, RelationalOverflowConfig, RelationalState, RelationalTableSchema,
+    RelationalTransaction, RelationalValue, RelationalWrite,
 };
 
 #[doc(hidden)]
@@ -150,6 +152,147 @@ impl AppliedSystemSchemaMigration {
     }
 }
 
+/// The migration records of every owner, decoded from full registry rows that
+/// come from outside the database, such as a logical dump.
+///
+/// Such rows are data, not authority: construction checks that they have a
+/// shape only a registry upgrade writes, and
+/// [`SystemSchemaLedger::validate_engine`] and
+/// [`SystemSchemaLedger::validate_registries`] apply the checksum rules an
+/// upgrade applies to records it finds in a database.
+#[doc(hidden)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SystemSchemaLedger {
+    owners: BTreeMap<String, Vec<AppliedSystemSchemaMigration>>,
+}
+
+impl SystemSchemaLedger {
+    /// Decodes rows in the registry table's column order. Every owner's
+    /// versions must be contiguous from 1 and each record must be spelled
+    /// exactly as a registry upgrade writes it.
+    pub fn from_rows<'a>(rows: impl IntoIterator<Item = &'a [Value]>) -> Result<Self> {
+        let mut owners = BTreeMap::<String, BTreeMap<u64, AppliedSystemSchemaMigration>>::new();
+        for row in rows {
+            let [Value::String(id), Value::String(owner), Value::Int(version), Value::String(name), Value::String(checksum)] =
+                row
+            else {
+                return Err(invalid_ledger(
+                    "a record does not have the columns of a migration record",
+                ));
+            };
+            let record = u64::try_from(*version)
+                .ok()
+                .filter(|version| *version > 0)
+                .filter(|version| *id == system_schema_migration_id(owner, *version))
+                .filter(|_| valid_system_schema_owner(owner))
+                .filter(|_| valid_system_schema_migration_name(name))
+                .filter(|_| {
+                    checksum.len() == 64
+                        && checksum
+                            .bytes()
+                            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+                })
+                .map(|version| AppliedSystemSchemaMigration {
+                    version,
+                    name: name.clone(),
+                    checksum: checksum.clone(),
+                })
+                .ok_or_else(|| {
+                    invalid_ledger(format!(
+                        "record {id:?} is not one a system schema upgrade writes"
+                    ))
+                })?;
+            if owners
+                .entry(owner.clone())
+                .or_default()
+                .insert(record.version, record)
+                .is_some()
+            {
+                return Err(invalid_ledger(format!("record {id:?} appears twice")));
+            }
+        }
+        let owners = owners
+            .into_iter()
+            .map(|(owner, records)| {
+                // Versions are unique and positive, so the records are the
+                // contiguous prefix exactly when the last version is the count.
+                if records.keys().next_back().copied() != u64::try_from(records.len()).ok() {
+                    return Err(invalid_ledger(format!(
+                        "versions of owner {owner} are not contiguous from 1"
+                    )));
+                }
+                Ok((owner, records.into_values().collect()))
+            })
+            .collect::<Result<_>>()?;
+        Ok(Self { owners })
+    }
+
+    fn applied(&self, owner: &str) -> &[AppliedSystemSchemaMigration] {
+        self.owners.get(owner).map_or(&[], Vec::as_slice)
+    }
+
+    /// Records of embedding applications, by owner and ascending version.
+    /// The engine's own records are excluded: only a running engine writes
+    /// those.
+    pub fn application_owners(
+        &self,
+    ) -> impl Iterator<Item = (&str, &[AppliedSystemSchemaMigration])> {
+        self.owners
+            .iter()
+            .filter(|(owner, _)| owner.as_str() != ENGINE_SYSTEM_SCHEMA_OWNER)
+            .map(|(owner, records)| (owner.as_str(), records.as_slice()))
+    }
+
+    /// Requires the engine's records to be a non-empty prefix of this build's
+    /// engine registry.
+    pub fn validate_engine(&self) -> Result<()> {
+        validate_applied_system_schema_migrations(
+            &engine_system_schema_registry(),
+            self.applied(ENGINE_SYSTEM_SCHEMA_OWNER),
+            true,
+        )
+    }
+
+    /// Requires every application owner with records to be one of
+    /// `registries` and its records to be a prefix of that registry. An owner
+    /// with fewer records than its registry has pending migrations.
+    pub fn validate_registries(&self, registries: &[SystemSchemaRegistry]) -> Result<()> {
+        for (owner, applied) in self.application_owners() {
+            let registry = registries
+                .iter()
+                .find(|registry| registry.owner() == owner)
+                .ok_or_else(|| {
+                    HawDBError::Storage(format!(
+                        "system schema {owner} has migration records but no registry was supplied"
+                    ))
+                })?;
+            validate_applied_system_schema_migrations(registry, applied, true)?;
+        }
+        Ok(())
+    }
+}
+
+fn invalid_ledger(detail: impl std::fmt::Display) -> HawDBError {
+    HawDBError::StorageIntegrity(format!("system schema migration records: {detail}"))
+}
+
+/// Primary key of one migration record.
+#[doc(hidden)]
+pub fn system_schema_migration_id(owner: &str, version: u64) -> String {
+    format!("{owner}:{version}")
+}
+
+fn valid_system_schema_owner(owner: &str) -> bool {
+    (1..=128).contains(&owner.len())
+        && owner
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+fn valid_system_schema_migration_name(name: &str) -> bool {
+    (1..=128).contains(&name.len())
+}
+
 /// Returns the append-only registry reserved for HawDB's own relational
 /// bootstrap. Hosts may use separate [`SystemSchemaRegistry`] owners.
 #[doc(hidden)]
@@ -166,13 +309,7 @@ pub fn engine_system_schema_registry() -> SystemSchemaRegistry {
 
 #[doc(hidden)]
 pub fn validate_system_schema_registry(registry: &SystemSchemaRegistry) -> Result<()> {
-    if registry.owner.is_empty()
-        || registry.owner.len() > 128
-        || !registry
-            .owner
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
-    {
+    if !valid_system_schema_owner(&registry.owner) {
         return Err(HawDBError::Semantic(
             "system schema owner must contain 1-128 ASCII letters, digits, '.', '_' or '-'"
                 .to_string(),
@@ -192,7 +329,7 @@ pub fn validate_system_schema_registry(registry: &SystemSchemaRegistry) -> Resul
                 registry.owner, expected, migration.version
             )));
         }
-        if migration.name.is_empty() || migration.name.len() > 128 {
+        if !valid_system_schema_migration_name(&migration.name) {
             return Err(HawDBError::Semantic(format!(
                 "system schema {} migration {} requires a 1-128 byte name",
                 registry.owner, migration.version
@@ -265,19 +402,26 @@ pub fn statement_writes_system_schema_registry(statement: &SqlStatement) -> bool
     })
 }
 
-/// Validates the durable shape of HawDB's own schema migration registry.
+/// The registry table as this build defines it.
 #[doc(hidden)]
-pub fn validate_engine_system_schema_registry_table(state: &RelationalState) -> Result<()> {
-    let expected = crate::compile_relational_statement_sql(
+pub fn engine_system_schema_registry_table() -> Result<RelationalTableSchema> {
+    let compiled = crate::compile_relational_statement_sql(
         ENGINE_SYSTEM_SCHEMA_REGISTRY_TABLE_DDL,
         &[],
         &RelationalState::default(),
     )?;
-    let Some(RelationalWrite::CreateTable(expected)) = expected.writes.into_iter().next() else {
+    let Some(RelationalWrite::CreateTable(table)) = compiled.writes.into_iter().next() else {
         return Err(HawDBError::Execution(
             "system schema registry DDL did not compile to CREATE TABLE".to_string(),
         ));
     };
+    Ok(table)
+}
+
+/// Validates the durable shape of HawDB's own schema migration registry.
+#[doc(hidden)]
+pub fn validate_engine_system_schema_registry_table(state: &RelationalState) -> Result<()> {
+    let expected = engine_system_schema_registry_table()?;
     let actual = state
         .table_schema(ENGINE_SYSTEM_SCHEMA_REGISTRY_TABLE)
         .ok_or_else(|| {
@@ -651,5 +795,75 @@ mod tests {
                 .unwrap(),
             applied
         );
+    }
+
+    #[test]
+    fn external_ledger_rows_must_be_ones_a_registry_upgrade_writes() {
+        use super::{system_schema_migration_id, SystemSchemaLedger};
+        use hawdb_core::Value;
+
+        let registry = SystemSchemaRegistry::new(
+            "example.content",
+            (1..=10).map(|version| {
+                SystemSchemaMigration::new(version, "step", ["CREATE TABLE t (id TEXT)"])
+            }),
+        );
+        let row = |owner: &str, migration: &SystemSchemaMigration| {
+            vec![
+                Value::String(system_schema_migration_id(owner, migration.version())),
+                Value::String(owner.to_string()),
+                Value::Int(migration.version() as i64),
+                Value::String(migration.name().to_string()),
+                Value::String(migration.checksum(owner)),
+            ]
+        };
+        let ledger =
+            |rows: &[Vec<Value>]| SystemSchemaLedger::from_rows(rows.iter().map(|row| &row[..]));
+        let engine = engine_system_schema_registry();
+        let engine_row = row(ENGINE_SYSTEM_SCHEMA_OWNER, &engine.migrations()[0]);
+        // Any row order, such as the key order in which :10 precedes :2.
+        let mut rows = registry
+            .migrations()
+            .iter()
+            .rev()
+            .map(|migration| row(registry.owner(), migration))
+            .collect::<Vec<_>>();
+        rows.push(engine_row.clone());
+        let decoded = ledger(&rows).unwrap();
+        decoded.validate_engine().unwrap();
+        decoded
+            .validate_registries(std::slice::from_ref(&registry))
+            .unwrap();
+        // The engine's own records are never offered for restoring.
+        let owners = decoded.application_owners().collect::<Vec<_>>();
+        assert_eq!(owners.len(), 1);
+        assert_eq!(owners[0].0, "example.content");
+        assert_eq!(
+            owners[0]
+                .1
+                .iter()
+                .map(|record| record.version())
+                .collect::<Vec<_>>(),
+            (1..=10).collect::<Vec<_>>()
+        );
+        assert!(decoded.validate_registries(&[]).is_err());
+        let behind =
+            SystemSchemaRegistry::new(registry.owner(), registry.migrations()[..9].iter().cloned());
+        assert!(decoded.validate_registries(&[behind]).is_err());
+
+        assert!(ledger(&[]).unwrap().validate_engine().is_err());
+        assert!(ledger(&rows[1..])
+            .unwrap()
+            .validate_registries(&[registry])
+            .is_ok());
+        let mut duplicated = rows.clone();
+        duplicated.push(engine_row);
+        assert!(ledger(&duplicated).is_err());
+        let mut gap = rows.clone();
+        gap.remove(4);
+        assert!(ledger(&gap).is_err());
+        let mut short = rows;
+        short[0].pop();
+        assert!(ledger(&short).is_err());
     }
 }

@@ -188,6 +188,44 @@ fn export_and_import_round_trip_with_json_reports() {
     unsafe { hawdb_close(db) };
 }
 
+/// A host's migration records survive the C ABI path, which has no registry
+/// to pass: the host's own open verifies them.
+#[test]
+fn host_system_schema_records_survive_export_and_import() {
+    let directory = TestDirectory::new("ledger");
+    let registry = hawdb::SystemSchemaRegistry::new(
+        "example.host",
+        [hawdb::SystemSchemaMigration::new(
+            1,
+            "create_host",
+            ["CREATE TABLE host (id BIGINT PRIMARY KEY, body TEXT)"],
+        )],
+    );
+    let source = directory.0.join("source");
+    {
+        let mut database = hawdb::Database::open(&source).unwrap();
+        database.apply_system_schema_registry(&registry).unwrap();
+        database
+            .query_sql("INSERT INTO host (id, body) VALUES (1, 'kept')")
+            .unwrap();
+    }
+    let dump = directory.0.join("dump");
+    let db = open(&source);
+    export(db, &dump).unwrap();
+    unsafe { hawdb_close(db) };
+    let imported = directory.0.join("imported");
+    import(&dump, &imported).unwrap();
+    let mut database = hawdb::Database::open(&imported).unwrap();
+    let report = database.apply_system_schema_registry(&registry).unwrap();
+    assert!(report.applied_versions.is_empty());
+    assert_eq!(report.previous_version, 1);
+    let output = database.query_sql("SELECT body FROM host").unwrap();
+    assert_eq!(
+        output.value_rows().next().unwrap().first(),
+        Some(&hawdb::Value::String("kept".to_string()))
+    );
+}
+
 #[test]
 fn errors_use_the_engine_kinds() {
     let directory = TestDirectory::new("errors");

@@ -1418,8 +1418,12 @@ rust_test(
     srcs = [
         "tests/logical_dump.rs",
         "tests/logical_dump/support.rs",
+        "tests/logical_dump/system_schema.rs",
     ],
-    compile_data = glob(["tests/logical_dump/golden_v1/**"]),
+    compile_data = glob([
+        "tests/logical_dump/golden_v1/**",
+        "tests/logical_dump/golden_v1_host_ledger/**",
+    ]),
     edition = "2024",
     deps = [
         ":hawdb",

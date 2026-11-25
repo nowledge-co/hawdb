@@ -302,10 +302,66 @@ These rules are what lets every later release read a version 1 dump:
   writing a byte.
 - Import keeps the importing engine's own rows in the engine migration
   registry (`hawdb_schema_migrations`, owner `hawdb.engine`). Only the
-  application owners' migration records come from the dump.
+  application owners' migration records come from the dump; see
+  [System schema registries](#system-schema-registries).
 - Memory stays bounded by `page_rows`. Graph import commits a batch of
   `page_rows` records at a time and checkpoints every
   `import_checkpoint_records` records (default 200,000).
+
+## System schema registries
+
+A host that registers a `SystemSchemaRegistry` has its installed migrations
+recorded in `hawdb_schema_migrations`. The dump carries those records and the
+tables the migrations created, like any other table; it does not carry the
+migrations themselves, which belong to the host. After import the host opens
+the database with its registries as usual: installed migrations are verified
+by checksum and not run again, and pending ones run.
+
+SQL cannot write `hawdb_schema_migrations`, and import does not change that.
+It treats the dump's records as data and restores them through the registry's
+own internal path, as fixed inserts of typed records:
+
+- The dump's definition of the table must equal the importing engine's. The
+  target creates the table itself; nothing in the dump can add a column, key,
+  index or search index to it.
+- The dump's `hawdb.engine` records must be a checksum-verified, non-empty
+  prefix of the importing engine's own registry. They are then dropped in
+  favour of the importing engine's records. A dump whose engine records are
+  newer than the importing release is refused.
+- Every other record must be one a registry upgrade writes: a valid owner, a
+  version, a key equal to `<owner>:<version>`, a name, a SHA-256 checksum, and
+  versions contiguous from 1 for each owner. At most 65,536 records are
+  accepted.
+
+`verify_logical_dump` makes the same checks, and import makes them before it
+creates anything. A refusal is `StorageIntegrity` (or `Storage` for engine
+records that do not match this build) and publishes nothing.
+
+These checks cannot tell whether a well-formed record is true. The SHA-256
+values in a dump detect damage, not a deliberate rewrite, so a dump deserves
+the trust of the place it was kept, as a database directory does. The host's
+registry is what decides:
+
+- `Database::import_logical_dump_with_system_schema(src, dest, &options,
+  &registries)` verifies the records before anything is written. Every
+  application owner in the dump must be one of `registries`, and its records a
+  checksum-verified prefix of that registry. A missing owner, a changed
+  migration, or a dump newer than the registry is refused and nothing is
+  published. Migrations pending in `registries` are allowed and are not run;
+  they run when the host registers them on open. Prefer this call when the
+  host has its registries at hand.
+- `Database::import_logical_dump` and the C ABI and Bun calls take no
+  registry. They restore well-formed records, and the same verification
+  happens when the host registers its schema on open: a mismatch fails that
+  open's schema upgrade before any migration runs. Open the imported database
+  with its registries before deleting the original.
+
+The registry verifies the identity of the migrations, not the tables. As for a
+database opened in place, import does not compare the tables in the dump with
+what the migrations would create. A rewritten dump can carry records with
+exactly the host's checksums but lack or change the tables they describe. Both
+the open and `import_logical_dump_with_system_schema` accept it, because they
+detect only migration definitions that differ from the host's.
 
 ## Publication
 
@@ -356,6 +412,8 @@ Format version 1 covers the selected branch's:
   indexes including deterministic partial-index predicates, SQL search index
   definitions (rebuilt from the rows on import),
   and rows;
+- the migration records of host system schema registries
+  ([System schema registries](#system-schema-registries));
 - the property graph: labels, relationship types, typed node and
   relationship tables and properties with their schema states and
   creation-time defaults, nodes,
@@ -385,6 +443,11 @@ Not exported:
   projected-graph artifacts, statistics and caches. Their definitions belong
   to the host (`rebuild_search_projection`, `resolve_vector_index`). Rebuild
   them after import.
+- **Consumers**: registered projection consumers and their progress. Register
+  them again; they start from the imported database.
+- **Host system schema registries**: the migration definitions. The host
+  supplies them on open. The engine's own migration records are replaced by
+  the importing engine's.
 - Physical identity: storage generations, commit epochs, WAL history and
   database instance identity start fresh in the imported database.
 
@@ -398,6 +461,7 @@ tracked under issue #1655.
 | `hawdb::PERSISTENT_FORMAT_VERSION`, `persistent_format_version()` | `uint32_t hawdb_format_version(void)` | `library.formatVersion()` |
 | `hawdb::LOGICAL_DUMP_FORMAT_VERSION` | `uint32_t hawdb_dump_format_version(void)` | `library.dumpFormatVersion()` |
 | `Database::export_logical_dump(dest)`, `DatabaseReadTransaction::export_logical_dump(dest, &options)`, `HawDBEmbedded::export_logical_dump(dest)` | `bool hawdb_export(db, dest, dest_len, report_out, err_out)` | `database.export(dest)` |
+| `Database::import_logical_dump_with_system_schema(src, dest, &options, &registries)` | none | none |
 | `Database::import_logical_dump(src, dest)`, `HawDBEmbedded::import_logical_dump(src, dest)` | `bool hawdb_import(src, src_len, dest, dest_len, report_out, err_out)` | `library.import(src, dest)` |
 | `hawdb::verify_logical_dump(path)` | `bool hawdb_verify_dump(path, path_len, report_out, err_out)` | `library.verifyDump(path)` |
 | `hawdb::confirm_logical_dump_publication(dest)` | `bool hawdb_confirm_dump_publication(dest, dest_len, err_out)` | `library.confirmDumpPublication(dest)` |
