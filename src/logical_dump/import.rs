@@ -44,6 +44,9 @@ use crate::{HawDBError, Result, Value};
 
 /// Most migration records a dump may hold; they are validated in memory.
 const MAX_LEDGER_RECORDS: usize = 65_536;
+/// Longer than any value a registry upgrade writes. Checked per row, so an
+/// oversized record is refused before the rows before and after it accumulate.
+const MAX_LEDGER_VALUE_BYTES: usize = 512;
 /// Upper bound on bound parameters in one generated INSERT statement.
 const MAX_INSERT_PARAMETERS: usize = 8192;
 
@@ -319,6 +322,10 @@ fn application_tables(tables: &[Table]) -> impl Iterator<Item = &Table> {
 /// A dump authenticates nothing (its checksums detect damage, not a rewrite),
 /// so the records are never more than a claim: whoever supplies a registry,
 /// here or when opening the imported database, verifies them against it.
+///
+/// The exact-definition check means that a change of the engine's registry
+/// table makes every earlier dump fail here. Whoever changes that table must
+/// also accept the earlier definitions.
 fn read_ledger(source: &Path, schema: &Schema, plan: &Plan<'_>) -> Result<SystemSchemaLedger> {
     let Some(table) = schema
         .tables
@@ -352,7 +359,16 @@ fn read_ledger(source: &Path, schema: &Schema, plan: &Plan<'_>) -> Result<System
                     file.path
                 )));
             }
-            rows.push(decode_row(&record, table, file)?);
+            let row = decode_row(&record, table, file)?;
+            if row.iter().any(
+                |value| matches!(value, Value::String(text) if text.len() > MAX_LEDGER_VALUE_BYTES),
+            ) {
+                return Err(malformed(format!(
+                    "{} holds a migration record value longer than {MAX_LEDGER_VALUE_BYTES} bytes",
+                    file.path
+                )));
+            }
+            rows.push(row);
         }
         reader.finish()?;
     }

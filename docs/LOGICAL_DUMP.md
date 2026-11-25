@@ -358,7 +358,10 @@ registry is what decides:
 
 The registry verifies the identity of the migrations, not the tables. As for a
 database opened in place, import does not compare the tables in the dump with
-what the migrations would create.
+what the migrations would create. A rewritten dump can carry records with
+exactly the host's checksums but lack or change the tables they describe. Both
+the open and `import_logical_dump_with_system_schema` accept it, because they
+detect only migration definitions that differ from the host's.
 
 ## Publication
 

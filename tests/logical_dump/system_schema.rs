@@ -416,7 +416,7 @@ fn forged_or_corrupt_ledgers_are_refused_before_anything_is_written() {
     let temp = TempDir::new("ledger-forged");
     let dump = golden(&temp);
     type Edit = fn(&mut Vec<Json>);
-    let edits: [(&str, Edit); 19] = [
+    let edits: [(&str, Edit); 20] = [
         ("engine record missing", |r| {
             r.pop();
         }),
@@ -467,6 +467,7 @@ fn forged_or_corrupt_ledgers_are_refused_before_anything_is_written() {
         }),
         ("empty name", |r| r[2][3] = json!("")),
         ("long name", |r| r[2][3] = json!("n".repeat(129))),
+        ("oversized name", |r| r[2][3] = json!("n".repeat(4096))),
         ("short checksum", |r| r[2][4] = json!("00")),
         ("uppercase checksum", |r| r[2][4] = json!("A".repeat(64))),
         ("null checksum", |r| r[2][4] = Json::Null),
