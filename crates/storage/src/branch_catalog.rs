@@ -38,7 +38,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Display, Formatter};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 
 const MAGIC: &[u8; 8] = b"HBCATV2\0";
 const VERSION: u16 = 2;
@@ -762,21 +762,18 @@ pub(crate) fn write_catalog_locked(path: &Path, catalog: &Catalog) -> io::Result
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .ok_or_else(|| invalid_data("branch catalog destination has no parent"))?;
-    let sequence = CANDIDATE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let candidate = parent.join(format!(
-        ".{}.candidate-{}-{}",
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("catalog"),
-        std::process::id(),
-        sequence
-    ));
+    let (candidate, file) = durability::create_candidate_file(&CANDIDATE_SEQUENCE, |sequence| {
+        parent.join(format!(
+            ".{}.candidate-{}-{sequence}",
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("catalog"),
+            std::process::id(),
+        ))
+    })?;
     let result = (|| {
         {
-            let mut file = OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(&candidate)?;
+            let mut file = file;
             file.write_all(&encoded)?;
             file.sync_all()?;
         }
@@ -2195,7 +2192,7 @@ mod tests {
     use super::*;
     use crate::immutable_object::ObjectKind;
     use std::path::PathBuf;
-    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     static DIRECTORY_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 

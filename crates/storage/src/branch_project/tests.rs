@@ -17,6 +17,7 @@ use crate::branch_catalog::{bind_main_head_file, initialize_catalog_file};
 use crate::ownership::DatabaseDirectoryLease;
 use hawdb_core::error::FileDescriptorError;
 use hawdb_core::Uuid;
+use std::sync::atomic::Ordering;
 
 struct Fixture {
     files: ProjectFileDescriptors,

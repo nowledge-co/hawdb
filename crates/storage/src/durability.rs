@@ -118,6 +118,28 @@ impl WalSyncGroupState {
     }
 }
 
+/// Exclusively creates a private candidate under a name built from the next
+/// process-local sequence number. A crashed process can leave a candidate that
+/// a later process, which counts from zero and may reuse the PID, names again:
+/// that file is not owned here, so it is kept and the next name is tried.
+pub(crate) fn create_candidate_file(
+    sequence: &std::sync::atomic::AtomicU64,
+    name: impl Fn(u64) -> PathBuf,
+) -> io::Result<(PathBuf, fs::File)> {
+    loop {
+        let path = name(sequence.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+        match fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&path)
+        {
+            Ok(file) => return Ok((path, file)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 /// Atomically publishes a file whose contents have already been synchronized.
 ///
 /// Unix persists the directory entry after rename. Windows retains a counted,
@@ -544,6 +566,31 @@ mod tests {
                 fsync_performed: true,
             }
         );
+    }
+
+    #[test]
+    fn candidate_creation_skips_and_keeps_names_it_does_not_own() {
+        let root = unique_test_dir();
+        fs::create_dir_all(&root).unwrap();
+        let name = |sequence| root.join(format!("candidate-{sequence}"));
+        for sequence in 0..3 {
+            write_synced(&name(sequence), b"another owner");
+        }
+        fs::create_dir(name(3)).unwrap();
+        let sequence = AtomicU64::new(0);
+        let (path, file) = super::create_candidate_file(&sequence, name).unwrap();
+        drop(file);
+        assert_eq!(path, name(4));
+        assert_eq!(fs::read(&path).unwrap(), b"");
+        for sequence in 0..3 {
+            assert_eq!(fs::read(name(sequence)).unwrap(), b"another owner");
+        }
+        assert!(name(3).is_dir());
+        // Any other failure is reported, not retried.
+        let missing = |_| root.join("missing/candidate");
+        let error = super::create_candidate_file(&sequence, missing).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

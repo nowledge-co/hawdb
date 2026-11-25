@@ -25,7 +25,7 @@ use hawdb_integrity::{crc32c, IntegrityHasher, Sha256Digest};
 use std::fmt::{self, Display, Formatter};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 
 const MAGIC: &[u8; 12] = b"HAWDBHEADV1\0";
 const ENCODED_BYTES: usize = 12 + 16 + 16 + 8 + (1 + 2 + 8 + 32) + 8 + 8 + 8 + 8 + 32 + 4;
@@ -676,6 +676,12 @@ pub fn publish_prepared_wal_rotation(
     Ok(next)
 }
 
+/// The process id keeps names of live processes apart; a leftover that still
+/// matches, for example after PID reuse, is skipped at creation.
+fn candidate_extension(sequence: u64) -> String {
+    format!("hawdb.head.{}-{sequence}.tmp", std::process::id())
+}
+
 /// Publishes a newer selector after an exact generation and identity check.
 pub fn publish_branch_head(
     path: &Path,
@@ -700,17 +706,16 @@ pub fn publish_branch_head(
         });
     }
     let bytes = next.encode()?;
-    let sequence = CANDIDATE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let candidate = path.with_extension(format!("hawdb.head.{sequence}.tmp"));
+    let (candidate, file) =
+        crate::durability::create_candidate_file(&CANDIDATE_SEQUENCE, |sequence| {
+            path.with_extension(candidate_extension(sequence))
+        })
+        .map_err(|source| BranchHeadError::Io {
+            operation: "create branch head candidate",
+            source,
+        })?;
     let result = (|| {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&candidate)
-            .map_err(|source| BranchHeadError::Io {
-                operation: "create branch head candidate",
-                source,
-            })?;
+        let mut file = file;
         file.write_all(&bytes)
             .map_err(|source| BranchHeadError::Io {
                 operation: "write branch head candidate",
@@ -998,6 +1003,45 @@ mod tests {
             Err(BranchHeadError::CandidatePublicationUncertain { .. })
         ));
         assert_eq!(fs::read(&file).unwrap(), old_bytes);
+        fs::remove_file(file).unwrap();
+    }
+
+    /// #1979: a crashed process leaves its candidate. Neither an earlier
+    /// version's name nor one from a reused PID may fail the next publication,
+    /// and no file of another owner may be removed.
+    #[test]
+    fn publication_skips_a_crashed_process_candidate() {
+        let file = path("leftover-candidate");
+        let old = sample();
+        fs::write(&file, old.encode().unwrap()).unwrap();
+        // Other tests advance the process-wide counter concurrently, so occupy
+        // a window of names that the next publications must fall into.
+        let next = CANDIDATE_SEQUENCE.load(std::sync::atomic::Ordering::Relaxed);
+        let leftovers = (next..next + 256)
+            .flat_map(|sequence| {
+                [
+                    file.with_extension(format!("hawdb.head.{sequence}.tmp")),
+                    file.with_extension(candidate_extension(sequence)),
+                ]
+            })
+            .collect::<Vec<_>>();
+        for leftover in &leftovers {
+            fs::write(leftover, b"crashed process").unwrap();
+        }
+        let mut replacement = old;
+        replacement.physical_generation = old.physical_generation + 1;
+        publish_branch_head(&file, old.physical_generation, replacement).unwrap();
+        assert_eq!(read_branch_head(&file).unwrap(), replacement);
+        // A failed publication removes only the candidate it created.
+        let mut later = replacement;
+        later.physical_generation += 1;
+        let guard = fail_durable_replace_for_destination(file.file_name().unwrap());
+        assert!(publish_branch_head(&file, replacement.physical_generation, later).is_err());
+        drop(guard);
+        for leftover in leftovers {
+            assert_eq!(fs::read(&leftover).unwrap(), b"crashed process");
+            fs::remove_file(leftover).unwrap();
+        }
         fs::remove_file(file).unwrap();
     }
 
