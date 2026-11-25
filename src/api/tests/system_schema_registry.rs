@@ -581,9 +581,181 @@ fn read_only_database_rejects_pending_application_system_schema_upgrade() {
     )
     .unwrap();
     let error = db.apply_system_schema_registry(&registry_v2()).unwrap_err();
-    assert!(error.to_string().contains("database is read-only"));
+    assert_eq!(
+        error,
+        crate::HawDBError::SystemSchemaUpgradeRequired {
+            owner: "nowledge.content_store".to_string(),
+            installed_version: 1,
+            expected_version: 2,
+        }
+    );
+    // The text hosts could match before the error was typed (#1950).
+    assert_eq!(
+        error.to_string(),
+        "execution error: system schema nowledge.content_store requires upgrade from version 1 to 2 but the database is read-only"
+    );
+    // A refusal does not poison the handle.
+    assert!(db
+        .query_sql("SELECT id FROM content_documents")
+        .unwrap()
+        .rows
+        .is_empty());
+    assert!(db
+        .apply_system_schema_registry(&registry_v1())
+        .unwrap()
+        .applied_versions
+        .is_empty());
     drop(db);
     std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn read_only_open_reports_a_pending_engine_system_schema() {
+    let path = unique_test_dir("read_only_engine_system_schema_upgrade");
+    // A store written without the facade has no engine registry.
+    {
+        let mut catalog = crate::schema::Catalog::default();
+        let mut store = crate::store::GraphStore::open_with_durability(
+            &path,
+            &mut catalog,
+            crate::store::DurabilityPolicy::SyncOnEveryWrite,
+        )
+        .unwrap();
+        store
+            .create_node(
+                &mut catalog,
+                "Memory",
+                BTreeMap::from([("id".into(), Value::String("legacy".into()))]),
+            )
+            .unwrap();
+        store.checkpoint(&catalog).unwrap();
+    }
+    let read_only = DatabaseConfig {
+        read_only: true,
+        recovery_mode: crate::RecoveryMode::Strict,
+        ..DatabaseConfig::default()
+    };
+    let error = Database::open_with_config(&path, read_only.clone())
+        .err()
+        .unwrap();
+    assert_eq!(
+        error,
+        crate::HawDBError::SystemSchemaUpgradeRequired {
+            owner: "hawdb.engine".to_string(),
+            installed_version: 0,
+            expected_version: crate::engine_system_schema_expected_version(),
+        }
+    );
+    // The refused open changed nothing; a writable open upgrades.
+    drop(Database::open(&path).unwrap());
+    let mut db = Database::open_with_config(&path, read_only).unwrap();
+    assert_eq!(
+        db.system_schema_status(&[]).unwrap(),
+        [status("hawdb.engine", 1, 1)]
+    );
+    drop(db);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+fn status(owner: &str, installed: u64, expected: u64) -> crate::SystemSchemaStatus {
+    crate::SystemSchemaStatus {
+        owner: owner.to_string(),
+        installed_version: installed,
+        expected_version: expected,
+        pending: installed < expected,
+    }
+}
+
+#[test]
+fn system_schema_status_reports_every_owner_without_writing() {
+    assert_eq!(crate::engine_system_schema_expected_version(), 1);
+    let other = SystemSchemaRegistry::new(
+        "host.other",
+        [SystemSchemaMigration::new(
+            1,
+            "create_other",
+            ["CREATE TABLE other (id TEXT PRIMARY KEY)"],
+        )],
+    );
+    let pending = [
+        status("hawdb.engine", 1, 1),
+        status("nowledge.content_store", 1, 2),
+        status("host.other", 0, 1),
+    ];
+    let path = unique_test_dir("system_schema_status");
+    {
+        let mut db = Database::open(&path).unwrap();
+        db.apply_system_schema_registry(&registry_v1()).unwrap();
+        let epoch = db.commit_epoch().unwrap();
+        assert_eq!(
+            db.system_schema_status(&[registry_v2(), other.clone()])
+                .unwrap(),
+            pending
+        );
+        assert_eq!(
+            db.system_schema_status(&[registry_v1()]).unwrap(),
+            pending[..1]
+                .iter()
+                .cloned()
+                .chain([status("nowledge.content_store", 1, 1)])
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(db.commit_epoch().unwrap(), epoch);
+    }
+    let read_only = |residency| DatabaseConfig {
+        read_only: true,
+        recovery_mode: crate::RecoveryMode::Strict,
+        storage_residency_mode: residency,
+        ..DatabaseConfig::default()
+    };
+    for residency in [
+        hawdb_storage::config::StorageResidencyMode::Materialized,
+        hawdb_storage::config::StorageResidencyMode::OutOfCore,
+    ] {
+        let mut db = Database::open_with_config(&path, read_only(residency)).unwrap();
+        assert_eq!(
+            db.system_schema_status(&[registry_v2(), other.clone()])
+                .unwrap(),
+            pending
+        );
+        // The query and the upgrade refusal agree on the first pending owner.
+        assert_eq!(
+            db.apply_system_schema_registries(&[registry_v2(), other.clone()])
+                .unwrap_err(),
+            crate::HawDBError::SystemSchemaUpgradeRequired {
+                owner: pending[1].owner.clone(),
+                installed_version: pending[1].installed_version,
+                expected_version: pending[1].expected_version,
+            }
+        );
+    }
+    {
+        let mut db = Database::open(&path).unwrap();
+        db.apply_system_schema_registries(&[registry_v2(), other.clone()])
+            .unwrap();
+        assert!(db
+            .system_schema_status(&[registry_v2(), other.clone()])
+            .unwrap()
+            .iter()
+            .all(|status| !status.pending));
+        // A future schema and a duplicate owner are errors, as for upgrades.
+        assert!(db
+            .system_schema_status(&[registry_v1()])
+            .unwrap_err()
+            .to_string()
+            .contains("future version 2"));
+        assert!(db
+            .system_schema_status(&[other.clone(), other.clone()])
+            .is_err());
+    }
+    std::fs::remove_dir_all(path).unwrap();
+
+    // An in-memory handle has recorded no schema yet.
+    let mut memory = Database::new();
+    assert_eq!(
+        memory.system_schema_status(&[other]).unwrap(),
+        [status("hawdb.engine", 0, 1), status("host.other", 0, 1)]
+    );
 }
 
 #[test]

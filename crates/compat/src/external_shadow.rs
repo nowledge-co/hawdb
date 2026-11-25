@@ -669,6 +669,7 @@ fn json_error_from_hawdb(error: HawDBError) -> serde_json::Value {
         error @ (HawDBError::SearchProjectionPrefixBehindSource { .. }
         | HawDBError::SearchProjectionBatchBudgetExceeded { .. }
         | HawDBError::SearchProductionQualificationGraphEpochMismatch { .. }
+        | HawDBError::SystemSchemaUpgradeRequired { .. }
         | HawDBError::SearchProductionQualificationRefused { .. }) => {
             json_error("execution", error)
         }

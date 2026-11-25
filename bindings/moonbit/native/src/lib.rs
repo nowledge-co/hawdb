@@ -1344,6 +1344,22 @@ mod lifecycle_tests {
     }
 
     #[test]
+    fn system_schema_upgrade_required_reports_its_kind() {
+        let error = HawDBError::SystemSchemaUpgradeRequired {
+            owner: "host.documents".to_owned(),
+            installed_version: 1,
+            expected_version: 2,
+        };
+        assert_eq!(
+            engine_error(&error),
+            (
+                "system_schema_upgrade_required".to_owned(),
+                "execution error: system schema host.documents requires upgrade from version 1 to 2 but the database is read-only".to_owned(),
+            )
+        );
+    }
+
+    #[test]
     fn streamed_results_keep_the_tagged_transport() {
         let mut engine = HawDBEmbedded::open_in_memory();
         let output = execute_statement(

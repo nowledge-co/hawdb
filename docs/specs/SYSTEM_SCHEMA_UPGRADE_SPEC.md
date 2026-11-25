@@ -26,6 +26,9 @@ The protocol follows the useful local subset of TiDB bootstrap upgrades:
 6. A database newer than the running binary, a changed applied migration, a
    non-contiguous registry, or a drifted registry table fails closed.
 7. Read-only open succeeds only when no registered migration is pending.
+   Otherwise it returns `HawDBError::SystemSchemaUpgradeRequired` with the
+   owner and its installed and expected versions, and does not poison a
+   handle. C ABI kind and Python `kind`: `system_schema_upgrade_required`.
 8. Durable `Database::open` applies the engine-owned registry before returning.
    An embedding host registers its application-owned registries in open
    options, and those upgrades also finish before the handle becomes visible.
@@ -94,6 +97,13 @@ applies them together before becoming available to the host.
 Route-specific behavior remains parameterized SQL. Schema registration is a
 typed API because it coordinates ordered DDL, checksum validation, WAL commit,
 and open failure; it is not a typed replacement for business queries.
+
+`Database::system_schema_status` reports `owner`, `installed_version`,
+`expected_version` and `pending` for the engine and every given registry,
+without writing, on read-only and writable handles. Validation is the same as
+for an upgrade, so a drifted or future schema is an error, not a status.
+`engine_system_schema_expected_version` returns the version this build's engine
+registry ends at, for a database that a read-only open refused.
 
 ## Data Migration Boundary
 

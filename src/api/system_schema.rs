@@ -25,7 +25,7 @@ use hawdb_relational::system_schema::{
     ENGINE_SYSTEM_SCHEMA_REGISTRY_INSERT_SQL, ENGINE_SYSTEM_SCHEMA_REGISTRY_TABLE,
 };
 pub use hawdb_relational::{
-    SystemSchemaMigration, SystemSchemaRegistry, SystemSchemaUpgradeReport,
+    SystemSchemaMigration, SystemSchemaRegistry, SystemSchemaStatus, SystemSchemaUpgradeReport,
 };
 use hawdb_storage::relational::RelationalState;
 
@@ -82,6 +82,13 @@ fn insert_migration_record(
         ],
     )?;
     Ok(())
+}
+
+/// The version that the engine's own system schema registry ends at in this
+/// build. [`Database::system_schema_status`] compares it with the version
+/// installed in an open database.
+pub fn engine_system_schema_expected_version() -> u64 {
+    engine_system_schema_registry().current_version()
 }
 
 impl Database {
@@ -242,6 +249,60 @@ impl Database {
             .collect())
     }
 
+    /// Reports the installed and expected versions of the engine's system
+    /// schema, then of every given registry in slice order, without applying
+    /// anything. It is available on read-only handles.
+    ///
+    /// Registries are validated and applied records checksum-verified as
+    /// [`Self::apply_system_schema_registries`] would, so a drifted or future
+    /// schema is an error rather than a status. The engine registry is always
+    /// reported, once, as the first entry.
+    ///
+    /// [`Database::open`] refuses a database whose engine schema is not
+    /// current when it is opened read-only, with
+    /// [`HawDBError::SystemSchemaUpgradeRequired`]. An engine entry is
+    /// therefore pending only on an in-memory handle that recorded no schema
+    /// yet.
+    pub fn system_schema_status(
+        &mut self,
+        registries: &[SystemSchemaRegistry],
+    ) -> Result<Vec<SystemSchemaStatus>> {
+        let engine_registry = engine_system_schema_registry();
+        validate_system_schema_registries(registries)?;
+        let registry_table_present = self.system_schema_registry_table_present()?;
+        std::iter::once(&engine_registry)
+            .chain(
+                registries
+                    .iter()
+                    .filter(|registry| registry.owner() != ENGINE_SYSTEM_SCHEMA_OWNER),
+            )
+            .map(|registry| {
+                let installed_version = if registry_table_present {
+                    self.plan_system_schema_registry(registry)?.previous_version
+                } else {
+                    0
+                };
+                let expected_version = registry.current_version();
+                Ok(SystemSchemaStatus {
+                    owner: registry.owner().to_string(),
+                    installed_version,
+                    expected_version,
+                    pending: installed_version < expected_version,
+                })
+            })
+            .collect()
+    }
+
+    fn system_schema_registry_table_present(&self) -> Result<bool> {
+        Ok(self
+            .runtime
+            .get()?
+            .store
+            .relational_state()
+            .table_schema(ENGINE_SYSTEM_SCHEMA_REGISTRY_TABLE)
+            .is_some())
+    }
+
     /// Plans every registry before any write, then commits all pending
     /// migrations in one transaction.
     fn apply_system_schema_registries_inner(
@@ -259,12 +320,11 @@ impl Database {
             .collect::<Vec<_>>();
         if !pending_owners.is_empty() && self.config.read_only {
             let plan = pending_owners[0];
-            return Err(HawDBError::Execution(format!(
-                "system schema {} requires upgrade from version {} to {} but the database is read-only",
-                plan.registry.owner(),
-                plan.previous_version,
-                plan.registry.current_version()
-            )));
+            return Err(HawDBError::SystemSchemaUpgradeRequired {
+                owner: plan.registry.owner().to_string(),
+                installed_version: plan.previous_version,
+                expected_version: plan.registry.current_version(),
+            });
         }
 
         let mut applied_versions = Vec::with_capacity(plans.len());
@@ -329,13 +389,7 @@ impl Database {
         registry: &'a SystemSchemaRegistry,
     ) -> Result<SystemSchemaPlan<'a>> {
         validate_system_schema_registry(registry)?;
-        let registry_table_present = self
-            .runtime
-            .get()?
-            .store
-            .relational_state()
-            .table_schema(ENGINE_SYSTEM_SCHEMA_REGISTRY_TABLE)
-            .is_some();
+        let registry_table_present = self.system_schema_registry_table_present()?;
 
         if registry_table_present {
             validate_engine_system_schema_registry_table(

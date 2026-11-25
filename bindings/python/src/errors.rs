@@ -350,6 +350,24 @@ pub fn format_hawdb_error(error: &HawDBError) -> PyErr {
                 attributes.err().unwrap_or(exception)
             })
         }
+        HawDBError::SystemSchemaUpgradeRequired {
+            owner,
+            installed_version,
+            expected_version,
+        } => Python::attach(|py| {
+            // Nothing is damaged and nothing was written: a writable open
+            // applies the pending migrations (#1950).
+            let exception = ExecutionError::new_err(message);
+            let value = exception.value(py);
+            let attributes = (|| -> PyResult<()> {
+                value.setattr("kind", "system_schema_upgrade_required")?;
+                value.setattr("owner", owner)?;
+                value.setattr("installed_version", *installed_version)?;
+                value.setattr("expected_version", *expected_version)?;
+                value.setattr("retryable", false)
+            })();
+            attributes.err().unwrap_or(exception)
+        }),
         HawDBError::ReadOnly { operation } => Python::attach(|py| {
             // A caller error: the handle is read-only and nothing was written.
             let exception = ExecutionError::new_err(message);
@@ -1147,6 +1165,38 @@ mod tests {
                 .unwrap()
                 .extract::<bool>()
                 .unwrap());
+        });
+    }
+
+    #[test]
+    fn system_schema_upgrade_required_is_a_non_retryable_execution_error_with_its_versions() {
+        Python::initialize();
+        Python::attach(|py| {
+            let error = HawDBError::SystemSchemaUpgradeRequired {
+                owner: "host.documents".to_owned(),
+                installed_version: 1,
+                expected_version: 2,
+            };
+            let exception = format_hawdb_error(&error);
+            assert!(exception.is_instance_of::<ExecutionError>(py));
+            assert!(!exception.is_instance_of::<StorageError>(py));
+            let value = exception.value(py);
+            assert_eq!(
+                value.str().unwrap().to_str().unwrap(),
+                "execution error: system schema host.documents requires upgrade from version 1 to 2 but the database is read-only"
+            );
+            let field = |name: &str| value.getattr(name).unwrap();
+            assert_eq!(
+                field("kind").extract::<String>().unwrap(),
+                "system_schema_upgrade_required"
+            );
+            assert_eq!(
+                field("owner").extract::<String>().unwrap(),
+                "host.documents"
+            );
+            assert_eq!(field("installed_version").extract::<u64>().unwrap(), 1);
+            assert_eq!(field("expected_version").extract::<u64>().unwrap(), 2);
+            assert!(!field("retryable").extract::<bool>().unwrap());
         });
     }
 
