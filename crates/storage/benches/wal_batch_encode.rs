@@ -8,6 +8,7 @@ use hawdb_storage::wal::binary::{
 use hawdb_storage::wal::{WalEntry, WalOp};
 use hawdb_storage::{NodeId, RelId, Value};
 use serde_json::json;
+use std::collections::BTreeMap;
 use std::hint::black_box;
 use std::io::{BufRead, Write};
 use std::time::Instant;
@@ -20,35 +21,80 @@ fn main() {
     assert_eq!(
         args.len(),
         3,
-        "usage: wal_batch_encode <node|relationship|large-small> <operations> <rounds>"
+        "usage: wal_batch_encode <workload> <items> <rounds>"
     );
     let count: usize = args[1].parse().unwrap();
     let rounds: usize = args[2].parse().unwrap();
     assert!(count > 0 && rounds > 0);
-    let ops = (0..count)
-        .map(|id| match args[0].as_str() {
-            "node" => WalOp::SetNodeProperty {
-                id: NodeId(id as u64),
-                property: "value".into(),
-                value: Value::Int(id as i64),
-            },
-            "relationship" => WalOp::SetRelationshipProperty {
-                id: RelId(id as u64),
-                property: "weight".into(),
-                value: Value::Int(id as i64),
-            },
-            "large-small" => WalOp::SetNodeProperty {
-                id: NodeId(id as u64),
-                property: "body".into(),
-                value: if id == 0 {
-                    Value::Binary(vec![7; 1024 * 1024])
-                } else {
-                    Value::Int(id as i64)
-                },
-            },
-            _ => panic!("unknown workload"),
-        })
-        .collect();
+    let temporal = Value::DateTime(
+        hawdb_core::temporal::parse_datetime("2026-10-30T12:00:00-00:30:15").unwrap(),
+    );
+    let collection_value = if args[0].contains("temporal") {
+        temporal.clone()
+    } else {
+        Value::Int(7)
+    };
+    let collection = match args[0].as_str() {
+        "list" | "temporal-list" => Some(WalOp::SetNodeProperty {
+            id: NodeId(1),
+            property: "values".into(),
+            value: Value::List(vec![collection_value.clone(); count]),
+        }),
+        "map" | "temporal-map" | "temporal-properties" => {
+            let properties = (0..count)
+                .map(|id| (format!("{id:04}"), collection_value.clone()))
+                .collect::<BTreeMap<_, _>>();
+            Some(if args[0] == "temporal-properties" {
+                WalOp::CreateNode {
+                    id: NodeId(1),
+                    label: "Note".into(),
+                    properties,
+                }
+            } else {
+                WalOp::SetNodeProperty {
+                    id: NodeId(1),
+                    property: "values".into(),
+                    value: Value::Map(properties),
+                }
+            })
+        }
+        _ => None,
+    };
+    let ops = collection.map_or_else(
+        || {
+            (0..count)
+                .map(|id| match args[0].as_str() {
+                    "node" => WalOp::SetNodeProperty {
+                        id: NodeId(id as u64),
+                        property: "value".into(),
+                        value: Value::Int(id as i64),
+                    },
+                    "relationship" => WalOp::SetRelationshipProperty {
+                        id: RelId(id as u64),
+                        property: "weight".into(),
+                        value: Value::Int(id as i64),
+                    },
+                    "temporal" => WalOp::SetNodeProperty {
+                        id: NodeId(id as u64),
+                        property: "created_at".into(),
+                        value: temporal.clone(),
+                    },
+                    "large-small" => WalOp::SetNodeProperty {
+                        id: NodeId(id as u64),
+                        property: "body".into(),
+                        value: if id == 0 {
+                            Value::Binary(vec![7; 1024 * 1024])
+                        } else {
+                            Value::Int(id as i64)
+                        },
+                    },
+                    _ => panic!("unknown workload"),
+                })
+                .collect()
+        },
+        |op| vec![op],
+    );
+    let operation_count = ops.len();
     let entry = WalEntry {
         lsn: 7,
         op: WalOp::Batch(ops),
@@ -68,7 +114,7 @@ fn main() {
     });
     println!(
         "{}",
-        json!({"ready":args[0],"operations":count,"encoded_bytes":expected.len(),"fnv1a64":checksum,"scope":"encoding-only; no WAL I/O"})
+        json!({"ready":args[0],"items":count,"operations":operation_count,"encoded_bytes":expected.len(),"fnv1a64":checksum,"scope":"encoding-only; no WAL I/O"})
     );
     std::io::stdout().flush().unwrap();
     let stdin = std::io::stdin();
@@ -88,4 +134,8 @@ fn main() {
         );
         std::io::stdout().flush().unwrap();
     }
+    // Keep process teardown from overlapping the peer's final timed sample.
+    let mut command = String::new();
+    assert!(input.read_line(&mut command).unwrap() > 0);
+    assert_eq!(command.trim(), "finish");
 }

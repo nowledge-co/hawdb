@@ -172,7 +172,12 @@ hooks pass at the source revision. No stopped local Bazel/fuzz work is resumed.
 ## Replay
 
 Build each source with the same harness in separate Cargo targets and freeze
-the resulting binaries as `wal-encode-baseline` / `wal-encode-candidate`.
+the resulting binaries as `wal-encode-baseline` / `wal-encode-candidate`. The
+current harness/controller add temporal and collection workloads and require
+a final `finish` command after all timed pairs. Copy both from the same
+revision when replaying; use this document's historical revision for the
+original five-group protocol. Mixing historical binaries with the current
+controller is not supported.
 
 ```sh
 cargo build --locked --release -p hawdb-storage --bench wal_batch_encode -j 1

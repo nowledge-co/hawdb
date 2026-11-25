@@ -29,6 +29,13 @@ for workload, count in [
     ("node", 512),
     ("relationship", 4096),
     ("large-small", 128),
+    ("list", 4096),
+    ("map", 4096),
+    ("temporal", 1),
+    ("temporal", 4096),
+    ("temporal-list", 4096),
+    ("temporal-map", 4096),
+    ("temporal-properties", 4096),
 ]:
     workers = {}
     ready = {}
@@ -67,6 +74,8 @@ for workload, count in [
                     row.update(variant=variant, position=position, pair_index=index)
                     output.write(json.dumps(row) + "\n")
         for worker in workers.values():
+            worker.stdin.write("finish\n")
+            worker.stdin.flush()
             worker.stdin.close()
             assert worker.wait(timeout=180) == 0
         receipts.append(

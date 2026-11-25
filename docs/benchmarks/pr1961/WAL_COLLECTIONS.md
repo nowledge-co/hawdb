@@ -2,6 +2,30 @@
 
 Issue Number: ref #1960. PR: https://github.com/nowledge-co/hawdb/pull/1961.
 
+## Temporal payload follow-up
+
+The collection buffers still allocated a 28-byte temporary Vec for every
+Date, LocalTime, LocalDateTime, DateTime and Duration payload. Since the shared
+temporal codec already defines each exact fixed width, the ordinary WAL
+encoder now writes its existing tag and length followed by the payload directly
+into the output buffer. It uses the same payload codec; no temporal bytes,
+field IDs, validation, operation order or synchronization behavior changes.
+There is no additional retained buffer or public API.
+
+The existing storage unit owner covers all five kinds, negative durations,
+calendar/offset values, appending to an existing output prefix, and scalar
+batches, Lists, Maps and node property records at one and 4096 values. An
+already sufficient output capacity must require zero allocation requests.
+Prepared batches must require fewer than 64 requests, including output growth,
+and match ordinary encoding, the independent checkpoint codec and roundtrips.
+
+The manual `wal_batch_encode` diagnostic now includes temporal scalar batches,
+Lists, Maps and property records alongside integer and large-first controls.
+Both workers wait for `finish` after every timed pair has completed, so process
+teardown cannot overlap the peer's final sample. Use the same updated harness
+and controller for both source revisions. These encoding measurements remain
+separate from synchronized embedded query and checkpoint acceptance.
+
 ## Change
 
 Runtime `744f90cfee1f5d7c8803235f6eefee9f51865b49` extends bounded scratch reuse

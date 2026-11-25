@@ -5182,9 +5182,15 @@ counts. Existing all-operation/value wire fixtures, invalid nesting, replay and
 power-loss tests remain active. Scratch buffers above 64 KiB are released after
 each frame; no process/thread cache or persisted format is added.
 
-`cargo bench --locked -p hawdb-storage --bench wal_batch_encode -- <node|relationship|large-small> <operations> <rounds>`
+`cargo bench --locked -p hawdb-storage --bench wal_batch_encode -- <workload> <items> <rounds>`
 builds the manual step-controlled encoding-only diagnostic. After readiness,
-write one `step` per round plus two warmups to stdin. Its borrowed input setup,
+write one `step` per round plus two warmups to stdin, then `finish` after both
+paired workers have completed timing. Workloads are `node`, `relationship`,
+`large-small`, `list`, `map`, `temporal`, `temporal-list`, `temporal-map` and
+`temporal-properties`. Collection workloads encode one operation with the
+requested item count; other workloads encode that many operations. Readiness
+reports both counts. The finish barrier prevents final-process cleanup from
+overlapping the peer's last timed encoding. Its borrowed input setup,
 wire roundtrip and complete byte checks remain outside its encode timer. This
 is not synchronized commit throughput, query latency or tail acceptance. Keep
 it outside CI; strict workspace all-target Clippy still checks its source.
@@ -5212,3 +5218,14 @@ child, preceding scalar capacity is released even below that cap. Empty child
 containers keep the nonrecursive reuse path. No new CI
 lane, persistent format or benchmark run is added. Compiler-idle full-query
 performance acceptance remains separate from these allocation contracts.
+
+The same unit owner covers direct fixed-width temporal payload encoding for all
+five temporal kinds, including negative durations and offset/calendar edges.
+A preallocated output with an existing prefix must encode without allocating
+and preserve the former framed bytes. One- and 4096-value scalar batches,
+Lists, Maps and node property records must use fewer than 64 allocations and
+match the independent checkpoint encoder, prepared/ordinary bytes and decode
+roundtrips. These bounds include output growth; they do not measure live memory.
+The temporal payload codec, length prefix, default durability and recovery
+boundaries remain unchanged. Manual `temporal*` workloads measure elapsed
+encoding separately from the ordinary embedded query/checkpoint comparison.

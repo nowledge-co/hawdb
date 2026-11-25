@@ -96,7 +96,7 @@
 
 use super::wire::{
     decode_fixed64, decode_len_body, decode_string_body, decode_tag, decode_varint_u64,
-    encode_fixed64_field, encode_len_field, encode_string_field, encode_varint_field,
+    encode_fixed64_field, encode_len_field, encode_string_field, encode_tag, encode_varint_field,
     encode_varint_u64, skip_field, zigzag_decode_i64, zigzag_encode_i64, WIRE_TYPE_FIXED64,
     WIRE_TYPE_LEN, WIRE_TYPE_VARINT,
 };
@@ -431,10 +431,14 @@ fn encode_value_message(value: &Value, out: &mut Vec<u8>) {
         | Value::LocalDateTime(_)
         | Value::DateTime(_)
         | Value::Duration(_) => {
-            let mut payload = Vec::with_capacity(28);
-            let kind = hawdb_core::temporal::codec::encode_payload(value, &mut payload)
+            let kind = hawdb_core::temporal::codec::TemporalValueKind::of(value)
+                .expect("temporal values have a kind");
+            // Fixed-width payloads can follow their length prefix directly;
+            // a temporary Vec would allocate once for every temporal value.
+            encode_tag(temporal_value_field(kind), WIRE_TYPE_LEN, out);
+            encode_varint_u64(kind.payload_len() as u64, out);
+            hawdb_core::temporal::codec::encode_payload(value, out)
                 .expect("temporal values have a payload");
-            encode_len_field(temporal_value_field(kind), &payload, out);
         }
         Value::List(values) => {
             let mut body = Vec::new();
@@ -1041,6 +1045,92 @@ mod tests {
             Value::DateTime(temporal::parse_datetime("2026-10-30T12:00:00-00:30:15").unwrap()),
             Value::duration(temporal::parse_duration("-P1Y2M3DT4H5M6.000000007S").unwrap()),
         ]
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn temporal_value_encoding_reuses_output_capacity() {
+        for value in temporal_values() {
+            let mut payload = Vec::with_capacity(28);
+            let kind = hawdb_core::temporal::codec::encode_payload(&value, &mut payload).unwrap();
+            assert_eq!(payload.len(), kind.payload_len());
+            let mut expected = vec![0xa5; 13];
+            encode_len_field(temporal_value_field(kind), &payload, &mut expected);
+            let mut actual = Vec::with_capacity(expected.len());
+            actual.extend_from_slice(&expected[..13]);
+            let observation = crate::test_allocator::AllocationObservation::start_all();
+            encode_value_message(&value, &mut actual);
+            let allocations = observation.finish();
+            assert_eq!(allocations, 0, "encoding {value:?}");
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn temporal_batch_encoding_allocations_do_not_scale_per_value() {
+        for count in [1, 4096] {
+            for value in temporal_values() {
+                let properties = (0..count)
+                    .map(|id| (format!("{id:04}"), value.clone()))
+                    .collect::<BTreeMap<_, _>>();
+                for ops in [
+                    vec![
+                        WalOp::SetNodeProperty {
+                            id: NodeId(1),
+                            property: "created_at".into(),
+                            value: value.clone(),
+                        };
+                        count
+                    ],
+                    vec![WalOp::SetNodeProperty {
+                        id: NodeId(1),
+                        property: "dates".into(),
+                        value: Value::List(vec![value.clone(); count]),
+                    }],
+                    vec![WalOp::SetNodeProperty {
+                        id: NodeId(1),
+                        property: "dates".into(),
+                        value: Value::Map(properties.clone()),
+                    }],
+                    vec![WalOp::CreateNode {
+                        id: NodeId(1),
+                        label: "Note".into(),
+                        properties,
+                    }],
+                ] {
+                    let observation = crate::test_allocator::AllocationObservation::start_all();
+                    let prepared = PreparedWalBatch::prepare(&ops).unwrap();
+                    let allocations = observation.finish();
+                    assert!(
+                        allocations < 64,
+                        "{count} values allocated {allocations} times"
+                    );
+                    let entry = WalEntry {
+                        lsn: 7,
+                        op: WalOp::Batch(ops),
+                    };
+                    let expected = checkpoint::encode_binary_wal_record_with_work_context(
+                        &entry,
+                        11,
+                        &crate::background::CheckpointWorkContext::default(),
+                    )
+                    .unwrap();
+                    let ordinary = encode_binary_wal_record(&entry, 11).unwrap();
+                    assert_eq!(ordinary, &*expected);
+                    assert_eq!(prepared.bind(7, 11), ordinary);
+                    let BinaryWalRecordDecode::Entry {
+                        entry: decoded,
+                        commit_epoch,
+                    } = decode_binary_wal_record(&ordinary).unwrap()
+                    else {
+                        panic!("temporal batch rejected")
+                    };
+                    assert_eq!(commit_epoch, 11);
+                    assert_eq!(decoded.encode(), entry.encode());
+                }
+            }
+        }
     }
 
     #[test]
