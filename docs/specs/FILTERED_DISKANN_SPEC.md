@@ -22,6 +22,26 @@ recall for less graph work; the candidate/result floors, memory admission and
 explicit exact-search semantics remain unchanged. Qualify beam choices against
 ground truth for the host's data and filters rather than assuming equal recall.
 
+A graph search can finish by evaluating its complete eligible domain (#1970).
+The domain must be at most a third of the effective beam times the graph's
+maximum degree: with degree 32, 2,730 vectors per graph at beam 256 and 10,922
+at beam 1024. Traversal starts as usual. After `beam / 16` eligible expansions, if it
+has discovered at least 1/14 of the domain (excluding vectors that filter
+seeding already evaluated), it evaluates the remaining eligible vectors instead
+of expanding further. Scored vectors are reused, and the completed result equals
+exhaustive evaluation bit for bit, including ties.
+
+These constants are empirical heuristics, not a recall guarantee. A false
+positive costs at most one evaluation of the capped domain. A false negative
+leaves ordinary traversal with its ordinary recall. Each graph of a segmented
+generation decides independently and deterministically for a given graph, query,
+filter and options. Filtered domains need sorted IDs; a domain within the beam
+is still evaluated from its seeds. `adaptive_exact_scan` reports the switch.
+Memory admission is the traversal's, cancellation and work are charged per
+vector, and traversal continues when the worst case of the rest of the scan
+exceeds the remaining work limit. Larger graphs always use traversal. The
+candidate window is a floor for the beam.
+
 ## Architecture decision
 
 Implement Vamana construction and multi-hop filtered search in the existing

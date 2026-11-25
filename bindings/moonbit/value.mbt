@@ -4,6 +4,7 @@
 ///|
 /// The MoonBit-native representation of a HawDB database value.
 /// Null, absent columns, binary and typed vector values remain distinct.
+#derive(Debug)
 pub(all) enum Value {
   Null
   Bool(Bool)
@@ -20,7 +21,7 @@ pub(all) enum Value {
   Vector(Array[Double])
   List(Array[Value])
   Map(Map[String, Value])
-} derive(Debug)
+}
 
 ///|
 /// Temporal kinds, tagged in JSON as {"$<kind>": "<ISO 8601>"} exactly as in
@@ -51,11 +52,12 @@ fn is_reserved_tag(key : String) -> Bool {
 ///|
 /// Structured engine failures and transport/decoding failures.
 /// The engine category remains an open string for future HawDB versions.
+#derive(Debug)
 pub(all) suberror HawdbError {
   Engine(String, String)
   Codec(String)
   Closed
-} derive(Debug)
+}
 
 ///|
 /// Stable human-readable diagnostic, independent of debug formatting.
@@ -77,7 +79,7 @@ pub(all) struct QueryResult {
 ///|
 pub fn QueryResult::get(
   self : QueryResult,
-  row : Int,
+  row : Int32,
   column : String,
 ) -> Value? {
   if row < 0 || row >= self.rows.length() {
@@ -99,7 +101,10 @@ fn value_to_json(value : Value) -> Result[Json, HawdbError] {
 }
 
 ///|
-fn value_to_json_depth(value : Value, depth : Int) -> Result[Json, HawdbError] {
+fn value_to_json_depth(
+  value : Value,
+  depth : Int32,
+) -> Result[Json, HawdbError] {
   if depth > 64 {
     return Err(HawdbError::Codec("parameter nests deeper than 64 levels"))
   }
@@ -122,8 +127,7 @@ fn value_to_json_depth(value : Value, depth : Int) -> Result[Json, HawdbError] {
     Value::Text(v) => Ok(Json::string(v))
     Value::Binary(v) =>
       Ok(Json::object({ "$binary": Json::string(@base64.encode(v[:])) }))
-    Value::Uuid(v) =>
-      Ok(Json::object({ "$uuid": Json::string(v) }))
+    Value::Uuid(v) => Ok(Json::object({ "$uuid": Json::string(v) }))
     Value::Temporal(kind, text) => {
       if !temporal_kinds().contains(kind) {
         return Err(HawdbError::Codec("unknown temporal kind: " + kind))
@@ -134,11 +138,15 @@ fn value_to_json_depth(value : Value, depth : Int) -> Result[Json, HawdbError] {
     }
     Value::Vector(values) => {
       if values.length() == 0 {
-        return Err(HawdbError::Codec("vector must contain at least one coordinate"))
+        return Err(
+          HawdbError::Codec("vector must contain at least one coordinate"),
+        )
       }
       let numbers : Array[Json] = []
       for value in values {
-        if value != value || value == @double.infinity || value == -@double.infinity {
+        if value != value ||
+          value == @double.infinity ||
+          value == -@double.infinity {
           return Err(HawdbError::Codec("non-finite vector element"))
         }
         numbers.push(Json::number(value))
@@ -168,9 +176,11 @@ fn value_to_json_depth(value : Value, depth : Int) -> Result[Json, HawdbError] {
       if encoded.length() == 1 {
         for key, item in encoded {
           if is_reserved_tag(key) {
-            return Ok(Json::object({
-              "$map": Json::array([Json::array([Json::string(key), item])]),
-            }))
+            return Ok(
+              Json::object({
+                "$map": Json::array([Json::array([Json::string(key), item])]),
+              }),
+            )
           }
         }
       }
@@ -188,7 +198,7 @@ fn json_to_value(json : Json) -> Result[Value, HawdbError] {
 }
 
 ///|
-fn json_to_value_depth(json : Json, depth : Int) -> Result[Value, HawdbError] {
+fn json_to_value_depth(json : Json, depth : Int32) -> Result[Value, HawdbError] {
   if depth > 64 {
     return Err(HawdbError::Codec("result nests deeper than 64 levels"))
   }
@@ -203,12 +213,13 @@ fn json_to_value_depth(json : Json, depth : Int) -> Result[Value, HawdbError] {
           if token.contains(".") || token.contains("e") || token.contains("E") {
             Ok(Value::Float(value))
           } else {
-            {
-              let n = @string.parse_int64(token[:]) catch {
-                _ => return Err(HawdbError::Codec("integer outside signed Int64: " + token))
-              }
-              Ok(Value::Int(n))
+            let n = @string.parse_int64(token[:]) catch {
+              _ =>
+                return Err(
+                  HawdbError::Codec("integer outside signed Int64: " + token),
+                )
             }
+            Ok(Value::Int(n))
           }
         None => Err(HawdbError::Codec("number lexeme was not preserved"))
       }
@@ -231,14 +242,22 @@ fn json_to_value_depth(json : Json, depth : Int) -> Result[Value, HawdbError] {
               match entry {
                 Json::Array(pair) => {
                   if pair.length() != 2 {
-                    return Err(HawdbError::Codec("$map entries must contain two elements"))
+                    return Err(
+                      HawdbError::Codec(
+                        "$map entries must contain two elements",
+                      ),
+                    )
                   }
                   let key = match pair[0] {
                     Json::String(key) => key
-                    _ => return Err(HawdbError::Codec("$map key must be a string"))
+                    _ =>
+                      return Err(HawdbError::Codec("$map key must be a string"))
                   }
                   match decoded.get(key) {
-                    Some(_) => return Err(HawdbError::Codec("duplicate $map key: " + key))
+                    Some(_) =>
+                      return Err(
+                        HawdbError::Codec("duplicate $map key: " + key),
+                      )
                     None => ()
                   }
                   match json_to_value_depth(pair[1], depth + 1) {
@@ -255,15 +274,13 @@ fn json_to_value_depth(json : Json, depth : Int) -> Result[Value, HawdbError] {
           None => ()
         }
         match values.get("$binary") {
-          Some(Json::String(s)) =>
-            {
-              let bytes = @base64.decode(s[:]) catch {
-                _ => return Err(HawdbError::Codec("invalid base64 binary marker"))
-              }
-              return Ok(Value::Binary(bytes))
+          Some(Json::String(s)) => {
+            let bytes = @base64.decode(s[:]) catch {
+              _ => return Err(HawdbError::Codec("invalid base64 binary marker"))
             }
-          Some(_) =>
-            return Err(HawdbError::Codec("$binary must be a string"))
+            return Ok(Value::Binary(bytes))
+          }
+          Some(_) => return Err(HawdbError::Codec("$binary must be a string"))
           None => ()
         }
         match values.get("$decimal") {
@@ -277,18 +294,25 @@ fn json_to_value_depth(json : Json, depth : Int) -> Result[Value, HawdbError] {
           None => ()
         }
         match values.get("$float") {
-          Some(Json::String("NaN")) => return Ok(Value::Float(@double.not_a_number))
-          Some(Json::String("Infinity")) => return Ok(Value::Float(@double.infinity))
-          Some(Json::String("-Infinity")) => return Ok(Value::Float(-@double.infinity))
+          Some(Json::String("NaN")) =>
+            return Ok(Value::Float(@double.not_a_number))
+          Some(Json::String("Infinity")) =>
+            return Ok(Value::Float(@double.infinity))
+          Some(Json::String("-Infinity")) =>
+            return Ok(Value::Float(-@double.infinity))
           Some(_) =>
-            return Err(HawdbError::Codec("$float must be NaN, Infinity or -Infinity"))
+            return Err(
+              HawdbError::Codec("$float must be NaN, Infinity or -Infinity"),
+            )
           None => ()
         }
         for kind in temporal_kinds() {
           match values.get("$" + kind) {
             Some(Json::String(s)) => return Ok(Value::Temporal(kind, s))
             Some(_) =>
-              return Err(HawdbError::Codec("$" + kind + " must be an ISO 8601 string"))
+              return Err(
+                HawdbError::Codec("$" + kind + " must be an ISO 8601 string"),
+              )
             None => ()
           }
         }
@@ -299,11 +323,16 @@ fn json_to_value_depth(json : Json, depth : Int) -> Result[Value, HawdbError] {
               match item {
                 Json::Number(n, ..) =>
                   if n != n || n == @double.infinity || n == -@double.infinity {
-                    return Err(HawdbError::Codec("non-finite vector coordinate"))
+                    return Err(
+                      HawdbError::Codec("non-finite vector coordinate"),
+                    )
                   } else {
                     coords.push(n)
                   }
-                _ => return Err(HawdbError::Codec("vector coordinate must be numeric"))
+                _ =>
+                  return Err(
+                    HawdbError::Codec("vector coordinate must be numeric"),
+                  )
               }
             }
             return Ok(Value::Vector(coords))
@@ -328,12 +357,14 @@ fn json_to_value_depth(json : Json, depth : Int) -> Result[Value, HawdbError] {
 /// Parse data returned by the engine. The preserve_number_repr flag is
 /// mandatory: ordinary MoonBit JSON Number stores a Double approximation.
 fn parse_hawdb_json(text : String) -> Result[Json, HawdbError] {
-  {
-    let json = @json.parse(text, preserve_number_repr=true, reject_duplicate_keys=true) catch {
-      _ => return Err(HawdbError::Codec("malformed database response"))
-    }
-    Ok(json)
+  let json = @json.parse(
+    text,
+    preserve_number_repr=true,
+    reject_duplicate_keys=true,
+  ) catch {
+    _ => return Err(HawdbError::Codec("malformed database response"))
   }
+  Ok(json)
 }
 
 ///|
@@ -351,7 +382,9 @@ fn result_from_json(response : String) -> Result[QueryResult, HawdbError] {
             match name {
               Json::String(value) => {
                 if columns.contains(value) {
-                  return Err(HawdbError::Codec("duplicate result column: " + value))
+                  return Err(
+                    HawdbError::Codec("duplicate result column: " + value),
+                  )
                 }
                 columns.push(value)
               }
@@ -363,7 +396,9 @@ fn result_from_json(response : String) -> Result[QueryResult, HawdbError] {
             match raw_row {
               Json::Array(cells) => {
                 if cells.length() != columns.length() {
-                  return Err(HawdbError::Codec("row width differs from column count"))
+                  return Err(
+                    HawdbError::Codec("row width differs from column count"),
+                  )
                 }
                 let row : Array[Value] = []
                 for cell in cells {
@@ -377,7 +412,7 @@ fn result_from_json(response : String) -> Result[QueryResult, HawdbError] {
               _ => return Err(HawdbError::Codec("non-array result row"))
             }
           }
-          Ok({ columns, rows })
+          Ok({ columns, rows, })
         }
         _ => Err(HawdbError::Codec("missing columns or rows in response"))
       }
@@ -388,7 +423,8 @@ fn result_from_json(response : String) -> Result[QueryResult, HawdbError] {
 ///|
 fn native_error(response : String) -> HawdbError {
   let parsed = @json.parse(response) catch {
-    _ => return HawdbError::Codec("malformed native error envelope: " + response)
+    _ =>
+      return HawdbError::Codec("malformed native error envelope: " + response)
   }
   match parsed {
     Json::Object(fields) =>
@@ -405,7 +441,9 @@ fn native_error(response : String) -> HawdbError {
 ///|
 /// Internal, shared parameter codecs for Database and Transaction. Keeping
 /// both call paths here prevents differences in nesting and number handling.
-fn encode_named_params(params : Map[String, Value]) -> Result[String, HawdbError] {
+fn encode_named_params(
+  params : Map[String, Value],
+) -> Result[String, HawdbError] {
   let encoded : Map[String, Json] = Map([])
   for name, item in params {
     match value_to_json(item) {

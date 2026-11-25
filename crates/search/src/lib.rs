@@ -1095,7 +1095,9 @@ impl<'a> VectorSearchExecutionOptions<'a> {
     }
 
     /// DiskANN navigation beam for this query, never below the
-    /// requested result count. A smaller beam trades recall for speed. The
+    /// requested result count. A smaller beam trades recall for speed, while a
+    /// traversal that spreads over a graph small for the beam may finish with a
+    /// complete evaluation. The
     /// traversal stays bounded by `max_working_bytes`, and a beam whose
     /// workspace does not fit is refused, not truncated.
     /// Ordinary out-of-core Search inherits its reader's default (256);

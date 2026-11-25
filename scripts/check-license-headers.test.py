@@ -78,6 +78,16 @@ class LicenseHookTests(unittest.TestCase):
             with self.subTest(path=name, header="missing"):
                 self.run_fixture({name: body}, 1)
 
+    def test_only_generated_moonbit_interface_snapshots_are_excluded(self):
+        body = '// Generated using `moon info`, DO NOT EDIT\npackage "example/test"\n'
+        self.run_fixture({
+            "pkg.generated.mbti": body,
+            "nested/pkg.generated.mbti": body,
+        }, 0)
+        for name in ("pkg.generated.mbt", "pkg.mbti", "other.generated.mbti"):
+            with self.subTest(path=name):
+                self.run_fixture({"pkg.generated.mbti": body, name: body}, 1)
+
     def test_go_line_headers_and_build_constraints(self):
         for header in (FULL, SHORT):
             with self.subTest(header=header):
