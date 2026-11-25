@@ -496,6 +496,22 @@ impl Database {
         Ok(ReadTransaction { inner: Some(inner) })
     }
 
+    /// Publishes a checkpoint of the committed state and blocks until it is
+    /// durable. An in-memory database has nothing to publish.
+    ///
+    /// Fails while a transaction is open on this database, and on a read-only
+    /// database. Like the engine call, it passes no query admission.
+    fn checkpoint(&mut self, py: Python<'_>) -> PyResult<()> {
+        let database = self.required()?;
+        if database.transaction_active() {
+            return Err(PyRuntimeError::new_err(
+                "a transaction is open on this database",
+            ));
+        }
+        py.detach(move || database.database_mut().checkpoint())
+            .map_err(|error| format_hawdb_error(&error))
+    }
+
     /// Closes the database handle. Safe to call more than once.
     fn close(&mut self) {
         self.inner = None;

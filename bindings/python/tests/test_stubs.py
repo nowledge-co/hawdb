@@ -59,6 +59,7 @@ SIGNATURES = [
     ("RetainedBuffer.close", hawdb.RetainedBuffer.close),
     ("Database.transaction", hawdb.Database.transaction),
     ("Database.read_transaction", hawdb.Database.read_transaction),
+    ("Database.checkpoint", hawdb.Database.checkpoint),
     ("Database.close", hawdb.Database.close),
     ("Transaction.execute", hawdb.Transaction.execute),
     ("Transaction.execute_sql", hawdb.Transaction.execute_sql),
