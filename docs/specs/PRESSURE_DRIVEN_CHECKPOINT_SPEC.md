@@ -1642,15 +1642,18 @@ configured policy. This does not relax memory or physical-I/O admission. See
 Ordinary reads never take the validation guard. Retirement is decided for one
 object at a time, so the project-wide guard refused reads of unrelated objects
 ([#1959](https://github.com/nowledge-co/hawdb/issues/1959)); root pins already
-keep a reader's own objects out of a sweep. A warm read leases its native handle
-under the handle-map lock and waits for nothing. A cold open and retirement
-exclude each other through the opening gate; the wait is as long as one
-retirement, which itself waits for nothing once it holds the gate, or one other
-cold open. A read admitted with a control observes its cancellation and deadline
-while waiting; a plain positioned read reports them at its next checkpoint. Retirement sees every cached handle
-of its object idle and unmaps it under one handle-map lock, so a lease taken
-first makes it return `WouldBlock`; the sweep keeps that object as retryable
-debt and goes on. Lock order, outermost first:
+keep a reader's own objects out of a sweep. A warm read leases its native
+handle under the handle-map lock and waits for nothing. A cold open and
+retirement exclude each other through the opening gate. One holder keeps it for
+one retirement, which itself waits for nothing once it holds the gate, or for
+one other cold open, but the gate is not FIFO: a waiter may be passed by any
+number of later retirements and cold opens, so a cold open has no hard latency
+bound. A read admitted with a control observes its cancellation and deadline
+while waiting, which is the only bound on its wait; a plain positioned read
+waits without one and reports them at its next checkpoint. Retirement sees
+every cached handle of its object idle and unmaps it under one handle-map lock,
+so a lease taken first makes it return `WouldBlock`; the sweep keeps that
+object as retryable debt and goes on. Lock order, outermost first:
 
 | Lock | Taken by | Acquisition | May be held while taking |
 | --- | --- | --- | --- |

@@ -52,6 +52,14 @@ WINDOWS_NATIVE_FEATURE_PROFILES = {
         "hawdb-system-sql": ["default"],
         "hawdb-telemetry": ["default"],
     },
+    # Linux root lane for tests gated on the root `test-support` feature (#1965).
+    "facade_test_support": {
+        "hawdb": ["default", "background-maintenance", "full-text-search", "graph-analytics", "test-support", "tokio-runtime", "vector-search"],
+        "hawdb-search": ["background-maintenance", "full-text-search", "graph-analytics", "vector-search"],
+        "hawdb-storage": ["artifact-mmap", "test-support"],
+        "hawdb-system-sql": ["default"],
+        "hawdb-telemetry": ["default"],
+    },
     "facade_minimal": {
         "hawdb": [],
         "hawdb-search": [],
@@ -74,6 +82,38 @@ WINDOWS_NATIVE_FEATURE_PROFILES = {
         "hawdb-telemetry": ["default"],
     },
 }
+
+def _feature_profile_transition_impl(_settings, attr):
+    return {"//:windows_native_profile": attr.profile}
+
+# Selects Cargo features only; the compilation profile is unchanged.
+_feature_profile_transition = transition(
+    implementation = _feature_profile_transition_impl,
+    inputs = [],
+    outputs = ["//:windows_native_profile"],
+)
+
+def _feature_profile_test_binary_impl(ctx):
+    binary = ctx.attr.binary[0][DefaultInfo]
+    executable = ctx.actions.declare_file(ctx.label.name)
+    ctx.actions.symlink(output = executable, target_file = binary.files_to_run.executable, is_executable = True)
+    return [DefaultInfo(
+        executable = executable,
+        files = depset([executable]),
+        # The binary's own runfiles would stage it under its original path, over
+        # the same binary in another profile. Test binaries here carry no data.
+        runfiles = ctx.runfiles(files = [executable]),
+    )]
+
+# A test executable of one Cargo feature profile, for a test runner's data.
+feature_profile_test_binary = rule(
+    implementation = _feature_profile_test_binary_impl,
+    attrs = {
+        "binary": attr.label(mandatory = True, executable = True, cfg = _feature_profile_transition),
+        "profile": attr.string(mandatory = True, values = WINDOWS_NATIVE_FEATURE_PROFILES.keys()),
+    },
+    executable = True,
+)
 
 def windows_native_features(package, default_features):
     choices = {

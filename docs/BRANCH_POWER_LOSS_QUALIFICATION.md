@@ -50,7 +50,8 @@ Unix and Windows under the explicit synchronization assumptions below.
 The existing Bazel storage unit target includes its recorder/image-engine tests
 under `cfg(test)`. The ordinary Bazel facade target does not enable the storage
 recorder; run the explicit Cargo matrix rather than claiming its filtered Bazel
-invocation executes fault cases. Default/minimal project-open integration tests
+invocation executes fault cases. `//:hawdb_unit_test_support_tests` runs the
+`checkpoint_leftovers` and `checkpoint_temporaries` families only (#1965). Default/minimal project-open integration tests
 have existing Bazel targets.
 
 The weekly/manual [platform workflow](../.github/workflows/ci.yml) runs the
