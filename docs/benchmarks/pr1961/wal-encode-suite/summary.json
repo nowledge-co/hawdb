@@ -1,0 +1,152 @@
+[
+  {
+    "group": "node-1",
+    "distributions": {
+      "baseline": {
+        "p50": 209,
+        "p95": 416,
+        "p99": 834,
+        "minimum": 83,
+        "maximum": 1625
+      },
+      "candidate": {
+        "p50": 209,
+        "p95": 458,
+        "p99": 1125,
+        "minimum": 83,
+        "maximum": 2375
+      }
+    },
+    "paired_percent": {
+      "p50": 0.0,
+      "p95": 100.0,
+      "p99": 200.0,
+      "minimum": -89.72307692307693,
+      "maximum": 1330.722891566265
+    },
+    "first_half_median": 0.0,
+    "second_half_median": 0.0,
+    "baseline_first_median": 0.0,
+    "candidate_first_median": 0.0
+  },
+  {
+    "group": "node-128",
+    "distributions": {
+      "baseline": {
+        "p50": 7292,
+        "p95": 11041,
+        "p99": 13417,
+        "minimum": 5375,
+        "maximum": 16250
+      },
+      "candidate": {
+        "p50": 2625,
+        "p95": 4500,
+        "p99": 5291,
+        "minimum": 2208,
+        "maximum": 19958
+      }
+    },
+    "paired_percent": {
+      "p50": -59.98628493056746,
+      "p95": -47.56329577052539,
+      "p99": -39.761403508771934,
+      "minimum": -86.15384615384616,
+      "maximum": 122.79526680062514
+    },
+    "first_half_median": -60.39626495339447,
+    "second_half_median": -59.861416258238975,
+    "baseline_first_median": -59.89713833575102,
+    "candidate_first_median": -60.0000593025801
+  },
+  {
+    "group": "node-512",
+    "distributions": {
+      "baseline": {
+        "p50": 25166,
+        "p95": 31459,
+        "p99": 38750,
+        "minimum": 21583,
+        "maximum": 41500
+      },
+      "candidate": {
+        "p50": 10250,
+        "p95": 13375,
+        "p99": 19000,
+        "minimum": 8750,
+        "maximum": 20000
+      }
+    },
+    "paired_percent": {
+      "p50": -60.18666666666667,
+      "p95": -46.520250998288645,
+      "p99": -22.185362657165086,
+      "minimum": -72.02662210441397,
+      "maximum": -19.46524925505355
+    },
+    "first_half_median": -59.591963002438035,
+    "second_half_median": -60.49523809523809,
+    "baseline_first_median": -59.584066405016465,
+    "candidate_first_median": -60.84124546881996
+  },
+  {
+    "group": "relationship-4096",
+    "distributions": {
+      "baseline": {
+        "p50": 180417,
+        "p95": 208667,
+        "p99": 218583,
+        "minimum": 158125,
+        "maximum": 229041
+      },
+      "candidate": {
+        "p50": 63708,
+        "p95": 73292,
+        "p99": 85542,
+        "minimum": 59042,
+        "maximum": 94334
+      }
+    },
+    "paired_percent": {
+      "p50": -64.71132156592516,
+      "p95": -58.17096354237593,
+      "p99": -55.0642148277875,
+      "minimum": -71.92161288383,
+      "maximum": -53.653295128939824
+    },
+    "first_half_median": -63.54730500654176,
+    "second_half_median": -65.64501890123819,
+    "baseline_first_median": -64.25179487179487,
+    "candidate_first_median": -64.97479414696079
+  },
+  {
+    "group": "large-small-128",
+    "distributions": {
+      "baseline": {
+        "p50": 66416,
+        "p95": 76000,
+        "p99": 149541,
+        "minimum": 63292,
+        "maximum": 233209
+      },
+      "candidate": {
+        "p50": 63000,
+        "p95": 72917,
+        "p99": 90750,
+        "minimum": 60375,
+        "maximum": 161500
+      }
+    },
+    "paired_percent": {
+      "p50": -4.816955684007707,
+      "p95": 6.775802254986996,
+      "p99": 26.659235991488494,
+      "minimum": -72.34240531025817,
+      "maximum": 149.90328820116054
+    },
+    "first_half_median": -5.103494594186008,
+    "second_half_median": -4.659070023892664,
+    "baseline_first_median": -5.897586461297555,
+    "candidate_first_median": -3.896127816481776
+  }
+]

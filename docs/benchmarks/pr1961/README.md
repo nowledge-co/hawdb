@@ -126,3 +126,7 @@ python3 docs/benchmarks/pr1961/analyze.py docs/benchmarks/pr1961/paired-packed-s
 ## Synchronization follow-ups
 
 [The synchronization investigation](SYNC_INVESTIGATION.md) records handoff owner reuse, direct sealed-producer publication, complete component measurements, per-call diagnostics including the rejected immediate-write logger, and source-bound correctness CI. Full PR tail acceptance remains open.
+
+## WAL encoding follow-up
+
+[Record-local buffer reuse](WAL_ENCODING.md) records current source, encoding-only before/after measurements, separately instrumented phase evidence, correctness CI and the remaining ordinary-query acceptance gate. Earlier datasets qualify their own revisions only.

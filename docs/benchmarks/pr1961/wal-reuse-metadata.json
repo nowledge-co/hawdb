@@ -1,0 +1,27 @@
+{
+  "baseline": {
+    "runtime": "21bdf14b44fa882257b0cab39e432e86b179b0d9",
+    "evidence_head": "dc7de2621b066a0d1ab824989298ad822b16dc35",
+    "bench_source_sha256": "2ab1738070a626fd47ecd701a6d17242552e17a63a46fa6739262c70e331b0c7",
+    "binary_sha256": "8776e32bb49c4b360e0ea314d2350491576072d3f04cbd6d733bdffa4535db66",
+    "build_seconds": 95
+  },
+  "candidate_source": "ac43fe6b8ee51b50e4587c3509839832a7175c2d",
+  "candidate_encoding_build_seconds": 139,
+  "candidate_embedded_build_seconds": 391,
+  "candidate_target": "../wal-reuse-candidate-target",
+  "build_scope": "candidate encoding target initially empty; subsequent embedded build reused its dependencies and rebuilt for its root feature set; not a build speedup comparison",
+  "binary_sha256": {
+    "embedded-paired-candidate": "972ea2722e8398e01ed6c14185c1fcbba1c1694768473f93748c3064065509ba",
+    "wal-encode-candidate": "ef4319ac6d96088cca9a4a8eb09b4db89ab3f03e89478cb46b38d48f7d8da507",
+    "embedded-paired-baseline": "7d55aa5ce4257e88112addda67c204e49a48b2edff7ae311912039cf58b96427",
+    "wal-encode-baseline": "8776e32bb49c4b360e0ea314d2350491576072d3f04cbd6d733bdffa4535db66"
+  },
+  "profiling": "24 pairs x two groups, optional cpu-profile plus buffered syscall interposition; other Bazel/Cargo/C++ tasks active; NOT acceptance",
+  "ordinary_query_acceptance": "BLOCKED: no compiler-idle window; full shared-host suite retained separately, four groups x60 measured pairs, unfavorable maxima retained; PR stays Draft.",
+  "source_scope": "Local branch based on 5efcc9a2; CI integrates main 09579ce2. No exact-current-main local runtime qualification.",
+  "ordinary_dataset": "paired-wal-reuse-shared-suite",
+  "longer_diagnostic": "wal-reuse-node-tail-profile: 120 pairs, node512/relationship4096, optional profiling plus buffered tracer; mixed compiler/VM load; not acceptance",
+  "local_toolchain": "Rust 1.99.1 / macOS arm64, repository pinned global profiles",
+  "published_python": "Black 24.8.0; AST-equivalent to exact executed sources"
+}

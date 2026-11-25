@@ -5188,3 +5188,9 @@ write one `step` per round plus two warmups to stdin. Its borrowed input setup,
 wire roundtrip and complete byte checks remain outside its encode timer. This
 is not synchronized commit throughput, query latency or tail acceptance. Keep
 it outside CI; strict workspace all-target Clippy still checks its source.
+
+[WAL encoding evidence](benchmarks/pr1961/WAL_ENCODING.md) retains the manual
+encoding-only pair controller, shared-host ordinary query pairs and separately
+instrumented 24/120-pair CPU/WAL/call diagnostics. These add no CI execution
+lane. Keep the measured byte checks, large-first payload control, source hashes,
+all unfavorable samples and compiler-idle acceptance blocker explicit.

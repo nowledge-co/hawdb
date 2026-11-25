@@ -1,0 +1,116 @@
+[
+  {
+    "trace_library_sha256": "143630517a5f27caa380d4b62bcef895d0fa84a7124937d1ded9d2873b781b17",
+    "purpose": "per-call synchronization attribution only; observer overhead excludes acceptance",
+    "group": "paired-128-512-node_property",
+    "nodes": 128,
+    "edges": 512,
+    "workload": "node_property",
+    "measured_pairs": 24,
+    "warmup_pairs": 2,
+    "raw": "paired-128-512-node_property.jsonl",
+    "ready": {
+      "baseline": {
+        "automatic_checkpoint": false,
+        "protocol": "hawdb-checkpoint-pair-v1",
+        "ready": "node_property",
+        "storage_version": "hawdb-storage-v3"
+      },
+      "candidate": {
+        "automatic_checkpoint": false,
+        "protocol": "hawdb-checkpoint-pair-v1",
+        "ready": "node_property",
+        "storage_version": "hawdb-storage-v3"
+      }
+    },
+    "commands": {
+      "baseline": [
+        "/Users/hawkingrei/devel/opensource/skein/.context/perf-recovery-20261124/evidence/incremental-adjacency/wal-reuse-bin/embedded-paired-baseline",
+        "/Users/hawkingrei/devel/opensource/skein/.context/perf-recovery-20261124/evidence/incremental-adjacency/wal-reuse-profile-trace/paired-128-512-node_property-baseline-fixture",
+        "128",
+        "512",
+        "24",
+        "carry",
+        "step-node",
+        "cpu-profile"
+      ],
+      "candidate": [
+        "/Users/hawkingrei/devel/opensource/skein/.context/perf-recovery-20261124/evidence/incremental-adjacency/wal-reuse-bin/embedded-paired-candidate",
+        "/Users/hawkingrei/devel/opensource/skein/.context/perf-recovery-20261124/evidence/incremental-adjacency/wal-reuse-profile-trace/paired-128-512-node_property-candidate-fixture",
+        "128",
+        "512",
+        "24",
+        "carry",
+        "step-node",
+        "cpu-profile"
+      ]
+    },
+    "started": "2026-11-25T03:41:14.224744+00:00",
+    "elapsed_seconds": 36.878949833,
+    "exit_codes": {
+      "baseline": 0,
+      "candidate": 0
+    },
+    "binary_sha256": {
+      "baseline": "7d55aa5ce4257e88112addda67c204e49a48b2edff7ae311912039cf58b96427",
+      "candidate": "972ea2722e8398e01ed6c14185c1fcbba1c1694768473f93748c3064065509ba"
+    }
+  },
+  {
+    "trace_library_sha256": "143630517a5f27caa380d4b62bcef895d0fa84a7124937d1ded9d2873b781b17",
+    "purpose": "per-call synchronization attribution only; observer overhead excludes acceptance",
+    "group": "paired-512-4096-relationship_property",
+    "nodes": 512,
+    "edges": 4096,
+    "workload": "relationship_property",
+    "measured_pairs": 24,
+    "warmup_pairs": 2,
+    "raw": "paired-512-4096-relationship_property.jsonl",
+    "ready": {
+      "baseline": {
+        "automatic_checkpoint": false,
+        "protocol": "hawdb-checkpoint-pair-v1",
+        "ready": "relationship_property",
+        "storage_version": "hawdb-storage-v3"
+      },
+      "candidate": {
+        "automatic_checkpoint": false,
+        "protocol": "hawdb-checkpoint-pair-v1",
+        "ready": "relationship_property",
+        "storage_version": "hawdb-storage-v3"
+      }
+    },
+    "commands": {
+      "baseline": [
+        "/Users/hawkingrei/devel/opensource/skein/.context/perf-recovery-20261124/evidence/incremental-adjacency/wal-reuse-bin/embedded-paired-baseline",
+        "/Users/hawkingrei/devel/opensource/skein/.context/perf-recovery-20261124/evidence/incremental-adjacency/wal-reuse-profile-trace/paired-512-4096-relationship_property-baseline-fixture",
+        "512",
+        "4096",
+        "24",
+        "carry",
+        "step-relationship",
+        "cpu-profile"
+      ],
+      "candidate": [
+        "/Users/hawkingrei/devel/opensource/skein/.context/perf-recovery-20261124/evidence/incremental-adjacency/wal-reuse-bin/embedded-paired-candidate",
+        "/Users/hawkingrei/devel/opensource/skein/.context/perf-recovery-20261124/evidence/incremental-adjacency/wal-reuse-profile-trace/paired-512-4096-relationship_property-candidate-fixture",
+        "512",
+        "4096",
+        "24",
+        "carry",
+        "step-relationship",
+        "cpu-profile"
+      ]
+    },
+    "started": "2026-11-25T03:41:51.136944+00:00",
+    "elapsed_seconds": 82.80607741700001,
+    "exit_codes": {
+      "baseline": 0,
+      "candidate": 0
+    },
+    "binary_sha256": {
+      "baseline": "7d55aa5ce4257e88112addda67c204e49a48b2edff7ae311912039cf58b96427",
+      "candidate": "972ea2722e8398e01ed6c14185c1fcbba1c1694768473f93748c3064065509ba"
+    }
+  }
+]
