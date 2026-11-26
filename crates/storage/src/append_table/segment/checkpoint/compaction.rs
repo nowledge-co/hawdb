@@ -89,7 +89,7 @@ impl AppendSegmentReader {
         }
         let unit = work.start_unit()?;
         let decoder =
-            zstd::stream::read::Decoder::new(Cursor::new(&*compressed)).map_err(|error| {
+            crate::compression::Decoder::new(Cursor::new(&*compressed)).map_err(|error| {
                 AppendTableError::Corruption(format!(
                     "failed to open append block decoder: {error}"
                 ))

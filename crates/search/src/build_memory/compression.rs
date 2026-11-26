@@ -12,56 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Qualify the native zstd version used by the admitted build workspaces.
+//! Admit workspace using the selected compression implementation's bound.
 
-use crate::{HawDBError, Result};
-
-// Pinned zstd 1.5.7, level 3, one worker, no dictionary/LDM/sequence producer.
-// Includes native workspace and the Rust writer staging buffer.
-pub(crate) const COMPRESSION_WORKSPACE_BYTES: usize = 8 * 1024 * 1024 + 32 * 1024;
-
-const QUALIFIED_ZSTD_VERSION: u32 = 10507;
-const _: () = assert!(
-    zstd::zstd_safe::zstd_sys::ZSTD_VERSION_NUMBER == QUALIFIED_ZSTD_VERSION,
-    "requalify search zstd memory admission before updating the bindings"
-);
-
-pub(crate) fn require_qualified_zstd(purpose: &'static str) -> Result<()> {
-    // The native build can use pkg-config instead of the bundled source, so
-    // the pinned binding version alone does not identify the linked library.
-    validate_version(zstd::zstd_safe::version_number(), purpose)
-}
-
-fn validate_version(version: u32, purpose: &str) -> Result<()> {
-    if version != QUALIFIED_ZSTD_VERSION {
-        return Err(HawDBError::Execution(format!(
-            "search zstd {purpose} requires qualification for this version"
-        )));
-    }
-    Ok(())
-}
+use crate::Result;
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+pub(crate) const COMPRESSION_WORKSPACE_BYTES: usize = 8 * 1024 * 1024 + 32 * 1024;
 
-    #[test]
-    fn linked_library_substitution_keeps_both_admission_paths_closed() {
-        for purpose in ["decode admission", "workspace admission"] {
-            validate_version(QUALIFIED_ZSTD_VERSION, purpose).unwrap();
-            for version in [
-                0,
-                QUALIFIED_ZSTD_VERSION - 1,
-                QUALIFIED_ZSTD_VERSION + 1,
-                u32::MAX,
-            ] {
-                assert_eq!(
-                    validate_version(version, purpose),
-                    Err(HawDBError::Execution(format!(
-                        "search zstd {purpose} requires qualification for this version"
-                    )))
-                );
-            }
-        }
-    }
+pub(crate) fn workspace_bytes() -> Result<usize> {
+    super::checked_add(
+        hawdb_storage::compression::encoder_workspace_bytes(crate::SEARCH_COMPRESSION_LEVEL)?,
+        32 * 1024,
+    )
 }

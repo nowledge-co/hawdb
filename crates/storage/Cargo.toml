@@ -9,6 +9,8 @@ repository.workspace = true
 homepage.workspace = true
 
 [features]
+default = ["builtin-zstd"]
+builtin-zstd = ["dep:zstd"]
 test-support = []
 # Optional bridge for counted native artifact mappings; portable hosts omit it.
 artifact-mmap = ["dep:memmap2"]
@@ -23,7 +25,7 @@ hawdb-integrity = { path = "../integrity", version = "0.40.0" }
 hawdb-analytics = { path = "../analytics", version = "0.40.0" }
 hawdb-telemetry = { path = "../telemetry", version = "0.40.0" }
 hawdb-qos = { path = "../qos", version = "0.40.0" }
-zstd = "0.14.3"
+zstd = { version = "0.14.3", optional = true }
 memmap2 = { version = "0.9.11", optional = true }
 
 [target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]

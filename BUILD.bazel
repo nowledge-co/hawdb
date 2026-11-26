@@ -265,6 +265,7 @@ _HAWDB_VECTOR_DEPS = [
 _HAWDB_DEFAULT_FEATURES = windows_native_features(
     "hawdb",
     [
+        "builtin-zstd",
         "background-maintenance",
         "full-text-search",
         "graph-analytics",
@@ -288,12 +289,12 @@ rust_library(
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
-# Matches `--no-default-features --features full-text-search` for embedded hosts.
+# Matches `--no-default-features --features builtin-zstd,full-text-search` for embedded hosts.
 rust_library(
     name = "hawdb_graph_text",
     crate_name = "hawdb",
     crate_root = "src/lib.rs",
-    crate_features = ["full-text-search"],
+    crate_features = ["builtin-zstd", "full-text-search"],
     srcs = _HAWDB_SRCS,
     compile_data = _HAWDB_COMPILE_DATA,
     edition = "2024",
@@ -302,10 +303,11 @@ rust_library(
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
-# Matches `hawdb = { default-features = false }` for dependency-boundary checks.
+# Minimal capability profile with the built-in codec; custom-provider absence
+# is checked independently by tests/compression-consumer.
 rust_library(
     name = "hawdb_minimal",
-    crate_features = windows_native_features("hawdb", []),
+    crate_features = windows_native_features("hawdb", ["builtin-zstd"]),
     crate_name = "hawdb",
     crate_root = "src/lib.rs",
     srcs = _HAWDB_SRCS,
@@ -444,7 +446,7 @@ rust_test(
         proc_macro_dev = True,
     ),
     crate = ":hawdb_minimal",
-    crate_features = windows_native_features("hawdb", []),
+    crate_features = windows_native_features("hawdb", ["builtin-zstd"]),
     edition = "2024",
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
     tags = ["manual"],
@@ -1071,7 +1073,7 @@ sh_test(
 [
     rust_test(
         name = "hawdb_mvcc_staging_session" + suffix + "_tests",
-        crate_features = windows_native_features("hawdb", []),
+        crate_features = windows_native_features("hawdb", ["builtin-zstd"]),
         crate_root = "tests/mvcc_staging_session.rs",
         srcs = [
             "tests/mvcc_staging_session.rs",
@@ -1160,6 +1162,7 @@ rust_test(
     compile_data = _HAWDB_COMPILE_DATA,
     crate_features = [
         "acl",
+        "builtin-zstd",
         "background-maintenance",
         "full-text-search",
         "graph-analytics",

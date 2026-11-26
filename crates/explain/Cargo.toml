@@ -15,5 +15,8 @@ hawdb-optimizer = { path = "../optimizer", version = "0.40.0" }
 hawdb-plan-cypher = { path = "../plan-cypher", version = "0.40.0" }
 hawdb-plan-cache = { path = "../plan-cache", version = "0.40.0" }
 hawdb-qos = { path = "../qos", version = "0.40.0" }
-hawdb-storage = { path = "../storage", version = "0.40.0" }
+hawdb-storage = { path = "../storage", version = "0.40.0", default-features = false }
 unicode-width = "0.2"
+
+[dev-dependencies]
+hawdb-storage = { path = "../storage", version = "0.40.0", default-features = false, features = ["builtin-zstd"] }

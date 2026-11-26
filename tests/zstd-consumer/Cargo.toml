@@ -1,0 +1,31 @@
+# Copyright 2026 Nowledge
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "hawdb-zstd-consumer"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Resolve independently: HawDB's workspace lock must not hide consumer conflicts.
+[workspace]
+
+[features]
+default = ["hawdb/default"]
+
+[dependencies]
+hawdb = { path = "../..", default-features = false }
+hawdb-storage = { path = "../../crates/storage" }
+zstd = "=0.14.5"
+zstd-sys = { version = "=2.2.0", default-features = false }
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+[[test]]
+name = "host_allocator"
+path = "../host_allocator.rs"
+
+[[test]]
+name = "linked_version"
+path = "linked_version.rs"

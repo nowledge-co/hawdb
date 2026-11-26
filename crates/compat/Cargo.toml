@@ -15,4 +15,7 @@ hawdb-analytics = { path = "../analytics", version = "0.40.0" }
 hawdb-core = { path = "../core", version = "0.40.0" }
 hawdb-evidence = { path = "../evidence", version = "0.40.0" }
 hawdb-executor = { path = "../executor", version = "0.40.0" }
-hawdb-storage = { path = "../storage", version = "0.40.0" }
+hawdb-storage = { path = "../storage", version = "0.40.0", default-features = false }
+
+[dev-dependencies]
+hawdb-storage = { path = "../storage", version = "0.40.0", default-features = false, features = ["builtin-zstd"] }

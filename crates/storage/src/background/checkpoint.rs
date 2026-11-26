@@ -513,7 +513,11 @@ impl CheckpointWorkContext {
             .map_err(|error| self.record_failure(error))
     }
 
-    pub(crate) fn reserve_memory(
+    /// Admit backend-owned memory before allocation. Keep the returned permit
+    /// until after physical release. `None` means no host controller is attached;
+    /// cancellation and any configured task ceiling are still checked.
+    /// Refusals retain their typed cause and are recorded on this checkpoint.
+    pub fn reserve_memory(
         &self,
         bytes: usize,
     ) -> Result<Option<Box<dyn RuntimeMemoryPermit>>, CheckpointWorkError> {

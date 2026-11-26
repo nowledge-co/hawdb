@@ -615,7 +615,7 @@ const BASELINE_CASES: &[GoldenCase] = &[
 
 #[test]
 fn bundled_dictionary_preserves_upstream_search_tokens_and_offsets() {
-    let jieba = load();
+    let jieba = load().unwrap();
     for &(text, hmm, expected) in BASELINE_CASES {
         let actual = jieba
             .cut_for_search(text, hmm)

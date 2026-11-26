@@ -20,4 +20,7 @@ hawdb-plan-cache = { path = "../plan-cache", version = "0.40.0" }
 hawdb-route-ownership = { path = "../route-ownership", version = "0.40.0" }
 hawdb-system-sql = { path = "../system-sql", version = "0.40.0" }
 hawdb-search = { path = "../search", version = "0.40.0", default-features = false }
-hawdb-storage = { path = "../storage", version = "0.40.0" }
+hawdb-storage = { path = "../storage", version = "0.40.0", default-features = false }
+
+[dev-dependencies]
+hawdb-storage = { path = "../storage", version = "0.40.0", default-features = false, features = ["builtin-zstd"] }

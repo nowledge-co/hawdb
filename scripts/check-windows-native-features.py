@@ -82,7 +82,7 @@ for name, initial, development in [
     ("facade_all", features["hawdb"], True),
     ("facade_default", ["default"], True),
     ("facade_test_support", ["default", "test-support"], True),
-    ("facade_minimal", [], True),
+    ("facade_minimal", ["builtin-zstd"], True),
     ("bindings", ["default"], False),
 ]:
     expected = expected_features({"hawdb": initial}, development)
@@ -92,7 +92,7 @@ for name, initial, development in [
 for name, initial, relevant in [
     ("search_all", {"hawdb-search": features["hawdb-search"]}, ["hawdb-search", "hawdb-storage", "hawdb-telemetry"]),
     ("storage_all", {"hawdb-storage": features["hawdb-storage"]}, ["hawdb-storage", "hawdb-telemetry"]),
-    ("component_default", {}, ["hawdb-storage", "hawdb-telemetry"]),
+    ("component_default", {"hawdb-storage": ["builtin-zstd"]}, ["hawdb-storage", "hawdb-telemetry"]),
 ]:
     expected = expected_features(initial, False)
     for package in relevant:

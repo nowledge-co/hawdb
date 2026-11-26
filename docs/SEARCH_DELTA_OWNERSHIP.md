@@ -55,7 +55,7 @@ The separate operation ledger governs those working allocations.
 
 ## Native decoder bound
 
-Pinned zstd 1.5.7 has a fixed DCtx allocation and a retained native input/output
+The built-in adapter's qualified zstd 1.5.7 and 1.6.0 have a fixed DCtx allocation and a retained native input/output
 allocation. Before the decoder sees each frame header, the operation reserves
 the workspace derived from that frame's window, block maximum and optional
 content size. A conservative 256-KiB context allowance precedes construction;
@@ -69,8 +69,16 @@ resizing frees the old input/output allocation before replacement; otherwise
 the admission remains at the maximum retained requirement until decoder drop.
 Requalify these bounds when upgrading the native dependency.
 
+Search obtains context and frame-buffer bounds from the process-selected
+compression provider. An injected provider must include its own bookkeeping and
+peak replacement ownership; the built-in constants are not imposed on it.
+The frame parser and checked progress are independent of the native Zstd ABI.
+
 Sources: [the pinned frame format](https://github.com/facebook/zstd/blob/v1.5.7/doc/zstd_compression_format.md)
-and [the pinned streaming decoder](https://github.com/facebook/zstd/blob/v1.5.7/lib/decompress/zstd_decompress.c).
+and [the 1.5.7 streaming decoder](https://github.com/facebook/zstd/blob/v1.5.7/lib/decompress/zstd_decompress.c).
+The 1.6.0 vendored decoder retains the same buffer-size formula and
+free-before-replacement behavior. See [ABI and memory requalification](ALLOCATORS.md#zstd-160-qualification-1988)
+for the dependency matrix, source comparison and regression owners.
 
 ## Verification and remaining scope
 

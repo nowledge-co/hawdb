@@ -1,0 +1,29 @@
+# Copyright 2026 Nowledge
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "hawdb-compression-consumer"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[features]
+host-zstd = ["dep:zstd"]
+builtin = ["hawdb/builtin-zstd", "hawdb-storage/builtin-zstd"]
+persistence = []
+
+[dependencies]
+hawdb = { path = "../..", default-features = false, features = ["full-text-search"] }
+hawdb-storage = { path = "../../crates/storage", default-features = false }
+zstd = { version = "=0.14.5", optional = true }
+
+[[test]]
+name = "consumer"
+path = "consumer.rs"
+
+[[bin]]
+name = "persistence"
+path = "persistence.rs"
+required-features = ["persistence"]

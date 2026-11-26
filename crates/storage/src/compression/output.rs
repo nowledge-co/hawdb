@@ -29,7 +29,13 @@ impl AdmittedCompressionOutput {
     ) -> Result<Self, CheckpointWorkError> {
         // Include the existing streaming/header slack above compressBound.
         // Exceeding this fixed capacity fails before authority publication.
-        let capacity = zstd::zstd_safe::compress_bound(input_len)
+        let capacity = super::backend::compress_bound(input_len)
+            .map_err(|error| {
+                work.record_failure(CheckpointWorkError::Allocation {
+                    bytes: input_len as u64,
+                    reason: error.to_string(),
+                })
+            })?
             .checked_add(input_len / (64 * 1024) * 32)
             .and_then(|bytes| bytes.checked_add(1024))
             .ok_or_else(|| {

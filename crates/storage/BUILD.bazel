@@ -19,7 +19,7 @@ rust_library(
     name = "hawdb_storage",
     crate_name = "hawdb_storage",
     crate_root = "src/lib.rs",
-    crate_features = windows_native_features("hawdb-storage", ["artifact-mmap"]),
+    crate_features = windows_native_features("hawdb-storage", ["artifact-mmap", "builtin-zstd"]),
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
     aliases = aliases(),
@@ -35,7 +35,7 @@ rust_library(
 
 rust_test(
     name = "hawdb_storage_tests",
-    crate_features = windows_native_features("hawdb-storage", ["artifact-mmap"]),
+    crate_features = windows_native_features("hawdb-storage", ["artifact-mmap", "builtin-zstd"]),
     # Storage recovery coverage runs concurrently with the crate matrix in CI.
     # Its measured tail exceeds Bazel's 300-second default under contention.
     size = "large",
