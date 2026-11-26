@@ -54,6 +54,43 @@ fn build_graphs(name: &str, documents: &[SearchDocument], content_documents: usi
     build_content(name, documents, Some(true), None, content_documents)
 }
 
+/// One graph per `content_documents` documents under `distance`.
+#[cfg(feature = "vector-search")]
+fn build_graphs_with_metric(
+    name: &str,
+    documents: &[SearchDocument],
+    content_documents: usize,
+    distance: hawdb_core::VectorDistance,
+) -> PathBuf {
+    build_content(
+        name,
+        documents,
+        Some(true),
+        Some(distance),
+        content_documents,
+    )
+}
+
+/// Three text-adjacent graphs with a last-graph neighborhood for the bounded
+/// segment controls.
+#[cfg(feature = "vector-search")]
+fn result_bound_documents(rows: usize) -> Vec<SearchDocument> {
+    corpus(3 * rows)
+        .into_iter()
+        .enumerate()
+        .map(|(number, document)| SearchDocument {
+            embedding: Some({
+                let mut vector = embedding(number);
+                if number >= 3 * rows - 400 {
+                    vector[0] += 4.0;
+                }
+                vector
+            }),
+            ..document
+        })
+        .collect()
+}
+
 fn build_with(
     name: &str,
     documents: &[SearchDocument],
@@ -909,21 +946,7 @@ fn segmented_graphs_share_a_result_bound_without_losing_results() {
     // Three graphs above the small-domain scan limit of the default beam, with
     // the last one alone holding the neighbors of the final queries.
     const ROWS: usize = 2950;
-    let template = corpus(3 * ROWS);
-    let documents: Vec<_> = template
-        .into_iter()
-        .enumerate()
-        .map(|(number, document)| SearchDocument {
-            embedding: Some({
-                let mut vector = embedding(number);
-                if number >= 3 * ROWS - 400 {
-                    vector[0] += 4.0;
-                }
-                vector
-            }),
-            ..document
-        })
-        .collect();
+    let documents = result_bound_documents(ROWS);
     let root = build_graphs("vector-result-bound", &documents, ROWS);
     let reader = SearchOutOfCoreReader::open(&root).unwrap();
     let search = |query: &[f32], limit, space: Option<&str>| {
@@ -977,6 +1000,78 @@ fn segmented_graphs_share_a_result_bound_without_losing_results() {
         );
     }
     assert!(bounded * 20 < unbounded * 19, "{bounded} {unbounded}");
+    drop(reader);
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// The shared bound also follows Euclidean raw distances. The projection score
+/// encoding is metric-specific, so this control compares a three-graph L2 store
+/// with brute force and records that the later layer receives a bound.
+#[cfg(feature = "vector-search")]
+#[test]
+fn segmented_graphs_share_an_euclidean_result_bound_without_losing_results() {
+    const ROWS: usize = 2950;
+    let documents = result_bound_documents(ROWS);
+    let root = build_graphs_with_metric(
+        "vector-result-bound-l2",
+        &documents,
+        ROWS,
+        hawdb_core::VectorDistance::Euclidean,
+    );
+    let reader = SearchOutOfCoreReader::open(&root).unwrap();
+    let search = |query: &[f32], limit| {
+        reader
+            .search_with_options_compressed_vector_projection_execution_options(
+                "",
+                Some(query),
+                SearchMode::Vector,
+                options(limit, None),
+                crate::CompressedVectorSearchMode::Disabled,
+                VectorSearchExecutionOptions::default(),
+            )
+            .unwrap()
+    };
+    let (mut bounded, mut unbounded) = (0, 0);
+    for number in 0..8 {
+        let mut query = embedding(20_000 + number);
+        if number >= 6 {
+            query[0] += 4.0;
+        }
+        crate::out_of_core::vector_serving::RESULT_BOUNDS.with_borrow_mut(Vec::clear);
+        let narrow = search(&query, 10);
+        if number == 0 {
+            let bounds = crate::out_of_core::vector_serving::RESULT_BOUNDS.take();
+            assert_eq!(
+                bounds.iter().map(|bound| bound.0).collect::<Vec<_>>(),
+                [0, 1, 2]
+            );
+            assert!(
+                bounds[2].1.is_some(),
+                "the earlier L2 graphs fill the retained page"
+            );
+        }
+        assert_eq!(
+            hits(&narrow),
+            reference_with(
+                hawdb_core::VectorDistance::Euclidean,
+                &documents,
+                &query,
+                |_| true,
+                10,
+            )
+        );
+        let report = vector_report(&narrow);
+        assert_eq!(report.candidate_scan_segment_count, 3);
+        let wide = search(&query, 128);
+        assert_eq!(hits(&wide)[..10], hits(&narrow));
+        assert!(
+            report.candidate_scan_scored_document_count
+                <= vector_report(&wide).candidate_scan_scored_document_count
+        );
+        bounded += report.candidate_scan_scored_document_count;
+        unbounded += vector_report(&wide).candidate_scan_scored_document_count;
+    }
+    assert!(bounded <= unbounded, "{bounded} {unbounded}");
     drop(reader);
     fs::remove_dir_all(root).unwrap();
 }

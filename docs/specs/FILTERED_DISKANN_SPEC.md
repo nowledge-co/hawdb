@@ -44,8 +44,9 @@ candidate window is a floor for the beam.
 
 The graphs of a segmented generation are searched in layer order and share a
 result bound (#1918). Once earlier graphs returned as many hits as the query
-keeps (its rank window or limit), the raw distance of the worst of them bounds
-each later unfiltered graph. That graph may end its traversal when all of these hold:
+keeps (its rank window or page window, `offset + limit`), the raw distance of
+the worst of them bounds each later unfiltered graph. That graph may end its
+traversal when all of these hold:
 the nearest quarter of its beam, at least 64 candidates, is expanded; the
 nearest unexpanded candidate is more than 1.2 times as far as the bound (chord
 length for cosine); the nearest candidate found is within that reach, so the
@@ -55,6 +56,9 @@ traversal and every spread-probe decision are unchanged. Work is charged per
 vector as before, and admission still covers the full beam. Only visible
 results bound later graphs: each layer's allowlist excludes superseded and
 deleted versions, and a hidden hit is refused before its distance is kept.
+A graph with any superseded or deleted version keeps a partial allowlist and
+is searched through the filtered path, so its own traversal is not shortened
+by the bound; only a graph whose every ordinal is visible is bounded.
 Reported scores stay exact.
 
 Results are deterministic for one generation, but they depend on layer order.

@@ -77,6 +77,17 @@ pub(super) enum Projection {
     DiskAnn(Box<diskann::GraphProjection<()>>),
     AdmittedDiskAnn(Box<diskann::GraphProjection<ReaderMemory>>),
 }
+
+/// The candidate score a graph projection reports for a raw distance.
+/// DiskANN layers report cosine as `1 - distance` and Euclidean as
+/// `-(distance * distance)`; both preserve distance ordering.
+pub(super) fn projection_score(metric: hawdb_core::VectorDistance, distance: f64) -> f64 {
+    match metric {
+        hawdb_core::VectorDistance::Cosine => 1.0 - distance,
+        hawdb_core::VectorDistance::Euclidean => -distance * distance,
+    }
+}
+
 impl Projection {
     pub(super) fn is_diskann(&self) -> bool {
         matches!(self, Self::DiskAnn(_) | Self::AdmittedDiskAnn(_))
@@ -90,6 +101,16 @@ impl Projection {
             Self::AdmittedDiskAnn(value) => value.metric(),
             Self::Ordinary(value) => value.manifest().metric.into(),
             Self::Admitted(value) => value.manifest().metric.into(),
+        }
+    }
+
+    /// Recover the raw graph distance from a projection score. This is the
+    /// inverse of [`projection_score`] and exists because a later segment graph
+    /// needs the distances of the results an earlier graph returned.
+    pub(super) fn distance_from_score(&self, score: f64) -> f64 {
+        match self.metric() {
+            hawdb_core::VectorDistance::Cosine => 1.0 - score,
+            hawdb_core::VectorDistance::Euclidean => (-score).sqrt(),
         }
     }
 

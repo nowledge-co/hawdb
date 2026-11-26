@@ -171,10 +171,7 @@ impl<R> GraphProjection<R> {
                 .into_iter()
                 .map(|hit| ProjectionHit {
                     id: hit.id,
-                    score: match self.metric() {
-                        hawdb_core::VectorDistance::Cosine => 1.0 - hit.distance,
-                        hawdb_core::VectorDistance::Euclidean => -hit.distance * hit.distance,
-                    },
+                    score: projection_score(self.metric(), hit.distance),
                 })
                 .collect(),
             report: ProjectionSearchReport {
