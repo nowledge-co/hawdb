@@ -174,6 +174,7 @@ mod published_object_verification;
 mod qos_admission_refusals;
 mod query_execution;
 mod query_observability;
+mod race;
 mod read_transactions;
 mod relational_access_cost;
 mod relational_checkpoint_format;
