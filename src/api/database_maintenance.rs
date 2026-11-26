@@ -288,6 +288,16 @@ impl Database {
         if self.runtime.get()?.store.wal_sync_group_active() {
             return Ok(());
         }
+        // A schema change that only rewrites empty tables is durable in the
+        // WAL; the next ordinary checkpoint publishes it (#1942).
+        if self
+            .runtime
+            .get()?
+            .store
+            .relational_row_schema_checkpoint_can_wait()
+        {
+            return Ok(());
+        }
         // A deferred checkpoint is retried by explicit, automatic and
         // recovery checkpoints, not by every commit (#1593).
         if self

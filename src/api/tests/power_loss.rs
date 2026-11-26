@@ -1476,6 +1476,21 @@ fn batched_system_schema_registries_are_whole_or_absent_across_power_loss() {
                 .describe_branch(BranchSelector::Name("main".into()))
                 .unwrap()
                 .id;
+            // The batch's tables are new and empty: its commit publishes no
+            // schema checkpoint. The first rows in them run it (#1942).
+            let applied_epoch = database.commit_epoch().unwrap() + 1;
+            database
+                .apply_system_schema_registries(&system_schema_batch())
+                .unwrap();
+            assert_eq!(
+                database
+                    .storage_reclamation_watermark()
+                    .unwrap()
+                    .checkpoint_commit_epoch,
+                Some(applied_epoch - 1),
+                "{mode:?} {durability:?}: the batch must not checkpoint"
+            );
+            let after_batch = fixture.model.capture().unwrap();
             fixture
                 .model
                 .observe(ObservationPoint {
@@ -1489,15 +1504,6 @@ fn batched_system_schema_registries_are_whole_or_absent_across_power_loss() {
                     keep_last: false,
                 })
                 .unwrap();
-            database
-                .apply_system_schema_registries(&system_schema_batch())
-                .unwrap();
-            fixture.model.capture().unwrap();
-            let during_checkpoint = fixture
-                .model
-                .take_observation()
-                .unwrap()
-                .expect("the batch schema checkpoint must replace the branch head");
             let mut transaction = database.begin_transaction().unwrap();
             for ordinal in 0..SYSTEM_SCHEMA_BATCH_OWNERS {
                 transaction
@@ -1507,33 +1513,52 @@ fn batched_system_schema_registries_are_whole_or_absent_across_power_loss() {
                     .unwrap();
             }
             transaction.commit().unwrap();
-            let after_tail = fixture.model.capture().unwrap();
+            fixture.model.capture().unwrap();
+            let during_checkpoint = fixture
+                .model
+                .take_observation()
+                .unwrap()
+                .expect("the deferred schema checkpoint must replace the branch head");
+            let after_checkpoint = fixture.model.capture().unwrap();
             drop(database);
 
+            // Before the checkpoint only the WAL holds the batch: an
+            // unsynchronized one may be lost under SyncOnCheckpoint, as any
+            // commit, but never torn.
+            for plan in [CrashPlan::default(), after_batch.persist_all_plan()] {
+                let root = fixture.image(&after_batch, &plan);
+                let mut recovered = open(&root);
+                let applied = assert_system_schema_batch_atomic(&mut recovered, false);
+                if durability == DurabilityPolicy::SyncOnEveryWrite
+                    || plan == after_batch.persist_all_plan()
+                {
+                    assert!(applied, "{mode:?} {durability:?} {plan:?}");
+                }
+            }
             for plan in publication_fault_plans(&during_checkpoint) {
                 let root = fixture.image(&during_checkpoint, &plan);
                 let mut recovered = open(&root);
-                let applied = assert_system_schema_batch_atomic(&mut recovered, false);
+                let applied = assert_system_schema_batch_atomic(&mut recovered, true);
                 if durability == DurabilityPolicy::SyncOnEveryWrite {
                     assert!(applied, "{mode:?} {plan:?}");
-                }
-            }
-            for plan in [CrashPlan::default(), after_tail.persist_all_plan()] {
-                let root = fixture.image(&after_tail, &plan);
-                let mut recovered = open(&root);
-                // The batch's schema checkpoint completed before the tail.
-                assert!(
-                    assert_system_schema_batch_atomic(&mut recovered, true),
-                    "{mode:?} {durability:?} {plan:?}"
-                );
-                if durability == DurabilityPolicy::SyncOnEveryWrite
-                    || plan == after_tail.persist_all_plan()
-                {
                     assert_eq!(
                         system_schema_batch_ids(&mut recovered, 0, "tail"),
                         vec!["tail".to_string()]
                     );
                 }
+            }
+            for plan in [CrashPlan::default(), after_checkpoint.persist_all_plan()] {
+                let root = fixture.image(&after_checkpoint, &plan);
+                let mut recovered = open(&root);
+                // The completed checkpoint holds the batch and the tail.
+                assert!(
+                    assert_system_schema_batch_atomic(&mut recovered, true),
+                    "{mode:?} {durability:?} {plan:?}"
+                );
+                assert_eq!(
+                    system_schema_batch_ids(&mut recovered, 0, "tail"),
+                    vec!["tail".to_string()]
+                );
             }
         }
     }

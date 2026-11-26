@@ -338,9 +338,15 @@ impl GraphStore {
     fn relational_live_overlay_debt(&self) -> RelationalLiveOverlayDebt {
         let count = |value: usize| u64::try_from(value).unwrap_or(u64::MAX);
         let mut debt = RelationalLiveOverlayDebt::default();
+        // A waiting schema rewrite holds the overlay a live view would (#1942).
         if let Some(view) = self
             .relational_row_pages
             .current_read_view(self.commit_epoch)
+            .or_else(|| {
+                self.relational_row_pages
+                    .current_waiting_schema_rewrite(self.commit_epoch)
+                    .map(|rewrite| &rewrite.view)
+            })
         {
             let limits = self.relational_row_pages.live_limits;
             debt.row_entries = count(view.live_entry_count());

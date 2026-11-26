@@ -1869,6 +1869,8 @@ fn wal_group_commit_shares_one_sync_without_changing_record_order() {
     database
         .query_sql("CREATE TABLE public.messages (id BIGINT PRIMARY KEY, body TEXT NOT NULL)")
         .unwrap();
+    // DDL on an empty table no longer checkpoints in its commit (#1942).
+    database.checkpoint().unwrap();
     let branch = super::test_main_branch_directory(&path).unwrap();
     let first_user_lsn = hawdb_storage::branch_head::read_branch_head(&branch.join("branch.head"))
         .unwrap()

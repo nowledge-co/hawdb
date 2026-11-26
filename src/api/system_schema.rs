@@ -210,9 +210,11 @@ impl Database {
     /// before any write. The pending migrations of all owners are then staged,
     /// in slice order, in one transaction and published by one WAL commit, so
     /// either every registry reaches its current version or none advances.
-    /// A schema commit requires a canonical row checkpoint before out-of-core
-    /// reads may serve the changed tables; one commit pays it once rather
-    /// than once per registry (#1942).
+    /// A schema commit that rewrites existing rows runs a canonical row
+    /// checkpoint before returning; one commit pays it once rather than once
+    /// per registry. New empty tables and their indexes leave it to the next
+    /// ordinary checkpoint, or to the first commit that writes a row to one
+    /// of them (#1942).
     ///
     /// Reports are returned in slice order. The engine registry is applied
     /// first, in its own transaction, when it is pending.

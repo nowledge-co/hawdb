@@ -173,6 +173,8 @@ fn assert_checkpoint_artifacts_bounded(background_maintenance: bool) {
             Ok(())
         })
         .unwrap();
+    // DDL on an empty table no longer checkpoints in its commit (#1942).
+    handle.checkpoint().unwrap();
     let mut history = Vec::new();
     let mut previous_head = head_root_digest(&graph);
     for round in 0..ROUNDS {

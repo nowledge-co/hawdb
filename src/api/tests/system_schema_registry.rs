@@ -925,6 +925,12 @@ fn checkpoint_generation(db: &Database) -> u64 {
         crate::RelationalRowPageRecoveryStatus::CheckpointReady { generation, .. } => *generation,
         crate::RelationalRowPageRecoveryStatus::LiveCurrent {
             base_generation, ..
+        }
+        | crate::RelationalRowPageRecoveryStatus::LiveUnavailable {
+            base_generation, ..
+        }
+        | crate::RelationalRowPageRecoveryStatus::WalRecovered {
+            base_generation, ..
         } => *base_generation,
         status => panic!("expected a current canonical row checkpoint, got {status:?}"),
     }
@@ -975,8 +981,14 @@ fn kind_ids(db: &mut Database, table: &str, kind: &str) -> Vec<String> {
     ids
 }
 
+fn schema_checkpoint_waits(db: &Database) -> bool {
+    let runtime = db.runtime.get().unwrap();
+    runtime.store.relational_row_schema_checkpoint_required()
+        && runtime.store.relational_row_schema_checkpoint_can_wait()
+}
+
 #[test]
-fn batched_system_schema_registries_publish_one_commit_and_one_checkpoint() {
+fn batched_system_schema_registries_publish_one_commit_and_no_checkpoint() {
     const REGISTRIES: usize = 6;
     let path = unique_test_dir("batched_system_schema_registries");
     let registries = batch_registries(REGISTRIES);
@@ -988,21 +1000,15 @@ fn batched_system_schema_registries_publish_one_commit_and_one_checkpoint() {
 
         let reports = db.apply_system_schema_registries(&registries).unwrap();
 
-        // N new-table registries cost one WAL commit and one schema
-        // checkpoint, not N of each.
+        // N registries cost one WAL commit. Their tables are new and empty,
+        // so none waits for a canonical row checkpoint (#1942).
         assert_eq!(db.commit_epoch().unwrap(), epoch_before + 1);
         assert_eq!(
             checkpoint_generation(&db),
-            generation_before + step,
-            "batched registries must publish exactly one checkpoint"
+            generation_before,
+            "empty-table registries must not publish a checkpoint"
         );
-        assert!(matches!(
-            db.runtime.get().unwrap().store.relational_row_page_recovery_status(),
-            crate::RelationalRowPageRecoveryStatus::CheckpointReady {
-                source_commit_epoch,
-                ..
-            } if *source_commit_epoch == epoch_before + 1
-        ));
+        assert!(schema_checkpoint_waits(&db));
         assert_eq!(reports.len(), REGISTRIES);
         for (ordinal, report) in reports.iter().enumerate() {
             assert_eq!(report.owner, format!("batch.owner{ordinal}"));
@@ -1013,26 +1019,14 @@ fn batched_system_schema_registries_publish_one_commit_and_one_checkpoint() {
             assert_eq!(report.commit_epoch_after, epoch_before + 1);
         }
 
-        for ordinal in 0..REGISTRIES {
-            db.query_sql(&format!(
-                "INSERT INTO batch_{ordinal} (id, kind, n) VALUES ('a', 'k', 1), ('b', 'other', 2), ('c', 'k', 3)"
-            ))
-            .unwrap();
-            assert_eq!(
-                kind_ids(&mut db, &format!("batch_{ordinal}"), "k"),
-                vec!["a", "c"]
-            );
-        }
-
-        // The same registries one owner at a time pay one checkpoint each.
-        let generation = checkpoint_generation(&db);
+        // One owner at a time pays no checkpoint either.
         for registry in batch_registries(REGISTRIES + 2).iter().skip(REGISTRIES) {
             db.apply_system_schema_registry(registry).unwrap();
         }
-        assert_eq!(checkpoint_generation(&db), generation + 2 * step);
+        assert_eq!(checkpoint_generation(&db), generation_before);
+        assert!(schema_checkpoint_waits(&db));
 
         // A current batch neither commits nor checkpoints.
-        let generation = checkpoint_generation(&db);
         let epoch = db.commit_epoch().unwrap();
         let reports = db.apply_system_schema_registries(&registries).unwrap();
         assert!(reports
@@ -1040,24 +1034,196 @@ fn batched_system_schema_registries_publish_one_commit_and_one_checkpoint() {
             .all(|report| report.applied_versions.is_empty()
                 && report.commit_epoch_before == report.commit_epoch_after));
         assert_eq!(db.commit_epoch().unwrap(), epoch);
-        assert_eq!(checkpoint_generation(&db), generation);
-    }
-    {
-        let mut db = Database::open(&path).unwrap();
-        let epoch = db.commit_epoch().unwrap();
-        let reports = db.apply_system_schema_registries(&registries).unwrap();
-        assert!(reports
-            .iter()
-            .all(|report| report.applied_versions.is_empty()));
-        assert_eq!(db.commit_epoch().unwrap(), epoch);
+        assert_eq!(checkpoint_generation(&db), generation_before);
+
+        // The first row in a new table publishes every deferred schema in
+        // one checkpoint; later rows use the live view again.
         for ordinal in 0..REGISTRIES {
+            db.query_sql(&format!(
+                "INSERT INTO batch_{ordinal} (id, kind, n) VALUES ('a', 'k', 1), ('b', 'other', 2), ('c', 'k', 3)"
+            ))
+            .unwrap();
+            assert!(!db
+                .runtime
+                .get()
+                .unwrap()
+                .store
+                .relational_row_schema_checkpoint_required());
+            assert_eq!(checkpoint_generation(&db), generation_before + step);
             assert_eq!(
                 kind_ids(&mut db, &format!("batch_{ordinal}"), "k"),
                 vec!["a", "c"]
             );
         }
     }
+    {
+        let mut db = Database::open(&path).unwrap();
+        let generation = checkpoint_generation(&db);
+        let epoch = db.commit_epoch().unwrap();
+        let reports = db.apply_system_schema_registries(&registries).unwrap();
+        assert!(reports
+            .iter()
+            .all(|report| report.applied_versions.is_empty()));
+        assert_eq!(db.commit_epoch().unwrap(), epoch);
+        assert_eq!(checkpoint_generation(&db), generation);
+        for ordinal in 0..REGISTRIES {
+            assert_eq!(
+                kind_ids(&mut db, &format!("batch_{ordinal}"), "k"),
+                vec!["a", "c"]
+            );
+        }
+        for ordinal in REGISTRIES..REGISTRIES + 2 {
+            assert_eq!(
+                owner_versions(&mut db, &format!("batch.owner{ordinal}")),
+                vec![1]
+            );
+        }
+    }
     std::fs::remove_dir_all(path).unwrap();
+}
+
+const DEFERRED_SCHEMA_CRASH_CHILD_ENV: &str = "HAWDB_TEST_DEFERRED_SCHEMA_CRASH_CHILD";
+
+#[test]
+fn deferred_system_schema_crash_child() {
+    if std::env::var_os(DEFERRED_SCHEMA_CRASH_CHILD_ENV).is_none() {
+        return;
+    }
+    let path = std::path::PathBuf::from(
+        std::env::var_os(SYSTEM_SCHEMA_CRASH_PATH_ENV)
+            .expect("deferred system schema crash test database path"),
+    );
+    let point = std::env::var("HAWDB_TEST_PROCESS_CRASH_POINT")
+        .expect("deferred system schema crash test point");
+    let mut db = Database::open(&path).unwrap();
+    for registry in batch_registries(3) {
+        db.apply_system_schema_registry(&registry).unwrap();
+    }
+    // A row in another table keeps the checkpoint waiting.
+    db.query_sql("INSERT INTO content_documents (id, body) VALUES ('doc-2', 'body')")
+        .unwrap();
+    assert!(schema_checkpoint_waits(&db));
+    if point == "after_deferred_schema" {
+        // The process dies with the schema only in the WAL.
+        std::process::exit(86);
+    }
+    // The first rows in the new tables run the deferred checkpoint, which
+    // the failpoint interrupts.
+    let mut transaction = db.begin_transaction().unwrap();
+    for ordinal in 0..3 {
+        transaction
+            .query_sql(&format!(
+                "INSERT INTO batch_{ordinal} (id, kind) VALUES ('before-crash', 'k')"
+            ))
+            .unwrap();
+    }
+    transaction.commit().unwrap();
+    panic!("deferred system schema crash failpoint {point} did not terminate the child process");
+}
+
+#[test]
+fn deferred_system_schema_survives_a_process_crash_and_replay() {
+    for stage in [
+        "after_deferred_schema",
+        "during_checkpoint_publication",
+        "after_manifest_publication",
+    ] {
+        let path = unique_test_dir(&format!("deferred_system_schema_crash_{stage}"));
+        {
+            let mut db = Database::open(&path).unwrap();
+            db.apply_system_schema_registry(&registry_v1()).unwrap();
+            db.query_sql("INSERT INTO content_documents (id, body) VALUES ('doc-1', 'body')")
+                .unwrap();
+            db.checkpoint().unwrap();
+        }
+
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("api::tests::system_schema_registry::deferred_system_schema_crash_child")
+            .arg("--nocapture")
+            .env(DEFERRED_SCHEMA_CRASH_CHILD_ENV, "1")
+            .env(SYSTEM_SCHEMA_CRASH_PATH_ENV, &path)
+            .env("HAWDB_TEST_PROCESS_CRASH_POINT", stage)
+            .status()
+            .unwrap();
+        assert_eq!(
+            status.code(),
+            Some(86),
+            "child did not terminate at {stage}"
+        );
+
+        let before_crash: &[&str] = if stage == "after_deferred_schema" {
+            &[]
+        } else {
+            &["before-crash"]
+        };
+        // Read-only replay serves the recovered tables and rows from the WAL
+        // over the last completed checkpoint.
+        let mut read_only = Database::open_with_config(
+            &path,
+            DatabaseConfig {
+                read_only: true,
+                recovery_mode: crate::RecoveryMode::Strict,
+                ..DatabaseConfig::default()
+            },
+        )
+        .unwrap();
+        for ordinal in 0..3 {
+            assert_eq!(
+                kind_ids(&mut read_only, &format!("batch_{ordinal}"), "k"),
+                before_crash,
+                "{stage}"
+            );
+        }
+        drop(read_only);
+
+        for round in 0..2 {
+            let mut reopened = Database::open(&path).unwrap();
+            // Writable recovery publishes the replayed schema.
+            assert!(
+                !reopened
+                    .runtime
+                    .get()
+                    .unwrap()
+                    .store
+                    .relational_row_schema_checkpoint_required(),
+                "{stage}"
+            );
+            assert_eq!(
+                owner_versions(&mut reopened, "nowledge.content_store"),
+                vec![1]
+            );
+            let documents = reopened
+                .query_sql("SELECT id FROM content_documents")
+                .unwrap()
+                .rows
+                .len();
+            assert_eq!(documents, 2, "{stage}");
+            for ordinal in 0..3 {
+                let table = format!("batch_{ordinal}");
+                assert_eq!(
+                    owner_versions(&mut reopened, &format!("batch.owner{ordinal}")),
+                    vec![1],
+                    "{stage}"
+                );
+                if round == 0 {
+                    reopened
+                        .query_sql(&format!(
+                            "INSERT INTO {table} (id, kind) VALUES ('after-crash', 'k')"
+                        ))
+                        .unwrap();
+                }
+                let mut expected = vec!["after-crash"];
+                expected.extend_from_slice(before_crash);
+                assert_eq!(
+                    kind_ids(&mut reopened, &table, "k"),
+                    expected,
+                    "{stage} round {round}"
+                );
+            }
+        }
+        std::fs::remove_dir_all(path).unwrap();
+    }
 }
 
 #[test]
