@@ -273,8 +273,9 @@ impl KeyMemory {
                 .saturating_mul(std::mem::size_of::<GroupKeyValue>()),
         )?;
         let mut values = Vec::with_capacity(items.len());
+        // One cancellation/deadline check per row is enough; repeating it per
+        // key adds an `Instant::now` for every ORDER BY/GROUP BY expression.
         for item in items {
-            runtime_checkpoint(task_context)?;
             if let Some(entity) = entity_group_key(&item.expression, binding) {
                 values.push(entity);
                 continue;
@@ -308,8 +309,9 @@ impl KeyMemory {
                 .saturating_mul(std::mem::size_of::<(Value, SortDirection)>()),
         )?;
         let mut values = Vec::with_capacity(items.len());
+        // One cancellation/deadline check per row is enough; repeating it per
+        // sort key adds an `Instant::now` for every ORDER BY expression.
         for item in items {
-            runtime_checkpoint(task_context)?;
             let value = match &item.key {
                 SortKey::Property { variable, property } => {
                     binding_property(binding, variable, property)

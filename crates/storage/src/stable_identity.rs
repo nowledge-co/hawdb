@@ -773,7 +773,7 @@ impl StableIdentityMappingReader {
                 content_digest: content_digest(&bytes),
                 representation: identity.representation,
             };
-            match cache.insert_page_verified(key, bytes) {
+            match cache.insert_page_verified_prehashed(key, bytes) {
                 Ok(_) => {}
                 Err(error)
                     if matches!(

@@ -1788,8 +1788,11 @@ fn sync_publication_directories(
             "injected immutable object directory sync failure",
         ));
     }
+    let destination_parent = destination.parent();
     crate::durability::sync_parent_directory(destination)?;
-    if let Some(staging_directory) = staging_directory {
+    if let Some(staging_directory) = staging_directory
+        && Some(staging_directory) != destination_parent
+    {
         crate::durability::sync_directory(staging_directory)?;
     }
     Ok(())

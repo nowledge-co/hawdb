@@ -398,12 +398,29 @@ impl SegmentCache {
     /// Admits an immutable physical page slot after its codec has verified both
     /// CRC32C and SHA-256. Raw public insertion never establishes this proof.
     /// Readers must still enforce their own identity, structure, and read limits.
+    /// Test-only checked admission. Production page readers derive the key
+    /// from the same verified bytes and use `insert_page_verified_prehashed`.
+    #[cfg(test)]
     pub(crate) fn insert_page_verified(
         &self,
         key: SegmentCacheKey,
         bytes: Vec<u8>,
     ) -> Result<SegmentCacheLease, SegmentCacheAdmissionError> {
         self.insert_checked(key, bytes, true)
+    }
+
+    /// Admits an immutable physical page whose key was derived from these
+    /// exact bytes by the caller.
+    ///
+    /// The page codec has already verified CRC32C and SHA-256. This variant
+    /// skips the cache's second full-buffer digest pass; callers must not use
+    /// it with a key obtained from a different buffer.
+    pub(crate) fn insert_page_verified_prehashed(
+        &self,
+        key: SegmentCacheKey,
+        bytes: Vec<u8>,
+    ) -> Result<SegmentCacheLease, SegmentCacheAdmissionError> {
+        self.insert_inner(key, bytes, None, true)
     }
 
     fn insert_checked(
@@ -851,6 +868,18 @@ mod tests {
             .insert(key(1, &exported), exported)
             .unwrap()
             .page_integrity_verified());
+    }
+
+    #[test]
+    fn prehashed_page_admission_retains_the_page_integrity_proof() {
+        let cache = SegmentCache::new(16);
+        let page = b"page";
+        let cache_key = key(1, page);
+        let lease = cache
+            .insert_page_verified_prehashed(cache_key, page.to_vec())
+            .unwrap();
+        assert!(lease.page_integrity_verified());
+        assert_eq!(&*lease, page);
     }
 
     #[test]

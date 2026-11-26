@@ -146,6 +146,27 @@ fn row_read_mode_delegates_host_snapshots_and_preserves_projection_selection() {
     fixture.remove();
 }
 
+#[test]
+fn virtual_vector_distance_preserves_fields_without_copying_the_row() {
+    let row = RelationalReadRow::from_projected(RelationalProjectedRow {
+        primary_key: key(1),
+        fields: vec![RelationalProjectedField {
+            ordinal: 0,
+            value: RelationalValue::BigInt(7),
+        }],
+    });
+    let row = row.with_vector_distance(1, 0.25);
+    assert_eq!(row.value(0).unwrap(), &RelationalValue::BigInt(7));
+    assert_eq!(
+        row.value(1).unwrap(),
+        &RelationalValue::DoublePrecision(0.25)
+    );
+    assert_eq!(
+        row.as_ref().value(1).unwrap(),
+        RelationalValueRef::DoublePrecision(0.25)
+    );
+}
+
 fn values(row: &RelationalReadRow, ordinals: &[usize]) -> Vec<RelationalValue> {
     for ordinal in 0..3 {
         assert_eq!(row.value(ordinal).is_ok(), ordinals.contains(&ordinal));
