@@ -14,6 +14,10 @@
 
 //! Qualify the pinned opaque dependency against the production capacity model.
 
+// The production formula uses Jieba's native TLS and allocation behavior.
+// Browser WASM omits Jieba entirely, so this native-only oracle does not apply.
+#![cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+
 #[path = "support/live_allocation.rs"]
 mod allocation;
 #[path = "../src/analyzer_workspace/bounds.rs"]

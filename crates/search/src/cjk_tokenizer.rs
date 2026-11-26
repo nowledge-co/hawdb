@@ -12,15 +12,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use jieba_rs::Jieba;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use std::sync::{Mutex, OnceLock};
 
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub(super) const ANALYZER_FORMAT_VERSION: &[u8] =
     b"hawdb-search-analyzer-v3-jieba-0.11.0-search-han-ngrams";
 
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(super) const ANALYZER_FORMAT_VERSION: &[u8] =
+    b"hawdb-search-analyzer-v3-no-jieba-search-han-ngrams";
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 static CHINESE_TOKENIZER: OnceLock<Jieba> = OnceLock::new();
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 static DICTIONARY_INITIALIZATION: Mutex<()> = Mutex::new(());
 
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 fn chinese_tokenizer() -> super::Result<&'static Jieba> {
     if let Some(tokenizer) = CHINESE_TOKENIZER.get() {
         return Ok(tokenizer);
@@ -40,7 +50,7 @@ fn chinese_tokenizer() -> super::Result<&'static Jieba> {
         .expect("dictionary was published under its initialization lock"))
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
 pub(super) fn chinese_search_tokens(text: &str) -> Vec<String> {
     if !text.chars().any(is_han_search_char) {
         return Vec::new();
@@ -54,6 +64,12 @@ pub(super) fn chinese_search_tokens(text: &str) -> Vec<String> {
         .collect()
 }
 
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+pub(super) fn chinese_search_tokens(_text: &str) -> Vec<String> {
+    Vec::new()
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub(super) fn visit_chinese_search_tokens_with_workspace<'a>(
     text: &'a str,
     workspace: Option<&crate::analyzer_workspace::Workspace>,
@@ -82,6 +98,16 @@ pub(super) fn visit_chinese_search_tokens_with_workspace<'a>(
     Ok(())
 }
 
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(super) fn visit_chinese_search_tokens_with_workspace<'a>(
+    _text: &'a str,
+    _workspace: Option<&crate::analyzer_workspace::Workspace>,
+    _emit: impl FnMut(&'a str) -> super::Result<()>,
+) -> super::Result<()> {
+    Ok(())
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub(super) fn prime_workspace(text: &str) -> super::Result<()> {
     // An unknown two-Han word forces the pinned analyzer TLS to initialize on
     // this worker. The private dictionary is immutable; fail closed if a future
@@ -93,6 +119,11 @@ pub(super) fn prime_workspace(text: &str) -> super::Result<()> {
         ));
     }
     drop(tokenizer.cut_for_search(text, true));
+    Ok(())
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(super) fn prime_workspace(_text: &str) -> super::Result<()> {
     Ok(())
 }
 
@@ -151,5 +182,31 @@ mod tests {
         for ch in ['\u{3042}', '\u{30A2}', '\u{AC00}'] {
             assert!(is_cjk_search_char(ch));
         }
+    }
+
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[test]
+    fn browser_fallback_keeps_han_ngrams_without_jieba() {
+        assert_eq!(
+            ANALYZER_FORMAT_VERSION,
+            &b"hawdb-search-analyzer-v3-no-jieba-search-han-ngrams"[..]
+        );
+        let mut tokens = crate::TokenSequence::default();
+        crate::push_cjk_ngram_tokens(
+            &mut tokens,
+            "\u{6570}\u{636e}\u{5e93}",
+            &crate::SearchAnalyzerLexicon::default(),
+        );
+        let tokens = tokens.into_vec();
+        for expected in ["\u{6570}\u{636e}", "\u{636e}\u{5e93}"] {
+            assert!(tokens.iter().any(|token| token == expected), "{tokens:?}");
+        }
+        let mut emitted = Vec::new();
+        visit_chinese_search_tokens_with_workspace("\u{6570}\u{636e}\u{5e93}", None, |token| {
+            emitted.push(token.to_owned());
+            Ok(())
+        })
+        .unwrap();
+        assert!(emitted.is_empty(), "{emitted:?}");
     }
 }

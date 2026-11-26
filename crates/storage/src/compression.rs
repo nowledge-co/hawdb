@@ -185,6 +185,7 @@ impl<W: Write> Write for Encoder<W> {
 pub struct Decoder<R> {
     reader: R,
     context: DecompressionContext,
+    // EOF is valid only after a complete frame, never before the first one.
     boundary: bool,
     failed: bool,
 }
@@ -204,7 +205,7 @@ impl<R: BufRead> Decoder<R> {
         Ok(Self {
             reader,
             context: DecompressionContext::with_work_context(Some(work))?,
-            boundary: true,
+            boundary: false,
             failed: false,
         })
     }
@@ -213,7 +214,7 @@ impl<R: BufRead> Decoder<R> {
         Ok(Self {
             reader,
             context: DecompressionContext::new()?,
-            boundary: true,
+            boundary: false,
             failed: false,
         })
     }

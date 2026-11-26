@@ -57,6 +57,7 @@ fn syntax_and_compiler_shape_match_the_pinned_construction_envelope() {
     visit(&hir, &mut observed);
     assert_eq!(observed, [HIR_NODES, CLASS_RANGES, UTF8_EDGES, 1]);
     assert_eq!(PATTERN.len(), REGEX_PATTERN_BYTES);
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     assert!(std::mem::size_of::<jieba_rs::Token<'_>>() <= 6 * WORD);
     assert!(std::mem::size_of::<State>() <= 4 * WORD);
     assert!(std::mem::size_of::<thompson::Transition>() <= 8);

@@ -9,23 +9,23 @@ use hawdb_plan_cache::{parameterize_logical_plan, LfuCache, ParameterBindingTemp
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 thread_local! {
     static TRACK: Cell<bool> = const { Cell::new(false) };
+    static LIVE: Cell<usize> = const { Cell::new(0) };
 }
-static LIVE: AtomicUsize = AtomicUsize::new(0);
 
 fn allocated(bytes: usize) {
     if TRACK.try_with(Cell::get).unwrap_or(false) {
-        LIVE.fetch_add(bytes, Ordering::Relaxed);
+        let _ = LIVE.try_with(|live| live.set(live.get().saturating_add(bytes)));
     }
 }
 
 fn deallocated(bytes: usize) {
     if TRACK.try_with(Cell::get).unwrap_or(false) {
-        LIVE.fetch_sub(bytes, Ordering::Relaxed);
+        let _ = LIVE.try_with(|live| live.set(live.get().saturating_sub(bytes)));
     }
 }
 
@@ -73,19 +73,19 @@ struct Window;
 
 impl Window {
     fn new() -> Self {
-        LIVE.store(0, Ordering::Relaxed);
-        TRACK.set(true);
+        LIVE.with(|live| live.set(0));
+        TRACK.with(|track| track.set(true));
         Self
     }
 
     fn retained(&self) -> usize {
-        LIVE.load(Ordering::Relaxed)
+        LIVE.with(Cell::get)
     }
 }
 
 impl Drop for Window {
     fn drop(&mut self) {
-        TRACK.set(false);
+        TRACK.with(|track| track.set(false));
     }
 }
 
@@ -314,4 +314,38 @@ fn charges_cover_actual_template_and_churn_allocations() {
         (maximum_retained, maximum_charged)
     };
     println!("churn retained_max={maximum_retained} charged_max={maximum_charged} budget=65536");
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct CollisionKey(u64);
+
+impl Hash for CollisionKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        0u64.hash(state);
+    }
+}
+
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn byte_budget_covers_bucket_allocation_after_tombstone_shrink_noop() {
+    // A replacement can leave the table sized for the old, tombstoned set.
+    // The charge must cover the allocation that actually remains, not the
+    // advertised capacity after removals lowered `capacity()`.
+    let budget = 12_808;
+    let window = Window::new();
+    let mut cache = LfuCache::<CollisionKey, Vec<u8>>::with_byte_limits(None, Some(budget), None);
+    for key in 0..112 {
+        assert!(cache.insert_weighted(CollisionKey(key), Vec::new(), 0));
+    }
+    assert!(cache.insert_weighted(CollisionKey(111), vec![0; 6000], 6000));
+
+    let retained = window.retained();
+    let charged = cache.charged_bytes().unwrap();
+    assert!(
+        retained <= charged,
+        "retained {retained} exceeds charged {charged}"
+    );
+    assert!(charged <= budget, "charged {charged} exceeds {budget}");
+    drop(cache);
+    assert_eq!(window.retained(), 0);
 }

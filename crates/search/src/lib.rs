@@ -73,6 +73,7 @@ mod bounded_file;
 mod build_control;
 mod build_memory;
 mod build_term;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 mod cjk_dictionary;
 mod cjk_tokenizer;
 #[cfg(test)]

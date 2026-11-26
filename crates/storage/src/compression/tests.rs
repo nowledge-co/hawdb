@@ -237,7 +237,7 @@ fn malformed_truncated_and_failed_sink_paths_release_workspaces() {
 #[test]
 fn short_magic_prefixes_report_incomplete_frame_and_release_context() {
     let magic = 0xfd2fb528u32.to_le_bytes();
-    for length in 1..magic.len() {
+    for length in 0..magic.len() {
         let (_, activity) = observe(None, || {
             let input = BufReader::with_capacity(1, &magic[..length]);
             let mut decoder = Decoder::with_buffer(input).unwrap();
