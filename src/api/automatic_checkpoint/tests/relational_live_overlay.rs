@@ -890,6 +890,8 @@ fn live_overlay_drains_publish_a_deferred_schema_checkpoint() {
                 resource: "automatic checkpoint capacity",
             }) if busy_retries < 32 => {
                 busy_retries += 1;
+                // Let the running drain make progress before retrying.
+                std::thread::sleep(Duration::from_millis(20));
                 continue;
             }
             Err(error) => panic!(
@@ -927,8 +929,9 @@ fn live_overlay_drains_publish_a_deferred_schema_checkpoint() {
 }
 
 /// A capacity refusal while the schema checkpoint is deferred is pre-WAL:
-/// it appends nothing, grows no overlay and keeps the schema waiting. After
-/// the drain the same update succeeds and the schema is published (#1942).
+/// it appends nothing, grows no overlay and keeps the schema waiting. The
+/// released automatic drain then publishes the schema without a host call,
+/// and the same update succeeds (#1942).
 #[test]
 fn capacity_refusal_with_a_deferred_schema_checkpoint_retries_after_the_drain() {
     let fixture = Fixture::new();
@@ -981,8 +984,17 @@ fn capacity_refusal_with_a_deferred_schema_checkpoint_retries_after_the_drain() 
     );
     assert_eq!(before, after, "refusal must not append WAL or publish data");
     assert_eq!(live_before, live_after, "refusal must not grow the overlay");
-    db.checkpoint().unwrap();
-    assert!(!schema_checkpoint_pending(&db).0);
+    // The released owner finishes its drain without a host call; that
+    // automatic checkpoint publishes the deferred schema.
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    while schema_checkpoint_pending(&db).0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the automatic drain must publish the deferred schema: {:?}",
+            db.automatic_checkpoint_report()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
     let query = "SELECT id, round, body FROM hot ORDER BY id";
     assert_round(db.query_sql(query).unwrap().rows, round - 1);
     update_round(&mut db, round).unwrap();
