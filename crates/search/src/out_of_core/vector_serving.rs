@@ -278,6 +278,13 @@ impl BoundedLayeredProjectionHits {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// `(layer, result bound)` passed to each searched projection layer.
+    pub(super) static RESULT_BOUNDS: std::cell::RefCell<Vec<(usize, Option<f64>)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// Distances of the nearest results that earlier layers returned, at most as
 /// many as the query keeps. Layers are visited in order, so the bound that a
 /// layer receives is deterministic.
@@ -1047,7 +1054,12 @@ impl SearchOutOfCoreReader {
                     vector_execution_options.navigation_beam(
                         candidate_limit.min(projection.manifest().document_count.max(1)),
                     ),
-                    result_distances.as_ref().and_then(NearestDistances::bound),
+                    {
+                        let bound = result_distances.as_ref().and_then(NearestDistances::bound);
+                        #[cfg(test)]
+                        RESULT_BOUNDS.with_borrow_mut(|bounds| bounds.push((layer, bound)));
+                        bound
+                    },
                 )
                 .map_err(RabitqScanError::projection)?;
             // Returned hits are covered by the separately retained candidate
@@ -1091,16 +1103,9 @@ impl SearchOutOfCoreReader {
             candidate_scan_kernel
                 .get_or_insert_with(|| projection_report.kernel.as_str().to_string());
             drop(allowlist);
-            if let Some(distances) = &mut result_distances
-                && projection.is_diskann()
-            {
-                distances.extend(output.hits.iter().map(|hit| match projection.metric() {
-                    hawdb_core::VectorDistance::Cosine => 1.0 - hit.score,
-                    hawdb_core::VectorDistance::Euclidean => (-hit.score).sqrt(),
-                }));
-            }
+            let mut hits = output.hits;
             if self.visibility.is_empty() {
-                for hit in output.hits {
+                for hit in &hits {
                     selected.push(LayeredProjectionHit {
                         layer,
                         ordinal: hit.id,
@@ -1111,7 +1116,7 @@ impl SearchOutOfCoreReader {
             } else {
                 self.retain_logical_projection_hits(
                     layer,
-                    output.hits,
+                    &mut hits,
                     &mut selected,
                     task_context,
                     metrics,
@@ -1119,6 +1124,18 @@ impl SearchOutOfCoreReader {
                 )?;
                 candidate_scan_admitted_working_bytes =
                     candidate_scan_admitted_working_bytes.max(selected.logical_id_bytes);
+            }
+            // Only visible results may bound later layers: a superseded or
+            // deleted version is closer than nothing. The layer's allowlist
+            // already excludes hidden ordinals, and the mapping above refuses
+            // any hidden hit before its distance is kept here.
+            if let Some(distances) = &mut result_distances
+                && projection.is_diskann()
+            {
+                distances.extend(hits.iter().map(|hit| match projection.metric() {
+                    hawdb_core::VectorDistance::Cosine => 1.0 - hit.score,
+                    hawdb_core::VectorDistance::Euclidean => (-hit.score).sqrt(),
+                }));
             }
         }
 
@@ -1315,7 +1332,7 @@ impl SearchOutOfCoreReader {
     fn retain_logical_projection_hits(
         &self,
         layer: usize,
-        mut hits: Vec<hawdb_vector_projection::ProjectionHit>,
+        hits: &mut [hawdb_vector_projection::ProjectionHit],
         selected: &mut BoundedLayeredProjectionHits,
         task_context: Option<&crate::RuntimeTaskContext>,
         metrics: &mut SearchOutOfCoreMetrics,
