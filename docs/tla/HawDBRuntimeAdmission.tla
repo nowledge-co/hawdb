@@ -11,6 +11,12 @@ EXTENDS Integers, Naturals, FiniteSets
 (* A request within capacity but above the uncommitted budget waits. A      *)
 (* capacity shrink does not revoke admitted work; it blocks further         *)
 (* admission, and an affected waiter terminates on its next retry.          *)
+(* Progress floor (#2003): with nothing admitted, a request within capacity *)
+(* is admitted even above the budget. The implementation further limits the *)
+(* floor to Foreground work that fits sensed availability; admitting every  *)
+(* such request here over-approximates it for the safety properties. The   *)
+(* model has no retained memory: the implementation's "no active permit"   *)
+(* is "nothing admitted" here, and retained bytes count toward capacity.    *)
 (***************************************************************************)
 
 CONSTANT MaxCapacity, Waiters
@@ -39,6 +45,10 @@ AdmittedBytes ==
 
 UncommittedBudget == budget - AdmittedBytes
 
+FloorAdmits(size) == AdmittedBytes = 0 /\ size <= capacity
+
+Admissible(size) == size <= UncommittedBudget \/ FloorAdmits(size)
+
 Init ==
     /\ capacity \in 0..MaxCapacity
     /\ budget \in 0..capacity
@@ -57,7 +67,7 @@ Submit(waiter, size) ==
     /\ status' =
         [status EXCEPT ![waiter] =
             IF size > capacity THEN "rejected"
-            ELSE IF size <= UncommittedBudget THEN "admitted"
+            ELSE IF Admissible(size) THEN "admitted"
             ELSE "waiting"]
     /\ UNCHANGED <<capacity, budget>>
 
@@ -65,7 +75,7 @@ Retry(waiter) ==
     /\ status[waiter] = "waiting"
     /\ IF requested[waiter] > capacity
           THEN status' = [status EXCEPT ![waiter] = "rejected"]
-          ELSE /\ requested[waiter] <= UncommittedBudget
+          ELSE /\ Admissible(requested[waiter])
                /\ status' = [status EXCEPT ![waiter] = "admitted"]
     /\ UNCHANGED <<capacity, budget, requested>>
 
@@ -150,6 +160,14 @@ AdmissionNeverCreatesCapacityOvercommit ==
 CapacityOvercommitNeverGrows ==
     [][AdmittedBytes > capacity
         => AdmittedBytes' <= AdmittedBytes]_vars
+
+(***************************************************************************)
+(* Only the progress floor admits above the budget, and only when nothing  *)
+(* else is admitted, so it never stacks a second over-budget reservation.  *)
+(***************************************************************************)
+BudgetOvercommitOnlyFromIdle ==
+    [][AdmittedBytes' > AdmittedBytes /\ AdmittedBytes' > budget'
+        => AdmittedBytes = 0]_vars
 
 Spec == Init /\ [][Next]_vars
 

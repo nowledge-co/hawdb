@@ -202,6 +202,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
 #[cfg(test)]
+mod admission_sizing_tests;
+#[cfg(test)]
 mod admission_wait_tests;
 #[cfg(test)]
 #[path = "embedded_store_app_read_snapshot_tests.rs"]
