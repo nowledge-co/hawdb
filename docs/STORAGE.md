@@ -212,15 +212,21 @@ the outer manifest `hawdb-storage-v2` described above. No release shipped
 version 6: HawDB 0.37 is version 5, and 0.38.0 is the first release with
 version 7.
 
+Version 8 ([#1960](https://github.com/nowledge-co/hawdb/issues/1960)) writes
+the outer manifest `hawdb-storage-v3` described above. It is the first format
+change since 0.38.0; releases that support only v2 refuse a v3 manifest.
+
 #### The first checkpoint by 0.38 or later is one-way
 
 HawDB 0.38 and later open a 0.37 database in place. Opening it, and commits
 that only append to the WAL, leave the v1 manifest in place; in measurements
-0.37 could still reopen the database. The first checkpoint publishes a v2
-manifest. From then on 0.37 and earlier refuse the database with
-`UnsupportedVersion { format: "storage manifest", found: 2, supported: 1 }`.
-They change nothing, and the newer release still opens it, but there is no way
-back in place.
+0.37 could still reopen the database. The first checkpoint by 0.38 through
+0.40 publishes a v2 manifest; from then on 0.37 and earlier refuse the database
+with `UnsupportedVersion { format: "storage manifest", found: 2, supported:
+1 }`. A release with persistent format 8 publishes a v3 manifest at its first
+checkpoint; releases that support only v2 refuse it with `found: 3, supported:
+2`, and 0.37 and earlier with `found: 3, supported: 1`. They change nothing,
+and the newer release still opens it, but there is no way back in place.
 
 An explicit `checkpoint()` is only one way this happens. None of the following
 needs a call from the host to checkpoint, and the first needs no write:
@@ -243,8 +249,9 @@ dump with the old release. A read-only open publishes no checkpoint.
 
 `DatabaseConfig::legacy_relational_checkpoint_file` does **not** keep a
 downgrade path. It writes the full-row file next to the row-page roots, but the
-checkpoint that writes it still publishes a v2 manifest, which 0.37 refuses
-before it reads either. No released reader needs the file, and each checkpoint
+checkpoint that writes it still publishes the current manifest
+(`hawdb-storage-v3` with persistent format 8), which older readers refuse
+before they read either. No released reader needs the file, and each checkpoint
 rewrites the complete relational state to produce it. To carry data back to an
 older release, export a logical dump with the newer release and import it with
 the older one. An import there is subject to that release's own limits: for

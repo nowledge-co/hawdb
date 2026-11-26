@@ -400,9 +400,13 @@ fn legacy_full_row_checkpoint_reopens_and_moves_to_incremental_checkpoints() {
             )]
         );
         let manifest = std::fs::read_to_string(path.join("manifest.hawdb")).unwrap();
+        let expected_version = format!(
+            "version\t{}",
+            crate::durable_manifest::MANIFEST_STORAGE_VERSION
+        );
         assert_eq!(
             manifest.lines().nth(1),
-            Some("version\thawdb-storage-v2"),
+            Some(expected_version.as_str()),
             "docs/STORAGE.md says a checkpoint with the legacy file is still one-way"
         );
         // Earlier releases leave a WAL tail after their full-row checkpoint.

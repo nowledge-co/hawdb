@@ -1286,8 +1286,9 @@ abandoned preparation is removed before the roots are written.
 The opt-in `legacy_relational_checkpoint_file` additionally writes the full-row
 file that persistent format 5 releases (HawDB 0.37) require outside `OutOfCore`
 plus `Authoritative`. It does not keep a downgrade path to them: every
-checkpoint since persistent format 7 (HawDB 0.38.0) publishes a v2 storage
-manifest, which they refuse first (see
+checkpoint since persistent format 7 (HawDB 0.38.0) publishes a newer storage
+manifest (v2 before persistent format 8, v3 with it), which they refuse first
+(see
 [STORAGE.md](../STORAGE.md#the-first-checkpoint-by-038-or-later-is-one-way)).
 With it every checkpoint again rewrites the complete relational state.
 

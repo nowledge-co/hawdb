@@ -29,7 +29,9 @@ use std::collections::BTreeSet;
 use std::fmt::{self, Display, Formatter};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
+#[cfg(not(unix))]
+use std::sync::atomic::Ordering;
 
 mod published;
 mod sealed;
