@@ -48,7 +48,10 @@ The report always contains both profiles:
 
 - `shared_host_8_gib` leaves the governor dynamic. Capacity is capped at
   2 GiB; the budget is one quarter of detected headroom, normally around
-  1--2 GiB and allowed to fall below 1 GiB under pressure.
+  1--2 GiB and allowed to fall below 1 GiB under pressure. While the
+  governor has no active permit, one Foreground request may exceed the
+  budget if it fits both capacity and the detected headroom (the progress
+  floor, [#2003](https://github.com/nowledge-co/hawdb/issues/2003)).
 - `capability_512_mib` applies an explicit 512 MiB HawDB ceiling on the same
   host snapshot. It does not claim that the host itself has only 512 MiB.
 

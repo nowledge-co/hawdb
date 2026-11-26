@@ -648,6 +648,35 @@ checkpoint_beside_queued_waiters`,
 `cargo test --locked -p hawdb-core --lib admission_policy` and
 `cargo test --locked -p hawdb --lib admission_wait_tests`.
 
+Idle-governor progress floor ([#2003](https://github.com/nowledge-co/hawdb/issues/2003))
+uses the existing `//crates/qos:hawdb_qos_tests` and root
+`//:hawdb_unit_general_tests` owners. QoS `runtime::progress_floor_tests` pin
+an 8 GiB host snapshot: with 1 GiB available (256 MiB dynamic budget, 2 GiB
+capacity) an idle governor admits one 256 MiB + 64 MiB Foreground typed-read
+request and refuses a second concurrent one retryably (`memory_saturated`)
+until the first releases; any active Foreground or Background permit disables
+the floor; Background requests (including Foreground requests lowered into the
+Background pool) keep the dynamic budget; an over-capacity request stays
+non-retryable while exactly capacity is admitted; retained memory counts
+toward capacity; the floor never admits more than sensed available memory
+(64 MiB and zero headroom); a queued `admit_waiting` caller takes the floor
+when the holder releases. `resource::tests::host_headroom_and_cgroup_limits_compose_at_admission`
+now expects the floor for idle Foreground requests that fit capacity and
+headroom; the zero-headroom and saturated-cgroup refusals are unchanged. Root
+`embedded_store::admission_sizing_tests` open a handle on a pinned governor
+sized like `default_embedded_runtime_governor` with Mem's 64 MiB result limit:
+a bounded read snapshot, graph read snapshot, plain read transaction and
+statement transaction are admitted with 1 GiB available (the reservation stays
+`query_memory_bytes` plus the result limit); a concurrent read or transaction
+inside the first read is refused retryably and succeeds once it ends;
+Background reads stay refused until availability allows them; and a
+floor-admitted sort exceeding a 16 KiB `query_memory_bytes` fails with the
+same `ResourceBudgetExceeded` as within the budget. `HawDBRuntimeAdmission.tla`
+models the floor and checks `BudgetOvercommitOnlyFromIdle`. No new lane,
+profile or timeout. Replay with
+`cargo test --locked -p hawdb-qos --lib progress_floor` and
+`cargo test --locked -p hawdb --all-features --lib admission_sizing_tests`.
+
 `embedded_store::tests::storage_pressure_tests` (`nowledge-co/hawdb#1725`)
 belongs to the existing root `//:hawdb_unit_general_tests` owner. It opens a
 durable handle with explicit checkpoints only and pins

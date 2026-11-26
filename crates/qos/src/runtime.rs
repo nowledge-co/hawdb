@@ -62,6 +62,8 @@ mod blocking_admission_tests;
 mod host_refresh_tests;
 mod maintenance;
 mod memory_target;
+#[cfg(test)]
+mod progress_floor_tests;
 mod retained_memory;
 mod working_memory;
 pub use maintenance::{RuntimeMaintenanceMemoryReport, RuntimeMaintenanceWork};
@@ -1729,7 +1731,8 @@ fn derived_memory_capacity(
 /// The current dynamic budget: capacity further bounded by sensed
 /// availability. A request above this but within capacity is a transient
 /// shortage, so admission reports it retryable and waiters ride the
-/// resource refresh.
+/// resource refresh. An idle governor still admits one Foreground request
+/// that fits capacity and sensed availability (see `progress_floor_admits`).
 fn derived_memory_budget(
     config: RuntimeGovernorConfig,
     resources: RuntimeResourceSnapshot,
@@ -2102,7 +2105,7 @@ fn admission_error(
         .limits
         .memory_budget_bytes
         .saturating_sub(state.admitted_memory_bytes);
-    if reserved_memory > available_memory {
+    if reserved_memory > available_memory && !progress_floor_admits(state, request) {
         return Some(admission_error_value(
             RuntimeAdmissionCode::MemorySaturated,
             reserved_memory,
@@ -2132,6 +2135,42 @@ fn admission_error(
         }
     }
     None
+}
+
+/// The progress floor (#2003): a governor with no active permit admits one
+/// Foreground request above the dynamic, availability-derived budget, as long
+/// as it fits both the memory capacity and the sensed available memory.
+///
+/// The dynamic budget is a fraction of sensed host availability, so on a busy
+/// host it can fall below a single request's fixed reservation and refuse
+/// every request even though this governor runs nothing. Admitting one
+/// request then keeps a quiet store making progress; any concurrent request
+/// still sees the dynamic budget (now exhausted by the floor permit) and is
+/// refused retryably. The floor never admits more than the host reports
+/// available: sensed zero headroom, such as a saturated cgroup, stays
+/// authoritative. Background work, the capacity bound, retained memory
+/// already charged to this governor and the process-memory policy are
+/// unchanged.
+fn progress_floor_admits(state: &RuntimeGovernorState, request: RuntimeWorkRequest) -> bool {
+    let reserved = request.reserved_memory_bytes();
+    // Every admitted task is counted as either Foreground or Background;
+    // blocking and IO-slot work are flags of those same requests, so these
+    // two counters alone decide whether the governor is idle.
+    request.priority == RuntimeWorkPriority::Foreground
+        && state.active_foreground_tasks == 0
+        && state.active_background_tasks == 0
+        && state
+            .admitted_memory_bytes
+            .checked_add(reserved)
+            .is_some_and(|total| total <= state.limits.memory_capacity_bytes)
+        && state
+            .resources
+            .memory
+            .effective_available_bytes
+            // The floor only overrides the dynamic budget when the host's
+            // headroom is known to cover the request. Unsensed availability
+            // (including a failed cgroup read) keeps the ordinary rules.
+            .is_some_and(|available| reserved <= available)
 }
 
 const fn admission_error_value(

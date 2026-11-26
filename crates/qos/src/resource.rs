@@ -675,12 +675,18 @@ mod tests {
                     assert!(error.is_retryable());
                 }
                 for requested in [budget + 1, capacity + 1] {
-                    let error = governor
-                        .try_admit(RuntimeWorkRequest::blocking_cpu(
-                            RuntimeWorkPriority::Foreground,
-                            requested,
-                        ))
-                        .unwrap_err();
+                    let result = governor.try_admit(RuntimeWorkRequest::blocking_cpu(
+                        RuntimeWorkPriority::Foreground,
+                        requested,
+                    ));
+                    // The idle governor's progress floor admits one
+                    // Foreground request that fits both capacity and the
+                    // sensed headroom (#2003); zero headroom still refuses.
+                    if requested <= capacity.min(expected_available) {
+                        drop(result.unwrap());
+                        continue;
+                    }
+                    let error = result.unwrap_err();
                     assert_eq!(error.code, RuntimeAdmissionCode::MemorySaturated);
                     assert_eq!(error.is_retryable(), requested <= capacity);
                 }

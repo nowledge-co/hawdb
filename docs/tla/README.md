@@ -1322,6 +1322,15 @@ does not assert the false global invariant that admitted bytes always fit the
 latest capacity. Instead it proves that admission never creates capacity
 overcommit and cannot grow overcommit created by refresh.
 
+The progress floor ([#2003](https://github.com/nowledge-co/hawdb/issues/2003))
+admits a request within capacity above the budget when nothing is admitted, so
+an idle governor on a busy host still makes progress. The model admits every
+such request, over-approximating the implementation, which also requires
+Foreground priority and a request no larger than sensed available memory.
+`BudgetOvercommitOnlyFromIdle` checks that admission exceeds the budget only
+from an idle governor; the capacity properties above are unchanged. Dropping
+the idle condition from `FloorAdmits` reports `BudgetOvercommitOnlyFromIdle`.
+
 Mutation testing sizes the instance (`MaxCapacity = 3`, two waiters): skipping
 the static capacity check reports `SubmissionNeverWaitsAboveCapacity`, letting
 a refresh raise budget above capacity reports `TypeOK` alongside
