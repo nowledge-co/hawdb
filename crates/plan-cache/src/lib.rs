@@ -262,6 +262,13 @@ where
         if self.over_entry_limit() || self.over_byte_limit() {
             self.memory_pressure_events = self.memory_pressure_events.saturating_add(1);
         }
+        // `shrink_to_fit` does not necessarily free buckets: tombstones can
+        // lower `capacity()` while the original allocation remains. Rebuild a
+        // compact table before using its capacity as the new high-water bound.
+        if self.over_byte_limit() {
+            self.rebuild_compact_table();
+        }
+        let mut evicted = false;
         while self.over_entry_limit() || self.over_byte_limit() {
             let Some(victim) = self.lfu_victim_key() else {
                 // An empty map must not retain an over-budget bucket buffer.
@@ -275,14 +282,30 @@ where
                 .expect("selected victim exists");
             self.entry_heap_charge -= removed.heap_charge;
             self.evictions = self.evictions.saturating_add(1);
+            evicted = true;
             if self.entries.is_empty() {
                 self.entries = HashMap::new();
                 self.table_capacity_high_water = 0;
-            } else if self.over_byte_limit() {
-                self.entries.shrink_to_fit();
             }
         }
+        // Eviction leaves the table sized for the pre-eviction set. Rebuild
+        // once more so retained table memory and the byte charge track the
+        // entries that actually remain.
+        if evicted && !self.entries.is_empty() {
+            self.rebuild_compact_table();
+        }
         true
+    }
+
+    fn rebuild_compact_table(&mut self) {
+        if self.entries.is_empty() {
+            self.entries = HashMap::new();
+            self.table_capacity_high_water = 0;
+            return;
+        }
+        let entries = std::mem::take(&mut self.entries);
+        self.entries = entries.into_iter().collect();
+        self.table_capacity_high_water = self.entries.capacity();
     }
 
     pub fn max_bytes(&self) -> Option<usize> {
@@ -438,6 +461,27 @@ mod tests {
         assert!(cache.stats().evictions > 0);
         assert!(cache.stats().entries <= 3);
         assert!(cache.clone().charged_bytes().unwrap() <= 4096);
+    }
+
+    #[test]
+    fn byte_pressure_rebuilds_a_bounded_table() {
+        let mut cache = LfuCache::<u64, u64>::with_byte_limits(None, Some(10_000), None);
+        for key in 0..60 {
+            cache.insert_weighted(key, key, 100);
+        }
+        let stats = cache.stats();
+        assert!(
+            stats.entries > 10,
+            "byte pressure collapsed the cache to {} entries",
+            stats.entries
+        );
+        assert!(
+            cache.table_capacity_high_water <= cache.entries.capacity().saturating_mul(2),
+            "retained table charge {} is far above current capacity {}",
+            cache.table_capacity_high_water,
+            cache.entries.capacity()
+        );
+        assert!(cache.charged_bytes().unwrap() <= 10_000);
     }
 
     #[test]
