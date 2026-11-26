@@ -18,7 +18,7 @@
 
 use super::staged::StagedMutations;
 use super::{mutation_command, node_set_assignment, node_set_value};
-use crate::binding::{map_payload_bytes, value_payload_bytes, Binding};
+use crate::binding::{map_payload_bytes, value_payload_bytes, Binding, GraphSlots};
 use crate::expression::{evaluate_predicate_with_context, project_value};
 use crate::load_csv::{open_load_csv, CsvImportPolicy, CsvRows};
 use crate::memory::DEFAULT_EXECUTION_BATCH_ROWS;
@@ -654,8 +654,8 @@ pub fn project_staged_mutation_return_rows(
                 })?;
                 let binding = Binding {
                     values: BTreeMap::new(),
-                    nodes: BTreeMap::from([(variable.clone(), node)]).into(),
-                    relationships: BTreeMap::new().into(),
+                    nodes: GraphSlots::singleton(variable, node),
+                    relationships: GraphSlots::new(),
                 };
                 let projected = returns
                     .iter()
@@ -841,8 +841,8 @@ fn node_mutation_targets(
         }
         let binding = Binding {
             values: BTreeMap::new(),
-            nodes: BTreeMap::from([(variable.to_string(), node)]).into(),
-            relationships: BTreeMap::new().into(),
+            nodes: GraphSlots::singleton(variable, node),
+            relationships: GraphSlots::new(),
         };
         if let Some(predicate) = predicate
             && !predicate_memory.holds(predicate, catalog, store, &binding, task_context)?

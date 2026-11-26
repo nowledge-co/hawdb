@@ -317,16 +317,19 @@ impl DurableStore {
                 self.max_record_bytes.unwrap_or_default(),
             ));
         }
-        let header_bytes = encode_binary_wal_header(self.wal_generation, self.wal_replay_start_lsn);
+        // The file header is written only for the first record. Encoding it on
+        // every append allocated and checksummed 28 bytes that were discarded.
+        let header_bytes = (self.wal_bytes == 0)
+            .then(|| encode_binary_wal_header(self.wal_generation, self.wal_replay_start_lsn));
         let position = self
             .wal_bytes
             .saturating_sub(WAL_BINARY_FILE_HEADER_BYTES as u64);
         let record_bytes = frame_binary_wal_record(self.wal_generation, &payload, position);
         let started = std::time::Instant::now();
-        let mut byte_count = record_bytes.len() as u64;
-        if self.wal_bytes == 0 {
-            byte_count = byte_count.saturating_add(header_bytes.len() as u64);
-        }
+        let byte_count = record_bytes.len() as u64
+            + header_bytes
+                .as_ref()
+                .map_or(0, |header| header.len() as u64);
         self.ensure_wal_admission(
             self.wal_bytes.saturating_add(byte_count),
             byte_count,
@@ -351,9 +354,10 @@ impl DurableStore {
                 }
                 let write_result: Result<()> = (|| {
                     let mut writer = file.file();
-                    if self.wal_bytes == 0 {
-                        writer.write_all(&header_bytes)?;
+                    if let Some(header_bytes) = &header_bytes {
+                        writer.write_all(header_bytes)?;
                     }
+                    #[cfg(any(test, feature = "test-support", debug_assertions))]
                     {
                         if std::env::var(crate::store::PROCESS_CRASH_POINT_ENV).as_deref()
                             == Ok("during_wal_append")
@@ -366,25 +370,25 @@ impl DurableStore {
                             writer.write_all(&record_bytes[..cut])?;
                             process_crash_failpoint("during_wal_append");
                         }
-                        #[cfg(any(test, feature = "test-support"))]
-                        {
-                            if matches!(
-                                crate::store::WAL_APPEND_FAILURE.get(),
-                                Some(
-                                    crate::store::WalAppendFailure::PartialWrite
-                                        | crate::store::WalAppendFailure::Rollback
-                                )
-                            ) {
-                                writer.write_all(&record_bytes[..record_bytes.len() / 2])?;
-                                if crate::store::WAL_APPEND_FAILURE.get()
-                                    == Some(crate::store::WalAppendFailure::PartialWrite)
-                                {
-                                    crate::store::WAL_APPEND_FAILURE.take();
-                                }
-                                return Err(
-                                    std::io::Error::from(std::io::ErrorKind::StorageFull).into()
-                                );
+                    }
+                    #[cfg(any(test, feature = "test-support"))]
+                    {
+                        if matches!(
+                            crate::store::WAL_APPEND_FAILURE.get(),
+                            Some(
+                                crate::store::WalAppendFailure::PartialWrite
+                                    | crate::store::WalAppendFailure::Rollback
+                            )
+                        ) {
+                            writer.write_all(&record_bytes[..record_bytes.len() / 2])?;
+                            if crate::store::WAL_APPEND_FAILURE.get()
+                                == Some(crate::store::WalAppendFailure::PartialWrite)
+                            {
+                                crate::store::WAL_APPEND_FAILURE.take();
                             }
+                            return Err(
+                                std::io::Error::from(std::io::ErrorKind::StorageFull).into()
+                            );
                         }
                     }
                     writer.write_all(&record_bytes)?;
@@ -786,7 +790,12 @@ impl DurableStore {
         let mut fsync_micros = 0;
         if self.durability == DurabilityPolicy::SyncOnEveryWrite {
             let started = std::time::Instant::now();
-            self.protect_wal_sync(file.file().metadata()?.len(), self.next_lsn + 1)?;
+            // A relaxed interval publishes a fence; synchronous-only stores
+            // normally have none. Avoid an fstat per commit when there is no
+            // fence to validate against.
+            if self.load_wal_recovery_fence()?.is_some() {
+                self.protect_wal_sync(file.file().metadata()?.len(), self.next_lsn + 1)?;
+            }
             file.file().sync_data()?;
             if created || !self.wal_namespace_known_durable {
                 #[cfg(test)]

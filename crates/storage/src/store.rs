@@ -435,15 +435,27 @@ pub enum CheckpointPublishStage {
     BranchHeadPublished,
 }
 
+#[cfg(any(test, feature = "test-support", debug_assertions))]
 #[doc(hidden)]
 const PROCESS_CRASH_POINT_ENV: &str = "HAWDB_TEST_PROCESS_CRASH_POINT";
 
+/// Subprocess crash injection for checked test/development builds only.
+///
+/// Bazel root tests build the storage dependency without `cfg(test)` or the
+/// `test-support` feature, but with `debug_assertions` enabled. Release builds
+/// compile this to an empty inline function, so a host environment variable
+/// cannot become a production exit path.
+#[cfg(any(test, feature = "test-support", debug_assertions))]
 fn process_crash_failpoint(point: &str) {
     if std::env::var(PROCESS_CRASH_POINT_ENV).as_deref() == Ok(point) {
         std::process::exit(86);
     }
     let _ = point;
 }
+
+#[cfg(not(any(test, feature = "test-support", debug_assertions)))]
+#[inline(always)]
+fn process_crash_failpoint(_point: &str) {}
 
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Copy, PartialEq, Eq)]

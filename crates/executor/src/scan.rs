@@ -26,7 +26,7 @@ mod binding_tests;
 
 use crate::binding::{
     binding_memory_bytes, binding_memory_bytes_with_parts, binding_payload_bytes_with_parts,
-    node_memory_bytes, projected_node_binding_memory_bytes, Binding,
+    node_memory_bytes, projected_node_binding_memory_bytes, Binding, GraphSlots,
 };
 use crate::expression::{
     evaluate_predicate_with_context, evaluate_projection_in_graph, prepare_borrowed_projection,
@@ -1786,8 +1786,8 @@ pub fn null_lookup_node() -> NodeRecord {
 fn node_binding(variable: &str, node: NodeRecord) -> Binding {
     Binding {
         values: BTreeMap::new(),
-        nodes: BTreeMap::from([(variable.to_string(), node)]).into(),
-        relationships: BTreeMap::new().into(),
+        nodes: GraphSlots::singleton(variable, node),
+        relationships: GraphSlots::new(),
     }
 }
 

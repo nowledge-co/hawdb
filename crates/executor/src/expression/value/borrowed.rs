@@ -78,6 +78,21 @@ impl<'a> ProjectedValue<'a> {
         }
     }
 
+    /// Whether turning this borrowed value into an owned key can copy a
+    /// variable-width payload. Scalar and inline temporal values stay on the
+    /// cheap path; strings, containers and boxed durations take a checkpoint.
+    pub(crate) fn requires_materialization_checkpoint(&self) -> bool {
+        matches!(
+            &*self.value,
+            Value::String(_)
+                | Value::Binary(_)
+                | Value::Vector(_)
+                | Value::List(_)
+                | Value::Map(_)
+                | Value::Duration(_)
+        )
+    }
+
     /// The caller must admit the complete owned output row before this copy.
     pub(crate) fn into_owned(self) -> Value {
         self.value.into_owned()
