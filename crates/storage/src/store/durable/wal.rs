@@ -357,7 +357,7 @@ impl DurableStore {
                     if let Some(header_bytes) = &header_bytes {
                         writer.write_all(header_bytes)?;
                     }
-                    #[cfg(any(test, feature = "test-support"))]
+                    #[cfg(any(test, feature = "test-support", debug_assertions))]
                     {
                         if std::env::var(crate::store::PROCESS_CRASH_POINT_ENV).as_deref()
                             == Ok("during_wal_append")
@@ -370,6 +370,9 @@ impl DurableStore {
                             writer.write_all(&record_bytes[..cut])?;
                             process_crash_failpoint("during_wal_append");
                         }
+                    }
+                    #[cfg(any(test, feature = "test-support"))]
+                    {
                         if matches!(
                             crate::store::WAL_APPEND_FAILURE.get(),
                             Some(
