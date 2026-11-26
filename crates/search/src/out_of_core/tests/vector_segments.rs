@@ -48,11 +48,27 @@ fn build(name: &str, documents: &[SearchDocument], backend: Option<bool>) -> Pat
     build_with(name, documents, backend, None)
 }
 
+/// One graph per `content_documents` documents.
+#[cfg(feature = "vector-search")]
+fn build_graphs(name: &str, documents: &[SearchDocument], content_documents: usize) -> PathBuf {
+    build_content(name, documents, Some(true), None, content_documents)
+}
+
 fn build_with(
     name: &str,
     documents: &[SearchDocument],
     backend: Option<bool>,
     distance: Option<hawdb_core::VectorDistance>,
+) -> PathBuf {
+    build_content(name, documents, backend, distance, 8192)
+}
+
+fn build_content(
+    name: &str,
+    documents: &[SearchDocument],
+    backend: Option<bool>,
+    distance: Option<hawdb_core::VectorDistance>,
+    content_documents: usize,
 ) -> PathBuf {
     let path = test_dir(name);
     let mut writer = SearchOutOfCoreGenerationWriter::create(
@@ -71,6 +87,7 @@ fn build_with(
                 Some(true) => Some(Default::default()),
                 _ => None,
             },
+            max_content_documents: NonZeroUsize::new(content_documents).unwrap(),
             source_graph_commit_epoch: distance.map(|_| 1),
             vector_index_descriptor: distance.map(|distance| {
                 hawdb_core::VectorIndexDescriptor::new(
@@ -879,6 +896,87 @@ fn small_store_default_query_finds_a_hard_to_reach_cosine_neighbor() {
         0
     );
     assert!(hits(&narrow).iter().all(|hit| hit.0 != expected[0].0));
+    drop(reader);
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// Later graphs of a segmented store stop early once earlier graphs hold the
+/// results (#1918): the exact top ten stays, with fewer vectors scored. A result
+/// as wide as the candidate window gives no useful bound and is the control.
+#[cfg(feature = "vector-search")]
+#[test]
+fn segmented_graphs_share_a_result_bound_without_losing_results() {
+    // Three graphs above the small-domain scan limit of the default beam, with
+    // the last one alone holding the neighbors of the final queries.
+    const ROWS: usize = 2950;
+    let template = corpus(3 * ROWS);
+    let documents: Vec<_> = template
+        .into_iter()
+        .enumerate()
+        .map(|(number, document)| SearchDocument {
+            embedding: Some({
+                let mut vector = embedding(number);
+                if number >= 3 * ROWS - 400 {
+                    vector[0] += 4.0;
+                }
+                vector
+            }),
+            ..document
+        })
+        .collect();
+    let root = build_graphs("vector-result-bound", &documents, ROWS);
+    let reader = SearchOutOfCoreReader::open(&root).unwrap();
+    let search = |query: &[f32], limit, space: Option<&str>| {
+        let mut query_options = options(limit, None);
+        query_options
+            .metadata_filters
+            .extend(space.map(|space| ("space_id".to_string(), space.to_string())));
+        reader
+            .search_with_options_compressed_vector_projection_execution_options(
+                "",
+                Some(query),
+                SearchMode::Vector,
+                query_options,
+                crate::CompressedVectorSearchMode::Disabled,
+                VectorSearchExecutionOptions::default(),
+            )
+            .unwrap()
+    };
+    let (mut bounded, mut unbounded) = (0, 0);
+    for number in 0..24 {
+        let mut query = embedding(20_000 + number);
+        if number >= 20 {
+            query[0] += 4.0;
+        }
+        let narrow = search(&query, 10, None);
+        assert_eq!(hits(&narrow), reference(&documents, &query, |_| true, 10));
+        let report = vector_report(&narrow);
+        assert_eq!(report.candidate_scan_segment_count, 3);
+        assert_eq!(report.candidate_scan_adaptive_exact_scan_count, 0);
+        // The candidate window is still filled from every graph.
+        assert_eq!(report.reranked_candidate_count, 128);
+        let again = search(&query, 10, None);
+        assert_eq!(hits(&again), hits(&narrow));
+        assert_eq!(
+            vector_report(&again).candidate_scan_scored_document_count,
+            report.candidate_scan_scored_document_count
+        );
+        let wide = search(&query, 128, None);
+        assert_eq!(hits(&wide)[..10], hits(&narrow));
+        assert!(
+            report.candidate_scan_scored_document_count
+                <= vector_report(&wide).candidate_scan_scored_document_count
+        );
+        bounded += report.candidate_scan_scored_document_count;
+        unbounded += vector_report(&wide).candidate_scan_scored_document_count;
+        // A filter keeps its own traversal.
+        let keep = |document: &SearchDocument| document.metadata["space_id"] == "b";
+        assert_eq!(
+            hits(&search(&query, 10, Some("b"))),
+            reference(&documents, &query, keep, 10)
+        );
+    }
+    assert!(bounded * 20 < unbounded * 19, "{bounded} {unbounded}");
     drop(reader);
     fs::remove_dir_all(root).unwrap();
 }

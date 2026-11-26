@@ -647,3 +647,138 @@ fn ordinary_zero_vectors_preserve_absent_cosine_scores_across_delta_and_reopen()
     assert!(reader.vector_projection_qualification_identity().is_none());
     assert!(reader.vector_projection_resource_evidence().is_none());
 }
+
+/// The result bound shared by segment graphs (#1918) must come from visible
+/// results only. Here the ten nearest vectors of the base graphs are old
+/// versions: the delta supersedes or deletes them, and the visible neighbors
+/// lie in the delta graph, which is above the small-domain scan limit.
+#[test]
+fn graph_result_bound_ignores_superseded_and_deleted_versions() {
+    const DIMENSION: usize = 8;
+    const ROWS: usize = 2950;
+    let mut state = 0x2545_f491_4f6c_dd1du64;
+    let mut noise = move || -> f32 {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state >> 40) as f32 / (1u64 << 23) as f32 - 1.0
+    };
+    let query: Vec<f32> = (0..DIMENSION)
+        .map(|position| (position as f32 + 1.0) / 8.0)
+        .collect();
+    let mut near =
+        |scale: f32| -> Vec<f32> { query.iter().map(|value| value + scale * noise()).collect() };
+    let random = |near: &mut dyn FnMut(f32) -> Vec<f32>| -> Vec<f32> {
+        near(4.0).into_iter().map(|value| value - 0.5).collect()
+    };
+    let query_options = || SearchQueryOptions {
+        limit: 10,
+        offset: 0,
+        rank_window: None,
+        fusion_weights: Default::default(),
+        metadata_filters: BTreeMap::new(),
+        policy_epoch: None,
+    };
+    for supersede in [true, false] {
+        let root = Directory(test_dir("diskann_result_bound_visibility"));
+        let mut writer = SearchOutOfCoreGenerationWriter::create(
+            &root.0,
+            SearchOutOfCoreGenerationBuildOptions {
+                max_content_documents: std::num::NonZeroUsize::new(ROWS).unwrap(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut visible_base = Vec::new();
+        for number in 0..2 * ROWS {
+            // Old versions almost equal to the query.
+            let embedding = if number < 10 {
+                near(0.001)
+            } else {
+                random(&mut near)
+            };
+            if number >= 10 {
+                visible_base.push(cosine(&query, &embedding));
+            }
+            writer
+                .push(row(number, Some(embedding)).into_document())
+                .unwrap();
+        }
+        visible_base.sort_by(f64::total_cmp);
+        writer.finish().unwrap();
+        let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+        let mut upserts: Vec<_> = (2 * ROWS..3 * ROWS - 10)
+            .map(|number| {
+                // The visible neighbors, all farther than the old versions.
+                let embedding = if number < 2 * ROWS + 40 {
+                    near(0.05)
+                } else {
+                    random(&mut near)
+                };
+                row(number, Some(embedding))
+            })
+            .collect();
+        let mut deletes = Vec::new();
+        for number in 0..10 {
+            if supersede {
+                upserts.push(row(number, Some(near(0.08))));
+            } else {
+                deletes.push(row(number, None).into_document().id);
+            }
+        }
+        SearchOutOfCoreGenerationWriter::prepare_delta(
+            &reader,
+            SearchProjectionDelta {
+                upserts,
+                deletes,
+                ..Default::default()
+            },
+            Default::default(),
+        )
+        .unwrap()
+        .finish()
+        .unwrap();
+        let current = SearchOutOfCoreReader::open(&root.0).unwrap();
+        assert_eq!(current.segments.len(), 3);
+        crate::out_of_core::vector_serving::RESULT_BOUNDS.with_borrow_mut(Vec::clear);
+        let actual = current
+            .search_with_options("", Some(&query), SearchMode::Vector, query_options())
+            .unwrap();
+        let bounds = crate::out_of_core::vector_serving::RESULT_BOUNDS.take();
+        assert_eq!(
+            bounds.iter().map(|bound| bound.0).collect::<Vec<_>>(),
+            [0, 1, 2]
+        );
+        // The base graphs fill the result, so the delta graph is bounded, by
+        // visible base vectors only. The hidden versions are about 1e-6 away.
+        assert_eq!(bounds[0].1, None);
+        let bound = bounds[2]
+            .1
+            .expect("the base graphs hold ten visible results");
+        assert!(
+            bound >= visible_base[9] - 1e-9,
+            "bound {bound} is below the tenth visible base distance {}",
+            visible_base[9]
+        );
+        let exact = current
+            .search_with_options_exact("", Some(&query), SearchMode::Vector, query_options())
+            .unwrap();
+        assert_eq!(ids(&actual), ids(&exact), "supersede={supersede}");
+    }
+}
+
+fn cosine(left: &[f32], right: &[f32]) -> f64 {
+    let dot: f64 = left
+        .iter()
+        .zip(right)
+        .map(|(a, b)| f64::from(*a) * f64::from(*b))
+        .sum();
+    let norm = |values: &[f32]| {
+        values
+            .iter()
+            .map(|value| f64::from(*value).powi(2))
+            .sum::<f64>()
+            .sqrt()
+    };
+    1.0 - dot / (norm(left) * norm(right))
+}

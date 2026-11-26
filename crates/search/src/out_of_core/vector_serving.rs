@@ -278,6 +278,56 @@ impl BoundedLayeredProjectionHits {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// `(layer, result bound)` passed to each searched projection layer.
+    pub(super) static RESULT_BOUNDS: std::cell::RefCell<Vec<(usize, Option<f64>)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Distances of the nearest results that earlier layers returned, at most as
+/// many as the query keeps. Layers are visited in order, so the bound that a
+/// layer receives is deterministic.
+///
+/// The distances fit the second layered representation of the candidate
+/// envelope, which is not materialized before `BoundedLayeredProjectionHits`
+/// is finished.
+#[cfg(feature = "vector-search")]
+struct NearestDistances {
+    limit: usize,
+    ascending: Vec<f64>,
+}
+
+#[cfg(feature = "vector-search")]
+impl NearestDistances {
+    fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            ascending: Vec::with_capacity(limit),
+        }
+    }
+
+    fn extend(&mut self, distances: impl IntoIterator<Item = f64>) {
+        for distance in distances {
+            let position = self.ascending.partition_point(|kept| *kept <= distance);
+            if position == self.limit {
+                continue;
+            }
+            if self.ascending.len() == self.limit {
+                self.ascending.pop();
+            }
+            self.ascending.insert(position, distance);
+        }
+    }
+
+    /// The worst kept distance, once the query could fill its result from them.
+    fn bound(&self) -> Option<f64> {
+        (self.ascending.len() == self.limit)
+            .then(|| self.ascending.last().copied())
+            .flatten()
+    }
+}
+
 #[cfg(feature = "vector-search")]
 #[derive(Clone, Copy)]
 pub(super) struct RerankPolicy<'a> {
@@ -892,6 +942,11 @@ impl SearchOutOfCoreReader {
             .query
             .map(|query| query.memory.reserve(0))
             .transpose()?;
+        // The minimum candidate count is admitted above; more than one graph is
+        // needed before a bound can help, and an unlimited result has none.
+        let mut result_distances = retained_limit
+            .filter(|limit| *limit != 0 && self.segments.len() > 1)
+            .map(NearestDistances::new);
         let mut vector_document_count = 0usize;
         let mut generated_candidate_count = 0usize;
         let mut candidate_scan_worker_count = 0usize;
@@ -999,6 +1054,12 @@ impl SearchOutOfCoreReader {
                     vector_execution_options.navigation_beam(
                         candidate_limit.min(projection.manifest().document_count.max(1)),
                     ),
+                    {
+                        let bound = result_distances.as_ref().and_then(NearestDistances::bound);
+                        #[cfg(test)]
+                        RESULT_BOUNDS.with_borrow_mut(|bounds| bounds.push((layer, bound)));
+                        bound
+                    },
                 )
                 .map_err(RabitqScanError::projection)?;
             // Returned hits are covered by the separately retained candidate
@@ -1042,8 +1103,9 @@ impl SearchOutOfCoreReader {
             candidate_scan_kernel
                 .get_or_insert_with(|| projection_report.kernel.as_str().to_string());
             drop(allowlist);
+            let mut hits = output.hits;
             if self.visibility.is_empty() {
-                for hit in output.hits {
+                for hit in &hits {
                     selected.push(LayeredProjectionHit {
                         layer,
                         ordinal: hit.id,
@@ -1054,7 +1116,7 @@ impl SearchOutOfCoreReader {
             } else {
                 self.retain_logical_projection_hits(
                     layer,
-                    output.hits,
+                    &mut hits,
                     &mut selected,
                     task_context,
                     metrics,
@@ -1063,8 +1125,22 @@ impl SearchOutOfCoreReader {
                 candidate_scan_admitted_working_bytes =
                     candidate_scan_admitted_working_bytes.max(selected.logical_id_bytes);
             }
+            // Only visible results may bound later layers: a superseded or
+            // deleted version is closer than nothing. The layer's allowlist
+            // already excludes hidden ordinals, and the mapping above refuses
+            // any hidden hit before its distance is kept here.
+            if let Some(distances) = &mut result_distances
+                && projection.is_diskann()
+            {
+                distances.extend(hits.iter().map(|hit| match projection.metric() {
+                    hawdb_core::VectorDistance::Cosine => 1.0 - hit.score,
+                    hawdb_core::VectorDistance::Euclidean => (-hit.score).sqrt(),
+                }));
+            }
         }
 
+        // Finishing materializes the representation whose reservation these used.
+        drop(result_distances);
         let (mut selected, selected_id_memory) = selected.finish();
         // Logical IDs were needed at the approximate top-k boundary. Release
         // them before raw rerank, whose own collector retains document IDs.
@@ -1256,7 +1332,7 @@ impl SearchOutOfCoreReader {
     fn retain_logical_projection_hits(
         &self,
         layer: usize,
-        mut hits: Vec<hawdb_vector_projection::ProjectionHit>,
+        hits: &mut [hawdb_vector_projection::ProjectionHit],
         selected: &mut BoundedLayeredProjectionHits,
         task_context: Option<&crate::RuntimeTaskContext>,
         metrics: &mut SearchOutOfCoreMetrics,

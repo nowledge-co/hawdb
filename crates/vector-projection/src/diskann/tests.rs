@@ -916,6 +916,7 @@ fn diskann_query_workspace_is_bounded_by_work_rather_than_disk_graph_size() {
             max_visited: 4,
             max_working_bytes: 1024,
             task: None,
+            result_bound: None,
         },
     )
     .unwrap();
@@ -1032,7 +1033,7 @@ fn diskann_small_beam_recall_is_compared_with_exhaustive_filtered_groundtruth() 
 
 /// A near-orthogonal outlier that is the nearest neighbor of the query but of
 /// no other vertex, so pruning leaves it almost no in-links (#1970).
-fn hard_to_reach_entries() -> (Vec<(u64, Vec<f32>)>, Vec<f32>) {
+pub(super) fn hard_to_reach_entries() -> (Vec<(u64, Vec<f32>)>, Vec<f32>) {
     const COUNT: u64 = 900;
     const DIMENSION: usize = 32;
     let mut random = 0x1234_5678_9abc_def0u64;
@@ -1096,6 +1097,7 @@ fn traversed(graph: &DiskAnnIndex, query: &[f32], beam_width: usize) -> (Vec<u64
         graph,
         &mut scratch,
         options,
+        None,
         None,
         |_| Ok(true),
         |ordinal| graph.distance_prepared(&query, ordinal, None),

@@ -42,6 +42,48 @@ vector, and traversal continues when the worst case of the rest of the scan
 exceeds the remaining work limit. Larger graphs always use traversal. The
 candidate window is a floor for the beam.
 
+The graphs of a segmented generation are searched in layer order and share a
+result bound (#1918). Once earlier graphs returned as many hits as the query
+keeps (its rank window or limit), the raw distance of the worst of them bounds
+each later unfiltered graph. That graph may end its traversal when all of these hold:
+the nearest quarter of its beam, at least 64 candidates, is expanded; the
+nearest unexpanded candidate is more than 1.2 times as far as the bound (chord
+length for cosine); the nearest candidate found is within that reach, so the
+traversal has arrived in the region of the query; and the candidate window can
+be filled from the beam. The first graph, a single-graph generation, filtered
+traversal and every spread-probe decision are unchanged. Work is charged per
+vector as before, and admission still covers the full beam. Only visible
+results bound later graphs: each layer's allowlist excludes superseded and
+deleted versions, and a hidden hit is refused before its distance is kept.
+Reported scores stay exact.
+
+Results are deterministic for one generation, but they depend on layer order.
+A rebuild, delta or compaction that splits, merges or reorders the same data
+into different layers can change the approximate results for the same query,
+as a different graph construction can.
+
+These constants are also empirical heuristics, not a recall guarantee. A closer
+vertex that only a worse frontier reaches is missed, as behind a full beam.
+Candidates beyond the kept results only fill the window and can be less
+accurate than with an unshortened traversal.
+
+Evidence (#1918, Linux x86-64). The factor, minimum rank and reach condition
+were chosen on tuning sets (SIFT and GloVe at 100,000 vectors in 13 graphs, 200
+and 30 clusters, uniform 64-d, SciFact and NFCorpus in one graph and in
+segments), then frozen. One held-out run followed on 19 other sets with other
+rows, queries and seeds: SIFT and GloVe slices in 13 graphs, 3,000-vector graphs
+and mixed sizes; rows sorted along a random direction so that each graph holds a
+different region; 50, 300 and 1,000 clusters (128 to 1024-d); uniform 64, 128
+and 1024-d; SciFact and NFCorpus in L2 and with permuted rows, in one graph and
+in 3,000- and 900-vector graphs. With beams 128, 256 and 1024, filters of 100,
+50, 10 and 1%, k=10, k=100 and k=1024 (374 cells over both groups, real kernel,
+with and without the bound), every query kept exactly the same top k; no held-out
+cell failed and nothing was retuned. Unfiltered k=10 at beam 256 scored 0.56 to
+0.77 times the vectors on held-out SIFT and clustered sets, 0.89 to 0.96 on GloVe
+and 1.00 on uniform data; filtered cells and single graphs were unchanged. End
+to end, SIFT-100k at window 10 went from 171.5 to 279.8 QPS and GloVe-100k from
+130.2 to 141.9, both at unchanged recall@10 (1.0 and 0.994).
+
 ## Architecture decision
 
 Implement Vamana construction and multi-hop filtered search in the existing

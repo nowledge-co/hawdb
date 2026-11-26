@@ -10,6 +10,9 @@ use crate::{CandidateSet, ProjectionError, Result};
 use hawdb_core::{RuntimeTaskContext, VectorDistance};
 
 mod artifact;
+mod bound;
+#[cfg(test)]
+mod bound_tests;
 mod build;
 mod exact;
 mod feedback;
@@ -82,6 +85,11 @@ pub struct DiskAnnSearchOptions<'a> {
     pub max_visited: usize,
     pub max_working_bytes: usize,
     pub task: Option<&'a RuntimeTaskContext>,
+    /// Raw distance of the worst result the caller already holds from other
+    /// graphs, once it holds as many as it returns. A complete graph search may
+    /// then end before its beam is expanded: hits worse than this distance are
+    /// complete only up to the shortened traversal. Filtered traversal ignores it.
+    pub result_bound: Option<f64>,
 }
 
 impl Default for DiskAnnSearchOptions<'_> {
@@ -91,6 +99,7 @@ impl Default for DiskAnnSearchOptions<'_> {
             max_visited: 1_000_000,
             max_working_bytes: 64 << 20,
             task: None,
+            result_bound: None,
         }
     }
 }
@@ -142,6 +151,8 @@ pub struct DiskAnnSearchReport {
     pub seed_steps: usize,
     /// Traversal switched once to complete evaluation of the eligible domain.
     pub adaptive_exact_scan: bool,
+    /// Traversal ended early at `DiskAnnSearchOptions::result_bound`.
+    pub stopped_at_result_bound: bool,
 }
 
 #[derive(Debug)]
@@ -168,6 +179,14 @@ pub fn search_diskann(
     if options.beam_width == 0 || top_k > options.beam_width || options.max_visited == 0 {
         return Err(configuration(
             "DiskANN requires a positive beam/work bound and top-k <= beam width",
+        ));
+    }
+    if options
+        .result_bound
+        .is_some_and(|bound| !bound.is_finite() || bound < 0.0)
+    {
+        return Err(configuration(
+            "DiskANN result bound must be a finite distance",
         ));
     }
     if let Some(candidates) = candidates {
@@ -206,6 +225,10 @@ pub fn search_diskann(
             candidates
                 .is_none()
                 .then(|| exact::SpreadProbe::new(graph, graph.len(), 0, options))
+                .flatten(),
+            candidates
+                .is_none()
+                .then(|| bound::ResultBound::new(graph, top_k, options))
                 .flatten(),
             |id| Ok(candidates.is_none_or(|set| set.ids.binary_search(&id).is_ok())),
             QueryScorer {
@@ -367,6 +390,7 @@ fn traverse(
     scratch: &mut Scratch,
     options: DiskAnnSearchOptions<'_>,
     probe: Option<exact::SpreadProbe>,
+    bound: Option<bound::ResultBound>,
     allowed: impl FnMut(u64) -> Result<bool>,
     score: impl Scorer,
 ) -> Result<DiskAnnSearchReport> {
@@ -384,7 +408,12 @@ fn traverse(
         expand_rejected: true,
     };
     discover(graph, entry, scratch, options, &mut report, &mut policy)?;
-    walk(graph, scratch, options, report, policy, None, probe)
+    let decisions = Decisions {
+        feedback: None,
+        probe,
+        bound,
+    };
+    walk(graph, scratch, options, report, policy, decisions)
 }
 
 fn traverse_filtered(
@@ -453,7 +482,15 @@ fn traverse_filtered(
     let feedback = (!complete_domain).then(|| {
         feedback::FilteredFeedback::new(graph.len(), candidates.ids.len(), ordinal_ids, &report)
     });
-    let mut report = walk(graph, scratch, options, report, policy, feedback, probe)?;
+    let bound = complete_domain
+        .then(|| bound::ResultBound::new(graph, top_k, options))
+        .flatten();
+    let decisions = Decisions {
+        feedback,
+        probe,
+        bound,
+    };
+    let mut report = walk(graph, scratch, options, report, policy, decisions)?;
     if report.adaptive_exact_scan {
         // No results have escaped. Reuse the admitted workspace and cumulative
         // work counters; already scored eligible nodes need no second distance.
@@ -503,21 +540,32 @@ fn find_id(
     Ok(None)
 }
 
+/// When traversal may end before its beam is expanded.
+struct Decisions {
+    feedback: Option<feedback::FilteredFeedback>,
+    probe: Option<exact::SpreadProbe>,
+    bound: Option<bound::ResultBound>,
+}
+
 fn walk(
     graph: &impl DiskAnnRead,
     scratch: &mut Scratch,
     options: DiskAnnSearchOptions<'_>,
     mut report: DiskAnnSearchReport,
     mut policy: VisitPolicy<impl FnMut(u64) -> Result<bool>, impl Scorer>,
-    feedback: Option<feedback::FilteredFeedback>,
-    probe: Option<exact::SpreadProbe>,
+    decisions: Decisions,
 ) -> Result<DiskAnnSearchReport> {
+    let Decisions {
+        feedback,
+        probe,
+        bound,
+    } = decisions;
     let mut eligible_expansions = 0;
     loop {
         checkpoint(options.task)?;
         let (ordinal, bridge) = if let Some(bridge) = scratch.bridges.pop() {
             (bridge, true)
-        } else if let Some(neighbor) = scratch.beam.iter_mut().find(|value| !value.expanded) {
+        } else if let Some(rank) = scratch.beam.iter().position(|value| !value.expanded) {
             if probe
                 .as_ref()
                 .is_some_and(|probe| probe.should_scan(eligible_expansions, &report, options))
@@ -525,7 +573,15 @@ fn walk(
                 report.adaptive_exact_scan = true;
                 return Ok(report);
             }
+            if bound
+                .as_ref()
+                .is_some_and(|bound| bound.should_stop(rank, &scratch.beam))
+            {
+                report.stopped_at_result_bound = true;
+                return Ok(report);
+            }
             eligible_expansions += 1;
+            let neighbor = &mut scratch.beam[rank];
             neighbor.expanded = true;
             (neighbor.ordinal, false)
         } else {
