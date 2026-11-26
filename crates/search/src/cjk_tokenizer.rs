@@ -12,15 +12,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use jieba_rs::Jieba;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use std::sync::LazyLock;
 
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub(super) const ANALYZER_FORMAT_VERSION: &[u8] =
     b"hawdb-search-analyzer-v3-jieba-0.11.0-search-han-ngrams";
 
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(super) const ANALYZER_FORMAT_VERSION: &[u8] =
+    b"hawdb-search-analyzer-v3-no-jieba-search-han-ngrams";
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 static CHINESE_TOKENIZER: LazyLock<Jieba> = LazyLock::new(crate::cjk_dictionary::load);
 
-#[cfg(test)]
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
 pub(super) fn chinese_search_tokens(text: &str) -> Vec<String> {
     if !text.chars().any(is_han_search_char) {
         return Vec::new();
@@ -33,6 +41,12 @@ pub(super) fn chinese_search_tokens(text: &str) -> Vec<String> {
         .collect()
 }
 
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+pub(super) fn chinese_search_tokens(_text: &str) -> Vec<String> {
+    Vec::new()
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub(super) fn visit_chinese_search_tokens_with_workspace<'a>(
     text: &'a str,
     workspace: Option<&crate::analyzer_workspace::Workspace>,
@@ -61,6 +75,16 @@ pub(super) fn visit_chinese_search_tokens_with_workspace<'a>(
     Ok(())
 }
 
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(super) fn visit_chinese_search_tokens_with_workspace<'a>(
+    _text: &'a str,
+    _workspace: Option<&crate::analyzer_workspace::Workspace>,
+    _emit: impl FnMut(&'a str) -> super::Result<()>,
+) -> super::Result<()> {
+    Ok(())
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub(super) fn prime_workspace(text: &str) -> super::Result<()> {
     // An unknown two-Han word forces the pinned analyzer TLS to initialize on
     // this worker. The private dictionary is immutable; fail closed if a future
@@ -71,6 +95,11 @@ pub(super) fn prime_workspace(text: &str) -> super::Result<()> {
         ));
     }
     drop(CHINESE_TOKENIZER.cut_for_search(text, true));
+    Ok(())
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(super) fn prime_workspace(_text: &str) -> super::Result<()> {
     Ok(())
 }
 

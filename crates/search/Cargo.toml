@@ -11,8 +11,6 @@ homepage.workspace = true
 [dependencies]
 bitpacking = { version = "=0.9.3", default-features = false, features = ["bitpacker4x"] }
 fst = "=0.4.7"
-# Opaque analyzer capacity bounds are qualified against this dependency set.
-jieba-rs = { version = "=0.11.0", default-features = false }
 regex = { version = "=1.13.1", default-features = false }
 regex-automata = { version = "=0.4.19", default-features = false }
 regex-syntax = { version = "=0.8.12", default-features = false }
@@ -31,6 +29,13 @@ hawdb-qos = { path = "../qos", version = "0.40.0" }
 hawdb-storage = { path = "../storage", version = "0.40.0" }
 hawdb-telemetry = { path = "../telemetry", version = "0.40.0" }
 hawdb-vector-projection = { path = "../vector-projection", version = "0.40.0", optional = true }
+
+# Jieba is native-only. Browser WASM builds keep the cheap Han n-gram
+# fallback but omit the dependency and its 2.1 MB dictionary. This keeps
+# every native feature set, including Mem's default-features = false build,
+# byte-for-byte unchanged.
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
+jieba-rs = { version = "=0.11.0", default-features = false }
 
 [features]
 default = [
