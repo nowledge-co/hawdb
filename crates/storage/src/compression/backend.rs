@@ -175,7 +175,7 @@ pub trait CompressionBackend: fmt::Debug + Send + Sync + 'static {
     fn compress_bound(&self, input_len: usize) -> io::Result<usize>;
 }
 
-/// Another installation or the first use of the built-in backend already won.
+/// Another installation or the first use of the test fixture already won.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CompressionBackendAlreadyInitialized;
 
@@ -188,8 +188,8 @@ impl fmt::Display for CompressionBackendAlreadyInitialized {
 impl std::error::Error for CompressionBackendAlreadyInitialized {}
 
 enum BackendSelection {
-    #[cfg(feature = "builtin-zstd")]
-    Builtin,
+    #[cfg(any(test, feature = "test-zstd"))]
+    Test,
     Host(Arc<dyn CompressionBackend>),
 }
 
@@ -207,18 +207,18 @@ pub fn install_compression_backend(
 }
 
 pub(super) fn selected() -> io::Result<&'static dyn CompressionBackend> {
-    #[cfg(feature = "builtin-zstd")]
-    let backend = BACKEND.get_or_init(|| BackendSelection::Builtin);
-    #[cfg(not(feature = "builtin-zstd"))]
+    #[cfg(any(test, feature = "test-zstd"))]
+    let backend = BACKEND.get_or_init(|| BackendSelection::Test);
+    #[cfg(not(any(test, feature = "test-zstd")))]
     let backend = BACKEND.get().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::Unsupported,
-            "install a compression backend or enable the builtin-zstd feature",
+            "compression backend is not installed",
         )
     })?;
     Ok(match backend {
-        #[cfg(feature = "builtin-zstd")]
-        BackendSelection::Builtin => &super::native::BuiltinZstdBackend,
+        #[cfg(any(test, feature = "test-zstd"))]
+        BackendSelection::Test => &super::native::TestZstdBackend,
         BackendSelection::Host(backend) => backend.as_ref(),
     })
 }

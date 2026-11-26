@@ -20,7 +20,7 @@ fn consumer_and_hawdb_share_the_qualified_native_library() {
     assert_eq!(decoded, input);
     assert!(
         hawdb_storage::compression::install_compression_backend(std::sync::Arc::new(
-            hawdb_storage::compression::BuiltinZstdBackend,
+            hawdb_storage::compression::TestZstdBackend,
         ))
         .is_err()
     );

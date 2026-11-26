@@ -65,5 +65,5 @@ pub fn parse_frame_header(bytes: &[u8]) -> io::Result<FrameHeader> {
     })
 }
 
-#[cfg(all(test, feature = "builtin-zstd"))]
+#[cfg(test)]
 mod tests;

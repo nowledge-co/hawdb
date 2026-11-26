@@ -566,6 +566,7 @@ unsafe fn hawdb_open_inner(
             .ok_or_else(|| FfiError::invalid("hawdb: options_json must be a JSON object"))?;
         open_options::apply_open_options(&mut options, object)?;
     }
+    hawdb_binding_zstd::install();
     let database =
         HawDBEmbedded::open_with_options(options).map_err(|error| FfiError::open(&error))?;
     Ok(Box::into_raw(Box::new(HawdbDatabase::new(database))))
@@ -580,7 +581,10 @@ unsafe fn hawdb_open_inner(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hawdb_open_in_memory(err_out: *mut HawdbBuffer) -> *mut HawdbDatabase {
     unsafe { clear_buffer(err_out) };
-    match catch_unwind(AssertUnwindSafe(HawDBEmbedded::open_in_memory)) {
+    match catch_unwind(AssertUnwindSafe(|| {
+        hawdb_binding_zstd::install();
+        HawDBEmbedded::open_in_memory()
+    })) {
         Ok(database) => Box::into_raw(Box::new(HawdbDatabase::new(database))),
         Err(_) => {
             unsafe { set_error(err_out, FfiError::panic()) };

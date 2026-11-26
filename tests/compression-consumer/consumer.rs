@@ -1,7 +1,7 @@
 // Copyright 2026 Nowledge
 // SPDX-License-Identifier: Apache-2.0
 
-#![cfg(not(feature = "builtin"))]
+#![cfg(not(any(feature = "test-zstd", feature = "binding-zstd")))]
 
 use hawdb::compression::*;
 use hawdb::{Database, Value};

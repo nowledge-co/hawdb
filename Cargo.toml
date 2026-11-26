@@ -9,6 +9,7 @@ repository = "https://github.com/nowledge-co/hawdb"
 homepage = "https://hawdb.ai"
 readme = "README.md"
 exclude = [
+  "/bindings/compression-zstd/**",
   "/bindings/node/**",
   "/experiments/bftree-mvcc/**",
   "/tools/mvcc-fuzz/**",
@@ -67,7 +68,7 @@ hawdb-telemetry = { path = "crates/telemetry", version = "0.40.0" }
 [dev-dependencies]
 zstd = "0.14.3"
 libc = "0.2"
-hawdb-storage = { path = "crates/storage", version = "0.40.0", default-features = false, features = ["test-support", "builtin-zstd"] }
+hawdb-storage = { path = "crates/storage", version = "0.40.0", default-features = false, features = ["test-support", "test-zstd"] }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos", windows))'.dev-dependencies]
 memmap2 = "0.9.11"
@@ -77,9 +78,9 @@ wasm-bindgen = "0.2.126"
 wasm-bindgen-test = "0.3"
 
 [features]
-builtin-zstd = ["hawdb-storage/builtin-zstd"]
+# Test fixtures only. Production hosts register their own implementation.
+test-zstd = ["hawdb-storage/test-zstd"]
 default = [
-  "builtin-zstd",
   "background-maintenance",
   "full-text-search",
   "graph-analytics",

@@ -17,11 +17,12 @@ const _: () = assert!(
     "requalify Zstd memory admission before updating the bindings"
 );
 
-/// Default adapter: statically linked Zstd with HawDB's Rust allocation callbacks.
+/// Test fixture: statically linked Zstd with Rust allocation callbacks.
+/// Production hosts must supply their own compression implementation.
 #[derive(Debug)]
-pub struct BuiltinZstdBackend;
+pub struct TestZstdBackend;
 
-impl CompressionBackend for BuiltinZstdBackend {
+impl CompressionBackend for TestZstdBackend {
     fn encoder(
         &self,
         level: i32,

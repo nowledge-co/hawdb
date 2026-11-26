@@ -617,6 +617,7 @@ fn selection_limit_shares_the_original_range_and_empty_eof_keeps_fixed_schema() 
 
 #[test]
 fn nullable_float_bits_and_node_identity_are_exposed_without_casting() {
+    hawdb_binding_zstd::install();
     let mut embedded = HawDBEmbedded::open_in_memory();
     embedded.query_admitted("CREATE NODE TABLE Item").unwrap();
     embedded
@@ -687,6 +688,7 @@ fn nullable_float_bits_and_node_identity_are_exposed_without_casting() {
 }
 
 pub(super) fn constrained_embedded(config: DatabaseConfig, handles: usize) -> HawDBEmbedded {
+    hawdb_binding_zstd::install();
     let mut embedded = HawDBEmbedded::open_in_memory_with_runtime_governor_config(
         config,
         Some(hawdb::RuntimeGovernorConfig {

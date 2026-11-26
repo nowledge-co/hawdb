@@ -15,4 +15,4 @@ hawdb-storage = { path = "../storage", version = "0.40.0", default-features = fa
 tokio = { version = "1.49", features = ["rt-multi-thread", "sync", "time"] }
 
 [dev-dependencies]
-hawdb-storage = { path = "../storage", version = "0.40.0", default-features = false, features = ["builtin-zstd"] }
+hawdb-storage = { path = "../storage", version = "0.40.0", default-features = false, features = ["test-zstd"] }

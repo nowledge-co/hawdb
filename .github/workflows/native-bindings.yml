@@ -66,6 +66,7 @@ on:
       - ".github/actions/windows-bazel/**"
       - "tests/in_memory_portable.rs"
       - "tests/branch_project_open.rs"
+      - "bindings/compression-zstd/**"
       - "bindings/ffi/**"
       - "bindings/bun/**"
       - "bindings/go/**"
@@ -189,12 +190,12 @@ jobs:
 
       - name: Test original generation spool ownership
         run: >-
-          bazel test --test_output=errors --test_arg=generation_spool
+          bazel test --//:compression_test_support=true --test_output=errors --test_arg=generation_spool
           //crates/search:hawdb_search_tests
 
       - name: Test consumer publication and reopen on Unix
         run: >-
-          bazel test --test_output=errors
+          bazel test --//:compression_test_support=true --test_output=errors
           //:hawdb_search_projection_consumer_tests
           //:hawdb_search_projection_consumer_minimal_tests
 
@@ -210,7 +211,7 @@ jobs:
       - name: Test query observer under the repository release profile
         if: matrix.os == 'ubuntu-24.04'
         run: >-
-          bazel test --config=release --test_output=errors
+          bazel test --//:compression_test_support=true --config=release --test_output=errors
           //crates/executor:hawdb_query_observer_release_tests
 
       - name: Install Go for the race detector

@@ -497,7 +497,6 @@ dependencies = [
  "serde",
  "serde_json",
  "unicode-width",
- "zstd",
 ]
 
 [[package]]
@@ -514,6 +513,14 @@ dependencies = [
  "hawdb-core",
  "hawdb-executor",
  "hawdb-qos",
+]
+
+[[package]]
+name = "hawdb-binding-zstd"
+version = "0.1.0"
+dependencies = [
+ "hawdb",
+ "zstd",
 ]
 
 [[package]]
@@ -631,6 +638,7 @@ dependencies = [
  "base64",
  "cbindgen",
  "hawdb",
+ "hawdb-binding-zstd",
  "serde_json",
 ]
 
@@ -854,7 +862,6 @@ dependencies = [
  "regex-syntax",
  "serde",
  "serde_json",
- "zstd",
 ]
 
 [[package]]
@@ -889,7 +896,6 @@ dependencies = [
  "roaring",
  "serde",
  "serde_json",
- "zstd",
 ]
 
 [[package]]

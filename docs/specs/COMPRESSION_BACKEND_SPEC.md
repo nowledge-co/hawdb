@@ -10,16 +10,21 @@ exactly one backend wins, and subsequent replacement is refused. Existing
 contexts, background tasks and process-wide dictionary caches never switch
 implementations. No environment variables or dynamic library lookup select it.
 
-The default `builtin-zstd` feature supplies the existing custom-memory adapter.
-Disabling it removes Zstd from the library's normal dependency graph. A host
-then registers its own backend through the facade's typed Rust API. An operation
-requiring compression without a backend returns an error; it does not emit raw
-bytes labelled as Zstd. Missing-provider attempts do not prevent later explicit
-installation. Installing a backend does not create or modify a database.
+The production library has no Zstd implementation or native Zstd dependency,
+with default or minimal features. Hosts register their backend through the
+facade's typed Rust API. An operation requiring compression without a backend
+returns an error; it never emits raw bytes labelled as Zstd. Missing-provider
+attempts leave installation possible. Installing a backend does not create or
+modify a database.
 
 The contract belongs to `hawdb-storage::compression` and is re-exported by the
-HawDB facade. A separate crate is unnecessary: the implementation owns the
-existing storage codec boundary and checkpoint admission types.
+HawDB facade. The previous custom-memory adapter is a `test-zstd` fixture only.
+Python/MoonBit/C bindings own a separate unpublished
+`bindings/compression-zstd` adapter
+that depends on the facade. This dependency direction keeps native compression
+out of the database library while sharing the binding implementation. Node,
+Go and Swift enter through C FFI. An already installed host provider
+wins over binding initialization.
 
 ## Codec contract
 
@@ -53,12 +58,14 @@ checks retained decoder memory after each step.
 Checkpoint factories receive the existing `CheckpointWorkContext`; a host
 implementation must acquire and retain its memory permits before allocation,
 release physical ownership before refunding them, and preserve typed refusal.
-The default adapter continues using Rust allocation callbacks with exact native
-allocation charging. Host implementations own their allocator and bound
+The test fixture uses Rust allocation callbacks with exact native charging.
+The binding adapter uses public Zstd APIs with admitted context/workspace bounds
+and frame-dependent buffer growth. It retains permits until physical release. Host implementations own their allocator and bound
 correctness; the interface does not intercept arbitrary third-party malloc.
 
-ABI/version qualification remains private to the built-in adapter. A host
-backend does not need to use `zstd-sys`, or the built-in adapter's native version.
+Custom-memory ABI qualification remains private to the test fixture. The
+binding adapter separately qualifies its memory bounds. A host backend need
+not use `zstd-sys` or either adapter's native version.
 
 ## Implementation and verification sequence
 
@@ -68,10 +75,11 @@ backend does not need to use `zstd-sys`, or the built-in adapter's native versio
 2. Route all production storage/Search codec and frame-header operations through
    that boundary. Replace Search's implementation-specific bounds with provider
    bounds. Keep budget-denial and incomplete-publication behavior.
-3. Make `builtin-zstd` optional, propagate features through the facade and
-   internal dependencies, and preserve built-in codec selection in bindings and
-   existing default/minimal test lanes. Add an independent external-provider
-   consumer and a normal-dependency graph check without the built-in backend.
+3. Keep `test-zstd` disabled in every normal default feature set. Enable it in
+   component dev-dependencies and explicitly in Bazel test commands with
+   `--//:compression_test_support=true`, leaving `.bazelrc` unchanged. Install
+   the binding-owned adapter at Python/C open boundaries. Check an independent
+   default-facade consumer's normal dependency graph contains no native codec.
 4. Verify initialization races, replacement refusal, cross-implementation frame
    compatibility, malformed progress, truncated streams, exact/short budgets,
    failure cleanup and native/WASM default behavior. Update TEST_INDEX and

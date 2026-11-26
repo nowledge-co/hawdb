@@ -12,7 +12,7 @@ default = ["full"]
 full = ["hawdb/default"]
 
 [dev-dependencies]
-hawdb = { path = "../..", default-features = false, features = ["builtin-zstd"] }
+hawdb = { path = "../..", default-features = false, features = ["test-zstd"] }
 hawdb-storage = { path = "../storage", features = ["test-support"], default-features = false }
 
 [[test]]

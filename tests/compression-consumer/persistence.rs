@@ -19,6 +19,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(not(feature = "host-zstd"))]
         return Err("host mode requires host-zstd".into());
     }
+    #[cfg(feature = "binding-zstd")]
+    hawdb_binding_zstd::install();
     let value = "cross-backend checkpoint payload ".repeat(10_000);
     let mut db = hawdb::Database::open(path)?;
     if mode == "create" {
@@ -35,7 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         rows.rows[0].get("body"),
         Some(&hawdb::Value::String(value.clone()))
     );
-    if mode == "host" {
+    if mode == "host" || mode == "binding" {
         db.query_sql_with_params(
             "INSERT INTO documents VALUES (2, $1)",
             &[hawdb::Value::String(value.clone())],

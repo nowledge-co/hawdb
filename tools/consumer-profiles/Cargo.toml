@@ -8,7 +8,7 @@ publish = false
 [workspace]
 
 [dependencies]
-hawdb = { path = "../..", default-features = false, features = ["builtin-zstd"], optional = true }
+hawdb = { path = "../..", default-features = false, optional = true }
 
 [features]
 default = []

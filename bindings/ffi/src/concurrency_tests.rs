@@ -61,6 +61,7 @@ fn execute(db: *mut HawdbDatabase, sql: bool) -> Result<(), String> {
 
 #[test]
 fn ordinary_ffi_reads_bypass_database_owner_and_overlap() {
+    hawdb_binding_zstd::install();
     let mut embedded = HawDBEmbedded::open_in_memory();
     embedded
         .query_admitted("CREATE (:Item {value: 1})")

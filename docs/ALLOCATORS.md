@@ -81,7 +81,7 @@ shrink after deallocation, nor turn query memory budgets into a whole-heap cap.
 ## Coverage boundary
 
 Rust global allocator injection covers HawDB's ordinary Rust heap allocations.
-The default `builtin-zstd` backend creates its compression/decompression contexts with explicit
+The test-only `test-zstd` fixture creates its compression/decompression contexts with explicit
 `ZSTD_customMem` callbacks. The internal codec in `hawdb-storage` uses Rust
 `alloc`/`dealloc` for both native and WASM context workspaces. Its aligned prefix
 stores the original allocation size, so freeing on another thread recovers the
@@ -120,31 +120,52 @@ and result limits are independent controls.
 
 `hawdb::compression::install_compression_backend(Arc<dyn CompressionBackend>)`
 selects one process-wide implementation before the first compression operation.
-First use of the built-in backend also fixes the choice. Concurrent installation
+First use of the explicitly enabled test fixture also fixes the choice.
+Concurrent installation
 and first use have one winner; further installation returns
 `CompressionBackendAlreadyInitialized`, including after every database closes.
 There is no environment-variable override or runtime replacement. The registry
-does not allocate a persistent heap object for the default backend.
+does not allocate a persistent heap object for the test fixture.
 
-`builtin-zstd` is enabled by default. To remove HawDB's native Zstd dependency,
-disable that feature and install a host implementation before compressed reads,
-writes or full-text dictionary loading. With no backend, operations requiring
-compression return an error and installation remains possible. A failed
-dictionary load does not poison the process cache. Ordinary uncompressed
-operations can still run. Keep `builtin-zstd` explicit in existing minimal builds
-that need the default codec:
+HawDB's production dependency graph contains no Zstd implementation, with either
+default or minimal features. Install a host implementation before compressed
+reads, writes or full-text dictionary loading. Without one, compression returns
+an error and installation remains possible. A failed dictionary load does not
+poison the process cache. Ordinary uncompressed operations can still run.
 
 ```toml
 [dependencies]
-hawdb = { version = "0.40", default-features = false, features = ["builtin-zstd"] }
+hawdb = "0.40"
 ```
 
-For an injected implementation, omit `builtin-zstd`. All normal dependency paths
-to storage disable its defaults, so a different internal consumer cannot
-silently re-enable it. Cargo's feature unification still applies if the host
-explicitly enables the feature through another dependency. The facade exports
-the provider/context traits, `EncoderState`/`DecoderState`, `CodecProgress`,
-`EncodeOperation`, parsed `FrameHeader`, and `CheckpointWorkContext`.
+`test-zstd` enables the old custom-memory implementation only as a test fixture.
+Workspace dev-dependencies enable it for component tests; external hosts do not
+inherit those dev features. Do not enable it in production. Cargo feature
+unification still applies if another dependency explicitly enables the fixture.
+The facade exports the provider/context traits, `EncoderState`/`DecoderState`,
+`CodecProgress`, `EncodeOperation`, parsed `FrameHeader`, and
+`CheckpointWorkContext`.
+
+Python, MoonBit and the C FFI install `bindings/compression-zstd` at their open
+boundary;
+Node, Go and Swift use that FFI boundary. This independent, unpublished
+adapter depends on the facade, never the reverse. It respects an already
+installed host provider. It uses public Zstd context APIs and the native
+allocator, not the test fixture's private custom-memory ABI. Rust hosts that
+require global-allocator ownership must supply a provider with that policy.
+
+The binding adapter qualifies Zstd 1.5.7/1.6.0, compression level 3 and a 128-MiB
+maximum decode window. Checkpoint memory is reserved before native construction
+and before each frame's decode-buffer growth. Buffer admission grows in 1-MiB
+units and stays charged while the context retains buffers; small frames do not
+reserve the entire maximum window. Its 256-KiB decoder-context bound includes
+fixed Rust bookkeeping. Native context destruction precedes permit refunds,
+and callback panics are recorded in the active checkpoint scope. Requalify
+these bounds and the free-before-replacement rule for a new native version.
+
+Bazel ordinary builds omit the fixture. Test commands explicitly select
+`--//:compression_test_support=true`; `.bazelrc` does not select it implicitly.
+Binding-only tests run without that flag to exercise their production adapter.
 
 The provider creates independent owned streaming contexts and supplies checked
 workspace bounds. `EncoderState::new` and `DecoderState::new` admit their boxed
@@ -160,7 +181,8 @@ Implementations must emit interoperable Zstd frames and preserve flush, pledged
 size, truncation, modern/skippable frame and reset semantics. Invalid reported
 positions, stalled streams and post-failure writes are refused. Changing the
 implementation across process restarts does not change the persistent format.
-ABI/version guards apply only to the built-in adapter. See the
+The custom-memory ABI guards apply only to the test fixture; the binding
+adapter separately qualifies its memory bounds. See the
 [design contract](specs/COMPRESSION_BACKEND_SPEC.md) and the independent
 `tests/compression-consumer` fixture. Its host adapter uses deliberately coarse
 workspace admission for testing and is not a production allocator example.
@@ -169,11 +191,12 @@ The `Zstd Compatibility` workflow verifies a normal dependency graph containing
 no `zstd`, `zstd-safe` or `zstd-sys`, missing-provider errors and installation
 races. With `host-zstd`, the same independent workspace checks a host-selected
 implementation, frame interoperability, invalid progress/failure fencing and
-dictionary loading. Separate processes write a checkpoint with the built-in
+dictionary loading. Separate processes write a checkpoint with the test
 backend, reopen/mutate/checkpoint with the host backend, and reopen it again with
-the built-in backend. These fixtures do not inherit workspace dev features.
+the test backend. A second three-process run checks the binding adapter. These
+fixtures do not inherit workspace dev features.
 
-## Built-in Zstd ABI requalification
+## Test fixture Zstd ABI requalification
 
 The compile-time version assertions accept only Zstd 1.5.7 and 1.6.0. They
 intentionally reject other patch/minor versions until requalified. Runtime
@@ -263,7 +286,7 @@ Assertions concern observable allocator activity, not a total-memory estimate.
 
 ```sh
 cargo test --locked -p hawdb --test host_allocator
-cargo test --locked -p hawdb --no-default-features --features builtin-zstd --test host_allocator
+cargo test --locked -p hawdb --no-default-features --features test-zstd --test host_allocator
 cargo test --locked -p hawdb-storage --lib compression::tests
 bazel test //:hawdb_host_allocator_tests //:hawdb_host_allocator_minimal_tests
 ```
@@ -274,10 +297,10 @@ Chrome, and ChromeDriver setup in [WASM.md](WASM.md), then run:
 ```sh
 CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner \
   WASM_BINDGEN_USE_BROWSER=1 \
-  cargo test --locked -p hawdb --no-default-features --features builtin-zstd \
+  cargo test --locked -p hawdb --no-default-features --features test-zstd \
     --target wasm32-unknown-unknown --test host_allocator
 
-cargo clippy --locked -p hawdb --no-default-features --features builtin-zstd \
+cargo clippy --locked -p hawdb --no-default-features --features test-zstd \
   --target wasm32-unknown-unknown --lib \
   --test in_memory_portable --test host_allocator -- -D warnings
 ```

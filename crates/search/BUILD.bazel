@@ -23,7 +23,6 @@ test_suite(
 )
 
 _SEARCH_DEFAULT_FEATURES = [
-    "builtin-zstd",
     "background-maintenance",
     "full-text-search",
     "graph-analytics",
@@ -37,13 +36,13 @@ _SEARCH_COMPILE_DATA = ["src/data/jieba-0.11.0.dict.txt.zst"]
 _SEARCH_TEST_PROFILES = {
     "default": (_SEARCH_DEFAULT_FEATURES, ":hawdb_search"),
     "acl": (_SEARCH_DEFAULT_FEATURES + ["acl"], ":hawdb_search_acl"),
-    "minimal": (["builtin-zstd"], ":hawdb_search_minimal"),
-    "text_only": (["builtin-zstd", "full-text-search"], ":hawdb_search_graph_text"),
-    "vector_only": (["builtin-zstd", "vector-search"], ":hawdb_search_lifecycle_vector_only"),
-    "background_only": (["builtin-zstd", "background-maintenance"], ":hawdb_search_lifecycle_background_only"),
-    "text_vector": (["builtin-zstd", "full-text-search", "vector-search"], ":hawdb_search_lifecycle_text_vector"),
-    "text_background": (["builtin-zstd", "full-text-search", "background-maintenance"], ":hawdb_search_lifecycle_text_background"),
-    "vector_background": (["builtin-zstd", "vector-search", "background-maintenance"], ":hawdb_search_lifecycle_vector_background"),
+    "minimal": ([], ":hawdb_search_minimal"),
+    "text_only": (["full-text-search"], ":hawdb_search_graph_text"),
+    "vector_only": (["vector-search"], ":hawdb_search_lifecycle_vector_only"),
+    "background_only": (["background-maintenance"], ":hawdb_search_lifecycle_background_only"),
+    "text_vector": (["full-text-search", "vector-search"], ":hawdb_search_lifecycle_text_vector"),
+    "text_background": (["full-text-search", "background-maintenance"], ":hawdb_search_lifecycle_text_background"),
+    "vector_background": (["vector-search", "background-maintenance"], ":hawdb_search_lifecycle_vector_background"),
 }
 
 _SEARCH_BASE_DEPS = [
@@ -55,7 +54,6 @@ _SEARCH_BASE_DEPS = [
     "@crate_index//:regex-syntax",
     "@crate_index//:serde",
     "@crate_index//:serde_json",
-    "@crate_index//:zstd",
     "//crates/core:hawdb_core",
     "//crates/evidence:hawdb_evidence",
     "//crates/executor:hawdb_executor",
@@ -88,11 +86,11 @@ rust_library(
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
-# Minimal capability profile with the built-in codec for embedded hosts
+# Minimal capability profile for embedded hosts
 # that exclude the optional vector-projection capability.
 rust_library(
     name = "hawdb_search_minimal",
-    crate_features = ["builtin-zstd"],
+    crate_features = [],
     crate_name = "hawdb_search",
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"]) + ["tests/support/live_allocation.rs"],
@@ -114,7 +112,7 @@ rust_library(
     name = "hawdb_search_graph_text",
     crate_name = "hawdb_search",
     crate_root = "src/lib.rs",
-    crate_features = ["builtin-zstd", "full-text-search"],
+    crate_features = ["full-text-search"],
     srcs = glob(["src/**/*.rs"]) + ["tests/support/live_allocation.rs"],
     compile_data = _SEARCH_COMPILE_DATA,
     edition = "2024",

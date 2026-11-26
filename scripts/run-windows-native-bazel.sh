@@ -63,6 +63,7 @@ rust_case() {
   local command=("$BAZEL" test --nocache_test_results --test_output=all --test_timeout=7200
     "--build_event_json_file=$(native_path "$results/$name.bep.json")")
   command+=("--//:windows_native_profile=$profile")
+  if [[ "$profile" != bindings ]]; then command+=(--//:compression_test_support=true); fi
   for argument in "$@" --nocapture; do command+=("--test_arg=$argument"); done
   if [[ "$threads" != default ]]; then command+=("--test_arg=--test-threads=$threads"); fi
   command+=("$target")

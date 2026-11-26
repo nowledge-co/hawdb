@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // First-class MoonBit native adapter. Exports the C calling convention
-// directly from Rust and depends only on the HawDB engine crate.
+// directly from Rust and installs the binding-owned compression adapter.
 // MoonBit allocations use the native runtime contract in moonbit.h.
 
 use std::collections::BTreeMap;
@@ -550,6 +550,7 @@ pub unsafe extern "C" fn moonbit_hawdb_open(
         return handle;
     }
     let opened = catch_unwind(AssertUnwindSafe(|| {
+        hawdb_binding_zstd::install();
         let path = unsafe { input(path, len, "path") }?;
         let options = open_options(PathBuf::from(path), read_only != 0);
         HawDBEmbedded::open_with_options(options).map_err(|e| engine_error(&e))
@@ -573,7 +574,10 @@ pub extern "C" fn moonbit_hawdb_open_in_memory() -> *mut Handle {
     if handle.is_null() {
         return handle;
     }
-    match catch_unwind(AssertUnwindSafe(HawDBEmbedded::open_in_memory)) {
+    match catch_unwind(AssertUnwindSafe(|| {
+        hawdb_binding_zstd::install();
+        HawDBEmbedded::open_in_memory()
+    })) {
         Ok(db) => {
             let mut state = unsafe { &*(*handle).state }
                 .lock()

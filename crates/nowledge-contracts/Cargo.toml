@@ -17,4 +17,4 @@ hawdb-search = { path = "../search", version = "0.40.0", default-features = fals
 hawdb-storage = { path = "../storage", version = "0.40.0", default-features = false }
 
 [dev-dependencies]
-hawdb-storage = { path = "../storage", version = "0.40.0", default-features = false, features = ["builtin-zstd"] }
+hawdb-storage = { path = "../storage", version = "0.40.0", default-features = false, features = ["test-zstd"] }

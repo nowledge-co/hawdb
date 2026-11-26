@@ -15,10 +15,10 @@
 //! Streaming Zstd frames through one immutable, host-selectable process backend.
 
 mod backend;
-#[cfg(feature = "builtin-zstd")]
+#[cfg(any(test, feature = "test-zstd"))]
 mod context;
 mod frame;
-#[cfg(feature = "builtin-zstd")]
+#[cfg(any(test, feature = "test-zstd"))]
 mod native;
 mod output;
 mod session;
@@ -32,8 +32,8 @@ pub use backend::{
 };
 pub use frame::{parse_frame_header, FrameHeader};
 use hawdb_core::RuntimeMemoryPermit;
-#[cfg(feature = "builtin-zstd")]
-pub use native::BuiltinZstdBackend;
+#[cfg(any(test, feature = "test-zstd"))]
+pub use native::TestZstdBackend;
 pub(crate) use output::AdmittedCompressionOutput;
 use session::CompressionContext;
 pub use session::DecompressionContext;
@@ -402,5 +402,5 @@ pub(crate) fn encode_slice(source: &[u8], level: i32) -> io::Result<Vec<u8>> {
     encoder.finish()
 }
 
-#[cfg(all(test, feature = "builtin-zstd"))]
+#[cfg(test)]
 mod tests;

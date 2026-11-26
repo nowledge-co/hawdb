@@ -55,6 +55,7 @@ impl Database {
         max_read_result_payload_bytes: Option<usize>,
         namespace_durability_anchor: Option<PathBuf>,
     ) -> PyResult<Self> {
+        hawdb_binding_zstd::install();
         let with_open_options = |mut config: DatabaseConfig| {
             config.namespace_durability_anchor = namespace_durability_anchor.clone();
             if let Some(rows) = max_read_result_rows {

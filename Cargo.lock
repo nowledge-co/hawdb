@@ -563,6 +563,7 @@ version = "0.40.0"
 dependencies = [
  "hawdb",
  "hawdb-query",
+ "hawdb-storage",
  "serde",
  "serde_json",
  "sha2",

@@ -48,7 +48,7 @@ Or build the default library from a checkout:
 cargo build --locked -p hawdb
 ```
 
-The default build includes full-text search, vector search, graph analytics, background maintenance, and the Tokio adapter. A capability left out of the build cannot be turned back on at runtime. See [Build](#build).
+The default build includes full-text search, vector search, graph analytics, background maintenance, and the Tokio adapter. Rust hosts must [install a compression backend](#host-provided-compression) before compressed operations; language bindings supply their own adapter. A capability left out of the build cannot be turned back on at runtime. See [Build](#build).
 
 ## Language bindings
 
@@ -272,21 +272,21 @@ cargo build --locked -p hawdb
 A minimal library keeps canonical graph storage, WAL recovery, transactions, parameterized Cypher, and incremental base indexes:
 
 ```console
-cargo build --locked -p hawdb --no-default-features --features builtin-zstd
+cargo build --locked -p hawdb --no-default-features
 ```
 
 Add capabilities explicitly when the host is constrained:
 
 ```console
 cargo build --locked -p hawdb --no-default-features \
-  --features builtin-zstd,full-text-search,vector-search
+  --features full-text-search,vector-search
 ```
 
 ### Cargo features
 
 | Feature | Default | What it compiles |
 | --- | --- | --- |
-| `builtin-zstd` | yes | Qualified native Zstd adapter. Disable it and register a host compression backend to remove the library's native Zstd dependency. |
+| `test-zstd` | no | Test/developer Zstd fixture. Production hosts supply their own backend. |
 | `full-text-search` | yes | Lexical indexing and search, gated again by the runtime capability matrix. |
 | `vector-search` | yes | Scalar vector search and the bounded 1-bit or 4-bit RaBitQ candidate projection. Final ranking reads canonical raw vectors. |
 | `graph-analytics` | yes | Bounded graph projection and analytics operators. |
@@ -303,7 +303,7 @@ Production packages use an explicit allowlist. `--all-features` pulls in `opente
 
 ```console
 cargo build --locked --release -p hawdb --no-default-features \
-  --features builtin-zstd,background-maintenance,full-text-search,graph-analytics,vector-search
+  --features background-maintenance,full-text-search,graph-analytics,vector-search
 ```
 
 A nightly monitoring build adds the metrics adapter and Tokio integration. The host owns the OpenTelemetry SDK, exporter, credentials, and shutdown:
@@ -317,28 +317,34 @@ Measured dependency footprints are in [`docs/COMPOSITION_BASELINE.md`](docs/COMP
 
 ### Host-owned memory allocator
 
-HawDB does not install or bundle a custom allocator. The final host binary or WASM `cdylib` chooses its Rust allocator with `#[global_allocator]`, and HawDB's Rust allocations and built-in Zstd context workspaces use that choice. Without host injection, Rust's target default applies. Mem's server selects `mimalloc`; embedding HawDB in that binary reuses the existing selection. See [the allocator contract](docs/ALLOCATORS.md) for native and WASM examples, ownership boundaries, and verification commands.
+HawDB does not install or bundle a custom allocator. The final host binary or WASM `cdylib` chooses its Rust allocator with `#[global_allocator]`, and HawDB's Rust allocations use that choice. Compression providers own their foreign allocation policy. Without host injection, Rust's target default applies. Mem's server selects `mimalloc`; embedding HawDB in that binary reuses the existing selection. See [the allocator contract](docs/ALLOCATORS.md) for native and WASM examples, ownership boundaries, and verification commands.
 
 ### Host-provided compression
 
-The host can call `hawdb::compression::install_compression_backend` once before
-any compression use. All databases share that implementation; first use of the
-built-in backend also fixes the process-wide choice. Replacement is refused.
-Disable `builtin-zstd` to remove the library's `zstd-sys` dependency completely.
-Existing minimal builds that use the built-in codec must now request
-`--no-default-features --features builtin-zstd` explicitly. This substitutes the
-Zstd implementation while preserving the stored frame format. Streaming,
-workspace admission and checkpoint cleanup are part of the provider contract;
-see [configuration and verification](docs/ALLOCATORS.md#host-provided-compression).
+The production library contains no Zstd implementation, including with default
+features. The host calls `hawdb::compression::install_compression_backend` once
+before compressed reads, writes or dictionary loading. All databases share that
+implementation; replacement is refused. Missing-provider operations fail clearly
+and leave installation possible. The stored Zstd frame format is unchanged.
+
+Python, MoonBit and C/Node/Go/Swift bindings install their independent adapter from
+`bindings/compression-zstd`. It uses the native Zstd allocator; an existing host
+provider takes precedence. Rust hosts supply their own implementation through
+the facade. `test-zstd` supplies a fixture for tests and developer examples only.
+Streaming, workspace admission and checkpoint cleanup are part of the provider
+contract; see [configuration and verification](docs/ALLOCATORS.md#host-provided-compression).
+
+Developer CLI commands requiring compression use `cargo run --features test-zstd --bin hawdb`
+or `bazel run --//:compression_test_support=true //:hawdb_cli`.
 
 ### Bazel
 
 ```console
 bazel build //:hawdb
-bazel test --test_output=errors //...
+bazel test --//:compression_test_support=true --test_output=errors //...
 ```
 
-`//:hawdb_graph_text` matches `cargo build -p hawdb --no-default-features --features builtin-zstd,full-text-search`: graph and SQL plus full-text search, without vector search. Bazel uses a hermetic JDK 21, so `JAVA_HOME` is unnecessary for the TLA+ rules. On macOS the repository keeps Rust proc-macros unstripped to avoid a Mach-O alignment bug observed with Rust 1.97.1.
+`//:hawdb_graph_text` matches `cargo build -p hawdb --no-default-features --features full-text-search`: graph and SQL plus full-text search, without vector search. Bazel uses a hermetic JDK 21, so `JAVA_HOME` is unnecessary for the TLA+ rules. On macOS the repository keeps Rust proc-macros unstripped to avoid a Mach-O alignment bug observed with Rust 1.97.1.
 
 The experimental in-memory browser build is documented in [`docs/WASM.md`](docs/WASM.md). The public playground is built from [nowledge-co/hawdb-website](https://github.com/nowledge-co/hawdb-website).
 

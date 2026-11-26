@@ -9,8 +9,9 @@ repository.workspace = true
 homepage.workspace = true
 
 [features]
-default = ["builtin-zstd"]
-builtin-zstd = ["dep:zstd"]
+default = []
+# Test fixtures only; deliberately absent from default library dependencies.
+test-zstd = ["dep:zstd"]
 test-support = []
 # Optional bridge for counted native artifact mappings; portable hosts omit it.
 artifact-mmap = ["dep:memmap2"]
@@ -49,3 +50,6 @@ harness = false
 [[bench]]
 name = "wal_batch_encode"
 harness = false
+
+[dev-dependencies]
+zstd = "0.14.3"

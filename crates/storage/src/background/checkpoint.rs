@@ -408,8 +408,9 @@ impl CheckpointWorkContext {
         }
     }
 
+    /// Preserve a provider failure, including cleanup failures, in the active work scope.
     #[cold]
-    pub(crate) fn record_failure(&self, error: CheckpointWorkError) -> CheckpointWorkError {
+    pub fn record_failure(&self, error: CheckpointWorkError) -> CheckpointWorkError {
         if let Some(recorded) = &self.recorded_failure {
             let mut first = recorded
                 .lock()

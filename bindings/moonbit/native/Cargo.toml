@@ -12,6 +12,7 @@ publish = false
 crate-type = ["staticlib"]
 
 [dependencies]
+hawdb-binding-zstd = { path = "../../compression-zstd" }
 hawdb = { path = "../../.." }
 base64 = "0.22"
 serde = "1"

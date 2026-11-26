@@ -39,16 +39,23 @@ jobs:
       - name: Verify the library without a native codec dependency
         run: |
           cargo generate-lockfile --manifest-path tests/compression-consumer/Cargo.toml
-          cargo tree --locked --manifest-path tests/compression-consumer/Cargo.toml --edges normal --prefix none > target-compression-dependencies.txt
+          cargo tree --locked --manifest-path tests/compression-consumer/Cargo.toml --features default-facade --edges normal --prefix none > target-compression-dependencies.txt
           python3 -c 'from pathlib import Path; names={line.split()[0] for line in Path("target-compression-dependencies.txt").read_text().splitlines()}; assert not names.intersection({"zstd", "zstd-safe", "zstd-sys"}), names'
-          cargo test --locked --manifest-path tests/compression-consumer/Cargo.toml
+          cargo test --locked --manifest-path tests/compression-consumer/Cargo.toml --features default-facade
       - name: Verify an independently supplied host implementation
         run: |
           cargo test --locked --manifest-path tests/compression-consumer/Cargo.toml --features host-zstd
           root=$(mktemp -d)
-          cargo run --locked --manifest-path tests/compression-consumer/Cargo.toml --features builtin,persistence --bin persistence -- create "$root/database"
+          cargo run --locked --manifest-path tests/compression-consumer/Cargo.toml --features test-zstd,persistence --bin persistence -- create "$root/database"
           cargo run --locked --manifest-path tests/compression-consumer/Cargo.toml --features host-zstd,persistence --bin persistence -- host "$root/database"
-          cargo run --locked --manifest-path tests/compression-consumer/Cargo.toml --features builtin,persistence --bin persistence -- verify "$root/database"
+          cargo run --locked --manifest-path tests/compression-consumer/Cargo.toml --features test-zstd,persistence --bin persistence -- verify "$root/database"
+          cargo run --locked --manifest-path tests/compression-consumer/Cargo.toml --features test-zstd,persistence --bin persistence -- create "$root/binding-database"
+          cargo run --locked --manifest-path tests/compression-consumer/Cargo.toml --features binding-zstd,persistence --bin persistence -- binding "$root/binding-database"
+          cargo run --locked --manifest-path tests/compression-consumer/Cargo.toml --features test-zstd,persistence --bin persistence -- verify "$root/binding-database"
+          cargo generate-lockfile --manifest-path bindings/compression-zstd/Cargo.toml
+          cargo test --locked --manifest-path bindings/compression-zstd/Cargo.toml
+          cargo fmt --manifest-path bindings/compression-zstd/Cargo.toml -- --check
+          cargo clippy --locked --manifest-path bindings/compression-zstd/Cargo.toml --all-targets --all-features -- -D warnings
           cargo fmt --manifest-path tests/compression-consumer/Cargo.toml -- --check
           cargo clippy --locked --manifest-path tests/compression-consumer/Cargo.toml --all-targets -- -D warnings
           cargo clippy --locked --manifest-path tests/compression-consumer/Cargo.toml --all-targets --features host-zstd -- -D warnings
@@ -110,7 +117,7 @@ jobs:
           version=$(cargo metadata --locked --manifest-path tests/zstd-consumer/Cargo.toml --format-version 1 | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "wasm-bindgen"))')
           cargo install wasm-bindgen-cli --version "$version" --locked
           cargo test --locked --manifest-path tests/zstd-consumer/Cargo.toml --no-default-features --target wasm32-unknown-unknown
-          cargo clippy --locked -p hawdb --no-default-features --features builtin-zstd --target wasm32-unknown-unknown --lib --test in_memory_portable --test host_allocator -- -D warnings
+          cargo clippy --locked -p hawdb --no-default-features --features test-zstd --target wasm32-unknown-unknown --lib --test in_memory_portable --test host_allocator -- -D warnings
       - name: Retain the resolved dependency graphs
         if: always()
         uses: actions/upload-artifact@v7

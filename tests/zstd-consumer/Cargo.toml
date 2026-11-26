@@ -15,7 +15,7 @@ default = ["hawdb/default"]
 
 [dependencies]
 hawdb = { path = "../..", default-features = false }
-hawdb-storage = { path = "../../crates/storage" }
+hawdb-storage = { path = "../../crates/storage", default-features = false, features = ["test-zstd"] }
 zstd = "=0.14.5"
 zstd-sys = { version = "=2.2.0", default-features = false }
 

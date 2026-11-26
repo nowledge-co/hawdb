@@ -19,4 +19,4 @@ hawdb-storage = { path = "../storage", version = "0.40.0", default-features = fa
 unicode-width = "0.2"
 
 [dev-dependencies]
-hawdb-storage = { path = "../storage", version = "0.40.0", default-features = false, features = ["builtin-zstd"] }
+hawdb-storage = { path = "../storage", version = "0.40.0", default-features = false, features = ["test-zstd"] }
