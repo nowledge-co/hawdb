@@ -279,7 +279,14 @@ where
                 self.entries = HashMap::new();
                 self.table_capacity_high_water = 0;
             } else if self.over_byte_limit() {
+                // `shrink_to_fit` frees the old bucket allocation, so the
+                // retained high-water estimate must follow the actual table
+                // capacity. Keeping the pre-shrink high-water here made every
+                // later admission evict against memory the table no longer
+                // owned, collapsing the cache to a few entries after the first
+                // byte-pressure event.
                 self.entries.shrink_to_fit();
+                self.table_capacity_high_water = self.entries.capacity();
             }
         }
         true
@@ -438,6 +445,27 @@ mod tests {
         assert!(cache.stats().evictions > 0);
         assert!(cache.stats().entries <= 3);
         assert!(cache.clone().charged_bytes().unwrap() <= 4096);
+    }
+
+    #[test]
+    fn byte_pressure_reclaims_spare_table_capacity_after_shrink() {
+        let mut cache = LfuCache::<u64, u64>::with_byte_limits(None, Some(10_000), None);
+        for key in 0..60 {
+            cache.insert_weighted(key, key, 100);
+        }
+        let stats = cache.stats();
+        assert!(
+            stats.entries > 10,
+            "byte pressure collapsed the cache to {} entries",
+            stats.entries
+        );
+        assert!(
+            cache.table_capacity_high_water <= cache.entries.capacity().saturating_mul(2),
+            "retained table charge {} is far above current capacity {}",
+            cache.table_capacity_high_water,
+            cache.entries.capacity()
+        );
+        assert!(cache.charged_bytes().unwrap() <= 10_000);
     }
 
     #[test]
