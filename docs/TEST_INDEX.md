@@ -2808,8 +2808,12 @@ The pinned dictionary loader's `cjk_dictionary::tests` family verifies the
 complete upstream byte digest and 48 upstream token/offset fixtures with HMM
 enabled and disabled. It remains in every existing Search unit profile; the
 standalone `hawdb_search_analyzer_workspace_allocation_tests` target imports the
-same loader and retains its complete scratch/TLS qualification. Bazel declares
-the compressed resource as compile data, including direct-source unit profiles.
+same loader and retains its complete scratch/TLS qualification; that standalone
+target is native-only because browser WASM omits Jieba. The browser fallback
+test `cjk_tokenizer::tests::browser_fallback_keeps_han_ngrams_without_jieba`
+asserts the no-Jieba analyzer identity and Han n-grams and is compiled by the
+WASM `--lib --tests` check. Bazel declares the compressed resource as compile
+data, including direct-source unit profiles.
 Replay with `cargo test --locked -p hawdb-search --lib cjk_dictionary` or
 `bazel test //crates/search:hawdb_search_tests --test_arg=cjk_dictionary`.
 The [unregistered component probe](benchmarks/jieba_dictionary_loading_2026_10_27/README.md)

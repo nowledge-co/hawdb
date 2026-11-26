@@ -159,4 +159,30 @@ mod tests {
             assert!(is_cjk_search_char(ch));
         }
     }
+
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[test]
+    fn browser_fallback_keeps_han_ngrams_without_jieba() {
+        assert_eq!(
+            ANALYZER_FORMAT_VERSION,
+            &b"hawdb-search-analyzer-v3-no-jieba-search-han-ngrams"[..]
+        );
+        let mut tokens = crate::TokenSequence::default();
+        crate::push_cjk_ngram_tokens(
+            &mut tokens,
+            "\u{6570}\u{636e}\u{5e93}",
+            &crate::SearchAnalyzerLexicon::default(),
+        );
+        let tokens = tokens.into_vec();
+        for expected in ["\u{6570}\u{636e}", "\u{636e}\u{5e93}"] {
+            assert!(tokens.iter().any(|token| token == expected), "{tokens:?}");
+        }
+        let mut emitted = Vec::new();
+        visit_chinese_search_tokens_with_workspace("\u{6570}\u{636e}\u{5e93}", None, |token| {
+            emitted.push(token.to_owned());
+            Ok(())
+        })
+        .unwrap();
+        assert!(emitted.is_empty(), "{emitted:?}");
+    }
 }
