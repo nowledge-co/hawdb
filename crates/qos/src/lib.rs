@@ -40,8 +40,8 @@ pub use resource::{
     RuntimeResourceSnapshot,
 };
 pub use runtime::{
-    RuntimeAdmissionCode, RuntimeAdmissionError, RuntimeAdmissionWaiter, RuntimeGovernor,
-    RuntimeGovernorConfig, RuntimeGovernorLimits, RuntimeGovernorSnapshot,
+    RuntimeAdmissionCode, RuntimeAdmissionError, RuntimeAdmissionWaitError, RuntimeAdmissionWaiter,
+    RuntimeGovernor, RuntimeGovernorConfig, RuntimeGovernorLimits, RuntimeGovernorSnapshot,
     RuntimeIoReservationScope, RuntimeMaintenanceMemoryReport, RuntimeMaintenanceWork,
     RuntimePermit, RuntimeRetainedMemory, RuntimeRetainedResult, RuntimeRetainedResultError,
     RuntimeRetainedResultResource, RuntimeRetainedResultSnapshot, RuntimeTelemetryEvent,

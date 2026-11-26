@@ -19,11 +19,14 @@ type NativeTransaction
 
 ///|
 #borrow(handle)
-extern "C" fn ffi_tx_begin(handle : NativeHandle, read_only : Int) -> NativeTransaction = "moonbit_hawdb_tx_begin"
+extern "C" fn ffi_tx_begin(
+  handle : NativeHandle,
+  read_only : Int32,
+) -> NativeTransaction = "moonbit_hawdb_tx_begin"
 
 ///|
 #borrow(tx)
-extern "C" fn ffi_tx_is_open(tx : NativeTransaction) -> Int = "moonbit_hawdb_tx_is_open"
+extern "C" fn ffi_tx_is_open(tx : NativeTransaction) -> Int32 = "moonbit_hawdb_tx_is_open"
 
 ///|
 #borrow(tx)
@@ -34,15 +37,15 @@ extern "C" fn ffi_tx_error(tx : NativeTransaction) -> Bytes = "moonbit_hawdb_tx_
 extern "C" fn ffi_tx_query(
   tx : NativeTransaction,
   statement : Bytes,
-  statement_len : Int,
+  statement_len : Int32,
   params : Bytes,
-  params_len : Int,
-  sql : Int,
+  params_len : Int32,
+  sql : Int32,
 ) -> Bytes = "moonbit_hawdb_tx_query"
 
 ///|
 #borrow(tx)
-extern "C" fn ffi_tx_finish(tx : NativeTransaction, commit : Int) -> Bytes = "moonbit_hawdb_tx_finish"
+extern "C" fn ffi_tx_finish(tx : NativeTransaction, commit : Int32) -> Bytes = "moonbit_hawdb_tx_finish"
 
 ///|
 #borrow(tx)
@@ -68,10 +71,13 @@ pub fn Database::begin_read(self : Database) -> Result[Transaction, HawdbError] 
 }
 
 ///|
-fn Database::begin_tx(self : Database, read_only : Bool) -> Result[Transaction, HawdbError] {
+fn Database::begin_tx(
+  self : Database,
+  read_only : Bool,
+) -> Result[Transaction, HawdbError] {
   let native = ffi_tx_begin(self.handle, if read_only { 1 } else { 0 })
   if ffi_tx_is_open(native) == 1 {
-    Ok({ native, owner: self, read_only })
+    Ok({ native, owner: self, read_only, })
   } else {
     Err(native_error(@utf8.decode_lossy(ffi_tx_error(native))))
   }
@@ -116,13 +122,20 @@ pub fn Transaction::query_sql(
 
 ///|
 fn Transaction::run(
-  self : Transaction, statement : String, json : String, sql : Int,
+  self : Transaction,
+  statement : String,
+  json : String,
+  sql : Int32,
 ) -> Result[QueryResult, HawdbError] {
   let query_bytes = @utf8.encode(statement)
   let json_bytes = @utf8.encode(json)
   let bytes = ffi_tx_query(
-    self.native, query_bytes, query_bytes.length(),
-    json_bytes, json_bytes.length(), sql,
+    self.native,
+    query_bytes,
+    query_bytes.length(),
+    json_bytes,
+    json_bytes.length(),
+    sql,
   )
   if bytes.length() == 0 {
     Err(native_error(@utf8.decode_lossy(ffi_tx_error(self.native))))
@@ -134,7 +147,9 @@ fn Transaction::run(
 ///|
 /// Commit staged writes as one engine transaction; read scopes simply release
 /// their pinned snapshots.
-pub fn Transaction::commit(self : Transaction) -> Result[QueryResult, HawdbError] {
+pub fn Transaction::commit(
+  self : Transaction,
+) -> Result[QueryResult, HawdbError] {
   self.finish(1)
 }
 
@@ -148,7 +163,10 @@ pub fn Transaction::rollback(self : Transaction) -> Result[Unit, HawdbError] {
 }
 
 ///|
-fn Transaction::finish(self : Transaction, commit : Int) -> Result[QueryResult, HawdbError] {
+fn Transaction::finish(
+  self : Transaction,
+  commit : Int32,
+) -> Result[QueryResult, HawdbError] {
   let result = ffi_tx_finish(self.native, commit)
   if result.length() == 0 {
     Err(native_error(@utf8.decode_lossy(ffi_tx_error(self.native))))

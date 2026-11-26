@@ -119,7 +119,7 @@ tag is the checkpoint generation:
   `Authoritative` relational indexes. Persistent format 6
   ([#1737](https://github.com/nowledge-co/hawdb/issues/1737)) writes that
   layout by default, as does any `OutOfCore` + `Authoritative` checkpoint.
-  Format 6 readers rebuild resident rows from the row root instead of
+  Format 6 and later readers rebuild resident rows from the row root instead of
   refusing (see [Persistent format version](#persistent-format-version)).
 
 Both are configuration or layout mismatches, not corruption; the open
@@ -203,17 +203,54 @@ The checkpoint-bound relational row-page and overflow roots, which every
 version 5 checkpoint already published, carry the relational state, and a
 checkpoint writes only their changed generations. No codec, magic or version
 constant changes. Version 6 opens every database version 5 opens, including
-full-row files and WAL tails. A version 5 release (HawDB 0.37) opens a version
-6 database only with `OutOfCore` residency and `Authoritative` relational
-indexes; in every other configuration it refuses the open with
-`UnsupportedStorageFormat` / `RELATIONAL_CHECKPOINT_LAYOUT_FORMAT` (see
-[Reader compatibility refusals](#reader-compatibility-refusals)) and changes
-nothing. Releases before 0.37 already cannot read the row-page v5 manifests
-that version 5 writes. A host that must keep a downgrade path to 0.37 may set
-`DatabaseConfig::legacy_relational_checkpoint_file`, which also writes the
-full-row file at the cost of a full relational rewrite per checkpoint;
-otherwise carry data back with a logical dump. See
+full-row files and WAL tails. Releases before 0.37 already cannot read the
+row-page v5 manifests that version 5 writes. See
 [Checkpoints without the full-row file](specs/ROW_PAGE_AND_DEMAND_PAGED_INDEX_SPEC.md#checkpoints-without-the-full-row-file).
+
+Version 7 ([#1641](https://github.com/nowledge-co/hawdb/issues/1641)) writes
+the outer manifest `hawdb-storage-v2` described above. No release shipped
+version 6: HawDB 0.37 is version 5, and 0.38.0 is the first release with
+version 7.
+
+#### The first checkpoint by 0.38 or later is one-way
+
+HawDB 0.38 and later open a 0.37 database in place. Opening it, and commits
+that only append to the WAL, leave the v1 manifest in place; in measurements
+0.37 could still reopen the database. The first checkpoint publishes a v2
+manifest. From then on 0.37 and earlier refuse the database with
+`UnsupportedVersion { format: "storage manifest", found: 2, supported: 1 }`.
+They change nothing, and the newer release still opens it, but there is no way
+back in place.
+
+An explicit `checkpoint()` is only one way this happens. None of the following
+needs a call from the host to checkpoint, and the first needs no write:
+
+- **Automatic checkpoints.** A writable handle checkpoints data that is not
+  yet covered by a checkpoint after
+  `DatabaseConfig::automatic_checkpoint_max_age` (60 seconds by default), and
+  earlier under WAL or storage pressure. A WAL tail that the old release left
+  behind counts. Leaving a 0.37 database open in 0.38 or later for a minute
+  can therefore be enough.
+- **Schema changes.** A commit that creates or alters a relational table
+  checkpoints before it returns, so a pending host `SystemSchemaRegistry`
+  migration makes the upgrade one-way during open.
+- **Recovery** that must publish a row checkpoint before it returns a writable
+  handle, and branch operations that publish a checkpoint.
+
+Do not rely on avoiding these. Before the new release first opens the database
+for writing, keep a copy of the closed database directory or export a logical
+dump with the old release. A read-only open publishes no checkpoint.
+
+`DatabaseConfig::legacy_relational_checkpoint_file` does **not** keep a
+downgrade path. It writes the full-row file next to the row-page roots, but the
+checkpoint that writes it still publishes a v2 manifest, which 0.37 refuses
+before it reads either. No released reader needs the file, and each checkpoint
+rewrites the complete relational state to produce it. To carry data back to an
+older release, export a logical dump with the newer release and import it with
+the older one. An import there is subject to that release's own limits: for
+example, releases through 0.40 cannot import a dump that holds the migration
+records of a host `SystemSchemaRegistry`
+([#1975](https://github.com/nowledge-co/hawdb/issues/1975)).
 
 ### PostgreSQL partial indexes
 
@@ -341,6 +378,18 @@ Stable-ID mapping publication uses the same synced temp-file rename and parent
 directory sync boundary as checkpointed artifacts. It is intentionally outside
 the graph WAL: first physical export may create mapping entries, but that action
 does not mutate graph records or increase WAL replay work.
+
+Writable recovery holds the database directory lease while reclaiming abandoned
+checkpoint preparations. It also removes regular `.hawdb.tmp` files whose base
+names belong to known generation-bound storage artifacts, including the selected
+and older generations. These names are never published recovery inputs. A crash
+before their rename must not permanently prevent the next exclusive create
+([#1974](https://github.com/nowledge-co/hawdb/issues/1974)). The sweep synchronizes
+the directory before returning. Read-only admission leaves these files intact;
+unknown names, symbolic links and unexpected temporary-file directories remain
+untouched. Individual writers still refuse an existing unowned temporary file
+instead of truncating or deleting it during a live preparation.
+
 Search projection snapshots use the same temporary-file, file sync, atomic
 rename, and parent-directory sync boundary when `SearchIndex::checkpoint`
 publishes `search_projection.hawdb`; the snapshot uses the same zstd envelope
@@ -536,7 +585,7 @@ Out-of-core generations that omit an over-bound field value set
 `HAWDB_SEARCH_SEGMENTS_V4` segment descriptors and minimum reader version 4.
 HawDB 0.33.0 through 0.37.x support selector version 2 and refuse such a
 selector with `UnsupportedStorageFormat` (`format() ==
-SEARCH_PROJECTION_MANIFEST_FORMAT`, `found: 3`, `supported: 2`); 0.31.0 and
+SEARCH_PROJECTION_MANIFEST_FORMAT`, `found: 4`, `supported: 2`); 0.31.0 and
 0.32.0 predate the gate and report `Storage`. Generations whose descriptors
 keep every value set are written unchanged as V3 descriptors.
 

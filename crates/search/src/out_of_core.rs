@@ -448,7 +448,9 @@ pub struct SearchOutOfCoreConfig {
     pub max_vector_candidates: NonZeroUsize,
     /// DiskANN navigation beam for ordinary Search queries that do not set one with
     /// [`VectorSearchExecutionOptions::with_navigation_beam`]. A narrower beam
-    /// scores fewer vectors per segment graph at some recall cost (#1614).
+    /// scores fewer vectors per segment graph at some recall cost (#1614). A
+    /// traversal that spreads over a graph small for the beam may finish with a
+    /// complete evaluation (#1970).
     /// Defaults to 256. Canonical `vector_index_search` does not inherit this
     /// reader setting and retains its separate single-graph recall budget.
     pub default_navigation_beam: NonZeroUsize,

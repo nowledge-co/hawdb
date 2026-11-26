@@ -2192,6 +2192,7 @@ fn error_class(error: &HawDBError) -> &'static str {
         | HawDBError::SearchProjectionPrefixBehindSource { .. }
         | HawDBError::SearchProjectionBatchBudgetExceeded { .. }
         | HawDBError::SearchProductionQualificationGraphEpochMismatch { .. }
+        | HawDBError::SystemSchemaUpgradeRequired { .. }
         | HawDBError::SearchProductionQualificationRefused { .. } => "execution",
         HawDBError::Storage(_)
         | HawDBError::Constraint {

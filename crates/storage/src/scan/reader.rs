@@ -98,17 +98,20 @@ impl Display for SegmentReadError {
                 formatter,
                 "segment artifact {artifact_id} segment {segment_id} failed content digest verification"
             ),
-            Self::Cache { artifact_id, .. } => {
-                write!(formatter, "segment artifact {artifact_id} cache operation failed")
+            Self::Cache { artifact_id, source } => {
+                write!(
+                    formatter,
+                    "segment artifact {artifact_id} cache operation failed: {source}"
+                )
             }
             Self::Io {
                 artifact_id,
                 offset,
                 length,
-                ..
+                source,
             } => write!(
                 formatter,
-                "segment artifact {artifact_id} range read failed at offset {offset} for {length} bytes"
+                "segment artifact {artifact_id} range read failed at offset {offset} for {length} bytes: {source}"
             ),
             Self::WorkerPanicked { artifact_id } => {
                 write!(formatter, "segment artifact {artifact_id} range reader panicked")
@@ -1501,7 +1504,7 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "segment artifact 9 range read failed at offset 2 for 8 bytes"
+            "segment artifact 9 range read failed at offset 2 for 8 bytes: segment range ended before the admitted length"
         );
         assert!(!error.to_string().contains(path.to_string_lossy().as_ref()));
         std::fs::remove_file(path).unwrap();

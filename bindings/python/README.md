@@ -350,8 +350,14 @@ print(result.columns)      # ['s.code']
 print(result.fetchall())   # [{'s.code': '603122'}]
 
 db.execute_sql("SELECT 1")
+db.checkpoint()  # e.g. before a backup or shutdown
 db.close()
 ```
+
+`db.checkpoint()` publishes the committed state of a persistent database and
+returns once that checkpoint is durable. It blocks the calling thread, passes no
+query admission, and is refused while a transaction is open, on a read-only
+database and after `close()`. An in-memory database has nothing to publish.
 
 `db.transaction()` opens the engine's single user transaction: statements
 inside the `with` block see their own writes, a clean exit publishes them as
@@ -577,6 +583,12 @@ raises `ExecutionError` with
 `blocker_codes` when the qualification report does not qualify the projection
 for the release. Both were a `StorageError` in 0.37 and earlier but are not storage
 failures and keep their message text: qualify again and reopen.
+
+A read-only open of a database with pending system-schema migrations raises
+`ExecutionError` with `kind == "system_schema_upgrade_required"`, `owner`,
+`installed_version`, `expected_version` and `retryable == False`. The exception
+class and message text are unchanged; nothing was written and nothing is
+damaged. Open the database writable to upgrade it.
 
 Memory-ledger and spill-quota refusals, and the read ceilings described under
 [Read budgets](#read-budgets-and-query-plans), raise `exceptions.ResourceBudgetError`,

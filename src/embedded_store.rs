@@ -60,7 +60,7 @@ use crate::{
         NowledgeGraphRouteWorkloadFixtureReport, NOWLEDGE_GRAPH_ROUTE_WORKLOAD_FIXTURE_PROTOCOL,
     },
 };
-use hawdb_core::RuntimeTaskContext;
+use hawdb_core::{RuntimeAdmissionWait, RuntimeTaskContext};
 mod concurrent_owner;
 mod incremental_search;
 mod read_execution;
@@ -79,9 +79,9 @@ use handle::*;
 pub use handle::{EmbeddedReadSnapshot, EmbeddedStoreHandle};
 use hawdb_optimizer::AdaptiveVectorBackendPolicy;
 use hawdb_qos::{
-    IoConcurrencyBudget, RuntimeGovernor, RuntimeGovernorConfig, RuntimeGovernorSnapshot,
-    RuntimePermit, RuntimeWorkKind, RuntimeWorkPriority, RuntimeWorkRequest, StorageDeviceProfile,
-    WorkPriority,
+    IoConcurrencyBudget, RuntimeAdmissionWaitError, RuntimeGovernor, RuntimeGovernorConfig,
+    RuntimeGovernorSnapshot, RuntimePermit, RuntimeWorkKind, RuntimeWorkPriority,
+    RuntimeWorkRequest, StorageDeviceProfile, WorkPriority,
 };
 pub use hawdb_readiness::bounded_read_evidence::{
     bounded_read_evidence_json, bounded_read_evidence_json_with_route_readiness,
@@ -201,6 +201,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
+#[cfg(test)]
+mod admission_wait_tests;
 #[cfg(test)]
 #[path = "embedded_store_app_read_snapshot_tests.rs"]
 mod app_read_snapshot_tests;
@@ -1215,10 +1217,16 @@ impl EmbeddedGraph {
         let request = admission
             .runtime_work_request_for_snapshot(result_budget, self.runtime_governor.snapshot())
             .with_retained_memory_bytes(prepared.planning_memory_bytes());
-        read_execution::admit_reusable_prepared(prepared, &self.runtime_governor, request, || {
-            self.db
-                .prepare_runtime_query(cypher.to_string(), parameters)
-        })
+        read_execution::admit_reusable_prepared(
+            prepared,
+            &self.runtime_governor,
+            request,
+            &RuntimeTaskContext::default(),
+            || {
+                self.db
+                    .prepare_runtime_query(cypher.to_string(), parameters)
+            },
+        )
     }
 
     fn prepare_admitted_query(
@@ -1260,10 +1268,16 @@ impl EmbeddedGraph {
                 self.runtime_governor.snapshot(),
             )
             .with_retained_memory_bytes(prepared.planning_memory_bytes());
-        read_execution::admit_reusable_prepared(prepared, &self.runtime_governor, request, || {
-            self.db
-                .prepare_runtime_query(cypher.to_string(), parameters)
-        })
+        read_execution::admit_reusable_prepared(
+            prepared,
+            &self.runtime_governor,
+            request,
+            &RuntimeTaskContext::default(),
+            || {
+                self.db
+                    .prepare_runtime_query(cypher.to_string(), parameters)
+            },
+        )
     }
 
     fn try_admit_runtime(&self, request: hawdb_qos::RuntimeWorkRequest) -> Result<RuntimePermit> {

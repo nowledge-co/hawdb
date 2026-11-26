@@ -26,6 +26,9 @@ The protocol follows the useful local subset of TiDB bootstrap upgrades:
 6. A database newer than the running binary, a changed applied migration, a
    non-contiguous registry, or a drifted registry table fails closed.
 7. Read-only open succeeds only when no registered migration is pending.
+   Otherwise it returns `HawDBError::SystemSchemaUpgradeRequired` with the
+   owner and its installed and expected versions, and does not poison a
+   handle. C ABI kind and Python `kind`: `system_schema_upgrade_required`.
 8. Durable `Database::open` applies the engine-owned registry before returning.
    An embedding host registers its application-owned registries in open
    options, and those upgrades also finish before the handle becomes visible.
@@ -61,6 +64,15 @@ export state without mutating its live commit epoch. Initial import accepts a
 target containing only the verified engine bootstrap, but rejects a stream
 that omits or drifts the engine registry.
 
+Logical dump import ([LOGICAL_DUMP.md](../LOGICAL_DUMP.md#system-schema-registries))
+restores application records into its fresh, unpublished target through the
+engine's registry insert, never through a statement from the dump. It validates
+the table definition, the engine's records and the shape of every other record
+before it writes, keeps the target's own engine records, and verifies the
+restored records before publication. Import runs no migration. A host that
+passes its registries gets rule 3 before any write; otherwise rule 3 applies
+when the host registers them on open.
+
 `ALTER TABLE ... ADD COLUMN` is durable through the same WAL transaction. It
 rewrites immutable relational rows with the declared default (or `NULL`) and
 is admitted against row and full resident-rewrite byte limits. Adding a
@@ -85,6 +97,13 @@ applies them together before becoming available to the host.
 Route-specific behavior remains parameterized SQL. Schema registration is a
 typed API because it coordinates ordered DDL, checksum validation, WAL commit,
 and open failure; it is not a typed replacement for business queries.
+
+`Database::system_schema_status` reports `owner`, `installed_version`,
+`expected_version` and `pending` for the engine and every given registry,
+without writing, on read-only and writable handles. Validation is the same as
+for an upgrade, so a drifted or future schema is an error, not a status.
+`engine_system_schema_expected_version` returns the version this build's engine
+registry ends at, for a database that a read-only open refused.
 
 ## Data Migration Boundary
 
@@ -121,6 +140,8 @@ Focused HawDB tests must prove:
 - failed DDL does not publish a migration version;
 - read-only open rejects pending upgrades;
 - ordinary SQL and application migrations cannot modify the engine registry;
+- logical dump import restores application records, installed and pending,
+  and refuses forged or corrupt records before writing;
 - pure schema commits do not create search mutations or projection work.
 
 The Mem adapter must separately prove:

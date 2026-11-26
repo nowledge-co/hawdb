@@ -410,6 +410,19 @@ pub enum HawDBError {
     CapabilityUnavailable {
         capability: RuntimeCapability,
     },
+    /// A read-only handle found pending migrations of a registered system
+    /// schema, at open for the engine's own registry or when a host registry
+    /// is applied (#1950). `installed_version` is the version recorded in the
+    /// database (0 when none is) and `expected_version` the version the
+    /// registry ends at. With several pending owners, the first one in
+    /// application order is reported. Nothing was written. Not a storage
+    /// failure and never poisoning: open the database writable to upgrade.
+    /// Displays as the `execution error` it was reported as before.
+    SystemSchemaUpgradeRequired {
+        owner: String,
+        installed_version: u64,
+        expected_version: u64,
+    },
     /// A write was refused because the handle is read-only (for example an
     /// embedded store opened in `GraphMode::ShadowReadOnly`). Nothing was
     /// written. This is a caller error, not a storage failure: reopen the
@@ -586,6 +599,14 @@ impl Display for HawDBError {
             HawDBError::CapabilityUnavailable { capability } => {
                 write!(f, "capability unavailable: {}", capability.as_str())
             }
+            HawDBError::SystemSchemaUpgradeRequired {
+                owner,
+                installed_version,
+                expected_version,
+            } => write!(
+                f,
+                "execution error: system schema {owner} requires upgrade from version {installed_version} to {expected_version} but the database is read-only"
+            ),
             HawDBError::ReadOnly { operation } => {
                 write!(f, "execution error: {operation} requires a writable handle; this handle is read-only")
             }

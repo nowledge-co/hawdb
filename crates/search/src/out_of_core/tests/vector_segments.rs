@@ -48,11 +48,27 @@ fn build(name: &str, documents: &[SearchDocument], backend: Option<bool>) -> Pat
     build_with(name, documents, backend, None)
 }
 
+/// One graph per `content_documents` documents.
+#[cfg(feature = "vector-search")]
+fn build_graphs(name: &str, documents: &[SearchDocument], content_documents: usize) -> PathBuf {
+    build_content(name, documents, Some(true), None, content_documents)
+}
+
 fn build_with(
     name: &str,
     documents: &[SearchDocument],
     backend: Option<bool>,
     distance: Option<hawdb_core::VectorDistance>,
+) -> PathBuf {
+    build_content(name, documents, backend, distance, 8192)
+}
+
+fn build_content(
+    name: &str,
+    documents: &[SearchDocument],
+    backend: Option<bool>,
+    distance: Option<hawdb_core::VectorDistance>,
+    content_documents: usize,
 ) -> PathBuf {
     let path = test_dir(name);
     let mut writer = SearchOutOfCoreGenerationWriter::create(
@@ -61,13 +77,17 @@ fn build_with(
             embedding_manifest: Some(SearchEmbeddingManifest {
                 model: "binary-vector-test".into(),
                 version: Some("v1".into()),
-                dimension: DIMENSION,
+                dimension: documents
+                    .iter()
+                    .find_map(|document| document.embedding.as_ref())
+                    .map_or(DIMENSION, Vec::len),
             }),
             // Some(true): default graph; Some(false): RaBitQ; None: no projection.
             vector_backend: match backend {
                 Some(true) => Some(Default::default()),
                 _ => None,
             },
+            max_content_documents: NonZeroUsize::new(content_documents).unwrap(),
             source_graph_commit_epoch: distance.map(|_| 1),
             vector_index_descriptor: distance.map(|distance| {
                 hawdb_core::VectorIndexDescriptor::new(
@@ -588,10 +608,12 @@ fn graph_navigation_beam_and_candidate_window_are_per_query() {
     );
     assert_eq!(vector_report(&default).generated_candidate_count, 128);
 
-    // A narrow beam reads less of the graph and still returns the limit.
+    // A narrow beam and window read less of the graph and still return the
+    // limit. A wider beam on this small store scores every vector (#1970).
     let narrow = search(
         VectorSearchExecutionOptions::default()
-            .with_navigation_beam(NonZeroUsize::new(16).unwrap()),
+            .with_navigation_beam(NonZeroUsize::new(16).unwrap())
+            .with_candidate_window(NonZeroUsize::new(16).unwrap()),
         10,
     )
     .unwrap();
@@ -676,6 +698,7 @@ fn configured_default_navigation_beam_applies_unless_a_query_sets_one() {
     let documents = corpus(300);
     let graph = build("vector-default-beam", &documents, Some(true));
     let query = embedding(2064);
+    // The window is below the beam, so the configured beam is the one in effect.
     let search = |reader: &SearchOutOfCoreReader, execution: VectorSearchExecutionOptions<'_>| {
         reader
             .search_with_options_compressed_vector_projection_execution_options(
@@ -684,7 +707,7 @@ fn configured_default_navigation_beam_applies_unless_a_query_sets_one() {
                 SearchMode::Vector,
                 options(10, None),
                 crate::CompressedVectorSearchMode::Disabled,
-                execution,
+                execution.with_candidate_window(NonZeroUsize::new(16).unwrap()),
             )
             .unwrap()
     };
@@ -708,6 +731,10 @@ fn configured_default_navigation_beam_applies_unless_a_query_sets_one() {
             .with_navigation_beam(NonZeroUsize::new(16).unwrap()),
     );
     assert_eq!(hits(&configured), hits(&explicit));
+    assert_eq!(
+        vector_report(&configured).candidate_scan_adaptive_exact_scan_count,
+        0
+    );
     assert_eq!(
         vector_report(&configured).candidate_scan_payload_bytes_read,
         vector_report(&explicit).candidate_scan_payload_bytes_read
@@ -738,7 +765,8 @@ fn configured_default_navigation_beam_applies_unless_a_query_sets_one() {
 #[cfg(feature = "vector-search")]
 #[test]
 fn default_navigation_beam_bounds_graph_work_and_preserves_explicit_wide_search() {
-    let documents = corpus(600);
+    // More vectors than the small-domain scan covers at the default beam.
+    let documents = corpus(4400);
     let graph = build("vector-default-bounded-beam", &documents, Some(true));
     let reader = SearchOutOfCoreReader::open(&graph).unwrap();
     let query = embedding(2064);
@@ -769,6 +797,10 @@ fn default_navigation_beam_bounds_graph_work_and_preserves_explicit_wide_search(
         vector_report(&bounded).candidate_scan_payload_bytes_read,
         "default queries must use the bounded beam"
     );
+    assert_eq!(
+        vector_report(&default).candidate_scan_adaptive_exact_scan_count,
+        0
+    );
     assert!(
         vector_report(&default).candidate_scan_payload_bytes_read
             < vector_report(&wide).candidate_scan_payload_bytes_read,
@@ -782,4 +814,169 @@ fn default_navigation_beam_bounds_graph_work_and_preserves_explicit_wide_search(
     assert_eq!(hits(&wide), hits(&default));
     drop(reader);
     fs::remove_dir_all(graph).unwrap();
+}
+
+/// A default query whose traversal spreads over a small cosine store returns the
+/// exact top ten even when the nearest vector has almost no in-links (#1970). The former
+/// traversal at the default beam loses this fixture's rank-1 document.
+#[cfg(feature = "vector-search")]
+#[test]
+fn small_store_default_query_finds_a_hard_to_reach_cosine_neighbor() {
+    const COUNT: usize = 900;
+    const DIMENSION: usize = 32;
+    let mut random = 0x1234_5678_9abc_def0u64;
+    let mut noise = || {
+        (0..4).fold(0.0f64, |sum, _| {
+            random ^= random << 13;
+            random ^= random >> 7;
+            random ^= random << 17;
+            sum + (random % 10_000) as f64 / 5000.0 - 1.0
+        })
+    };
+    let template = corpus(COUNT);
+    let documents: Vec<_> = template
+        .into_iter()
+        .enumerate()
+        .map(|(ordinal, document)| {
+            let mut vector: Vec<f64> = (0..DIMENSION).map(|_| noise()).collect();
+            if ordinal == COUNT - 1 {
+                vector[1] += 14.0;
+                vector[0] = vector[1..]
+                    .iter()
+                    .map(|value| value * value)
+                    .sum::<f64>()
+                    .sqrt();
+            } else {
+                vector[1] = -3.0;
+                vector[0] = if ordinal < 400 { 2.5 } else { -1.0 };
+            }
+            SearchDocument {
+                embedding: Some(vector.into_iter().map(|value| value as f32).collect()),
+                ..document
+            }
+        })
+        .collect();
+    let mut query = vec![0.0f32; DIMENSION];
+    query[0] = 1.0;
+    let root = build("vector-hard-to-reach", &documents, Some(true));
+    let reader = SearchOutOfCoreReader::open(&root).unwrap();
+    let search = |execution| {
+        reader
+            .search_with_options_compressed_vector_projection_execution_options(
+                "",
+                Some(&query),
+                SearchMode::Vector,
+                options(10, None),
+                crate::CompressedVectorSearchMode::Disabled,
+                execution,
+            )
+            .unwrap()
+    };
+    let default = search(VectorSearchExecutionOptions::default());
+    let expected = reference(&documents, &query, |_| true, 10);
+    assert_eq!(expected[0].0, documents[COUNT - 1].id);
+    assert_eq!(hits(&default), expected);
+    let report = vector_report(&default);
+    assert_eq!(report.backend, "hawdb_diskann_out_of_core_candidate_graph");
+    assert_eq!(report.candidate_scan_adaptive_exact_scan_count, 1);
+    assert_eq!(report.candidate_scan_scored_document_count, COUNT);
+    // Identical to the explicit exact path, scores included.
+    let exact = reader
+        .search_with_options_exact("", Some(&query), SearchMode::Vector, options(10, None))
+        .unwrap();
+    assert_eq!(hits(&default), hits(&exact));
+    // Negative control: the fixture stays hard for the graph itself.
+    let narrow = search(
+        VectorSearchExecutionOptions::default()
+            .with_navigation_beam(NonZeroUsize::new(48).unwrap())
+            .with_candidate_window(NonZeroUsize::new(48).unwrap()),
+    );
+    assert_eq!(
+        vector_report(&narrow).candidate_scan_adaptive_exact_scan_count,
+        0
+    );
+    assert!(hits(&narrow).iter().all(|hit| hit.0 != expected[0].0));
+    drop(reader);
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// Later graphs of a segmented store stop early once earlier graphs hold the
+/// results (#1918): the exact top ten stays, with fewer vectors scored. A result
+/// as wide as the candidate window gives no useful bound and is the control.
+#[cfg(feature = "vector-search")]
+#[test]
+fn segmented_graphs_share_a_result_bound_without_losing_results() {
+    // Three graphs above the small-domain scan limit of the default beam, with
+    // the last one alone holding the neighbors of the final queries.
+    const ROWS: usize = 2950;
+    let template = corpus(3 * ROWS);
+    let documents: Vec<_> = template
+        .into_iter()
+        .enumerate()
+        .map(|(number, document)| SearchDocument {
+            embedding: Some({
+                let mut vector = embedding(number);
+                if number >= 3 * ROWS - 400 {
+                    vector[0] += 4.0;
+                }
+                vector
+            }),
+            ..document
+        })
+        .collect();
+    let root = build_graphs("vector-result-bound", &documents, ROWS);
+    let reader = SearchOutOfCoreReader::open(&root).unwrap();
+    let search = |query: &[f32], limit, space: Option<&str>| {
+        let mut query_options = options(limit, None);
+        query_options
+            .metadata_filters
+            .extend(space.map(|space| ("space_id".to_string(), space.to_string())));
+        reader
+            .search_with_options_compressed_vector_projection_execution_options(
+                "",
+                Some(query),
+                SearchMode::Vector,
+                query_options,
+                crate::CompressedVectorSearchMode::Disabled,
+                VectorSearchExecutionOptions::default(),
+            )
+            .unwrap()
+    };
+    let (mut bounded, mut unbounded) = (0, 0);
+    for number in 0..24 {
+        let mut query = embedding(20_000 + number);
+        if number >= 20 {
+            query[0] += 4.0;
+        }
+        let narrow = search(&query, 10, None);
+        assert_eq!(hits(&narrow), reference(&documents, &query, |_| true, 10));
+        let report = vector_report(&narrow);
+        assert_eq!(report.candidate_scan_segment_count, 3);
+        assert_eq!(report.candidate_scan_adaptive_exact_scan_count, 0);
+        // The candidate window is still filled from every graph.
+        assert_eq!(report.reranked_candidate_count, 128);
+        let again = search(&query, 10, None);
+        assert_eq!(hits(&again), hits(&narrow));
+        assert_eq!(
+            vector_report(&again).candidate_scan_scored_document_count,
+            report.candidate_scan_scored_document_count
+        );
+        let wide = search(&query, 128, None);
+        assert_eq!(hits(&wide)[..10], hits(&narrow));
+        assert!(
+            report.candidate_scan_scored_document_count
+                <= vector_report(&wide).candidate_scan_scored_document_count
+        );
+        bounded += report.candidate_scan_scored_document_count;
+        unbounded += vector_report(&wide).candidate_scan_scored_document_count;
+        // A filter keeps its own traversal.
+        let keep = |document: &SearchDocument| document.metadata["space_id"] == "b";
+        assert_eq!(
+            hits(&search(&query, 10, Some("b"))),
+            reference(&documents, &query, keep, 10)
+        );
+    }
+    assert!(bounded * 20 < unbounded * 19, "{bounded} {unbounded}");
+    drop(reader);
+    fs::remove_dir_all(root).unwrap();
 }

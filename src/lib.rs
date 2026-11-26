@@ -89,7 +89,7 @@ pub use analytics::{
 };
 pub use api::SearchProjectionEpochAdvanceVerification;
 pub use api::{
-    hawdb_lightning_initial_import_advance_checkpoint,
+    engine_system_schema_expected_version, hawdb_lightning_initial_import_advance_checkpoint,
     hawdb_lightning_initial_import_advance_durable_state_streaming,
     hawdb_lightning_initial_import_advance_durable_state_with_search_projection_batch,
     hawdb_lightning_initial_import_checkpoint_readiness,
@@ -198,7 +198,7 @@ pub use api::{
     SearchProjectionDefinition, SearchProjectionGraphDeltaRequest, SearchProjectionInitializer,
     SearchProjectionRelationalDelta, SessionConfig, SlowQueryLogExportOptions,
     SlowQueryLogRecordSummary, SqlQueryRequest, SqlStatementResult, StorageResourceProfileLimits,
-    StorageResourceProfileReport, SystemSchemaMigration, SystemSchemaRegistry,
+    StorageResourceProfileReport, SystemSchemaMigration, SystemSchemaRegistry, SystemSchemaStatus,
     SystemSchemaUpgradeReport, TransactionCommitResult, TransactionIsolation,
     TransactionReadDependencyLimits, TransactionReadDependencyUsage, WalGroupCommitActivation,
     WalGroupCommitAdaptiveColdStartEvidence, WalGroupCommitAdaptivePolicyEvidence,
@@ -401,13 +401,14 @@ pub use hawdb_core::{
     GraphRagQueryParameterRequirement, GraphRagQueryPattern, GraphRagQueryPredicate,
     GraphRagQueryPredicateOperator, GraphRagQueryProjection, GraphRagRelationshipTypeSummary,
     GraphRagRouteSummary, GraphRagSchemaContext, GraphRagSchemaContextOptions,
-    GraphRagSchemaContextTruncation, RuntimeCancellationReason, RuntimeCancellationToken,
-    RuntimeCapabilities, RuntimeCapability, RuntimeIoWaveController, RuntimeIoWaveError,
-    RuntimeIoWavePermit, RuntimeIoWaveTryAcquire, RuntimeMemoryController, RuntimeMemoryError,
-    RuntimeMemoryPermit, RuntimeMemoryReservation, RuntimeMemoryTarget, RuntimeTaskContext,
-    DEFAULT_GRAPH_RAG_MAX_COMMON_PATHS, DEFAULT_GRAPH_RAG_MAX_LABELS,
-    DEFAULT_GRAPH_RAG_MAX_PROPERTIES_PER_SUBJECT, DEFAULT_GRAPH_RAG_MAX_RELATIONSHIP_TYPES,
-    DEFAULT_GRAPH_RAG_MAX_ROUTES, GRAPH_RAG_SCHEMA_CONTEXT_PROTOCOL, MAX_GRAPH_RAG_QUERY_LIMIT,
+    GraphRagSchemaContextTruncation, RuntimeAdmissionTrace, RuntimeAdmissionWait,
+    RuntimeCancellationReason, RuntimeCancellationToken, RuntimeCapabilities, RuntimeCapability,
+    RuntimeIoWaveController, RuntimeIoWaveError, RuntimeIoWavePermit, RuntimeIoWaveTryAcquire,
+    RuntimeMemoryController, RuntimeMemoryError, RuntimeMemoryPermit, RuntimeMemoryReservation,
+    RuntimeMemoryTarget, RuntimeTaskContext, DEFAULT_GRAPH_RAG_MAX_COMMON_PATHS,
+    DEFAULT_GRAPH_RAG_MAX_LABELS, DEFAULT_GRAPH_RAG_MAX_PROPERTIES_PER_SUBJECT,
+    DEFAULT_GRAPH_RAG_MAX_RELATIONSHIP_TYPES, DEFAULT_GRAPH_RAG_MAX_ROUTES,
+    GRAPH_RAG_SCHEMA_CONTEXT_PROTOCOL, MAX_GRAPH_RAG_QUERY_LIMIT,
 };
 pub use hawdb_core::{
     VectorIndexBackend, VectorIndexDescriptor, VectorIndexLsg, VectorIndexTarget,
@@ -434,14 +435,14 @@ pub use hawdb_plan_cypher::GraphExpansionBudget;
 pub use hawdb_qos::{
     IoConcurrencyBudget, ProcessMemoryCapabilities, ProcessMemoryPolicy, ProcessMemoryPolicyConfig,
     ProcessMemoryPolicySnapshot, ProcessMemoryProfile, ProcessMemorySnapshot, RuntimeAdmissionCode,
-    RuntimeAdmissionError, RuntimeGovernor, RuntimeGovernorConfig, RuntimeGovernorLimits,
-    RuntimeGovernorSnapshot, RuntimeIoReservationScope, RuntimeMaintenanceMemoryReport,
-    RuntimeMaintenanceWork, RuntimeMemoryPressure, RuntimeMemorySnapshot, RuntimePermit,
-    RuntimeResourceBudget, RuntimeResourceSnapshot, RuntimeRetainedMemory, RuntimeRetainedResult,
-    RuntimeRetainedResultError, RuntimeRetainedResultResource, RuntimeRetainedResultSnapshot,
-    RuntimeTelemetryEvent, RuntimeTelemetryEventKind, RuntimeTelemetrySink, RuntimeWorkKind,
-    RuntimeWorkPriority, RuntimeWorkRequest, StorageDeviceDiscoverySource, StorageDeviceProfile,
-    StorageMediaKind,
+    RuntimeAdmissionError, RuntimeAdmissionWaitError, RuntimeGovernor, RuntimeGovernorConfig,
+    RuntimeGovernorLimits, RuntimeGovernorSnapshot, RuntimeIoReservationScope,
+    RuntimeMaintenanceMemoryReport, RuntimeMaintenanceWork, RuntimeMemoryPressure,
+    RuntimeMemorySnapshot, RuntimePermit, RuntimeResourceBudget, RuntimeResourceSnapshot,
+    RuntimeRetainedMemory, RuntimeRetainedResult, RuntimeRetainedResultError,
+    RuntimeRetainedResultResource, RuntimeRetainedResultSnapshot, RuntimeTelemetryEvent,
+    RuntimeTelemetryEventKind, RuntimeTelemetrySink, RuntimeWorkKind, RuntimeWorkPriority,
+    RuntimeWorkRequest, StorageDeviceDiscoverySource, StorageDeviceProfile, StorageMediaKind,
 };
 pub use hawdb_readiness::embedded_query_path::{
     EmbeddedQueryEntrypoint, EmbeddedQueryPathReadiness, EMBEDDED_QUERY_PATH_READINESS_PROTOCOL,

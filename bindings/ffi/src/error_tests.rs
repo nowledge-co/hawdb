@@ -274,6 +274,20 @@ fn wal_record_limit_is_delivered_as_its_own_kind() {
 }
 
 #[test]
+fn system_schema_upgrade_required_reports_its_kind_and_keeps_its_message() {
+    let error = HawDBError::SystemSchemaUpgradeRequired {
+        owner: "host.documents".to_owned(),
+        installed_version: 1,
+        expected_version: 2,
+    };
+    let expected = json!({
+        "kind": "system_schema_upgrade_required",
+        "message": "execution error: system schema host.documents requires upgrade from version 1 to 2 but the database is read-only",
+    });
+    assert_eq!(delivered(FfiError::open(&error)), expected);
+}
+
+#[test]
 fn read_only_is_delivered_as_its_own_kind() {
     let error = HawDBError::ReadOnly {
         operation: "mark_search_projection_full_reindex_needed",
@@ -290,6 +304,7 @@ fn runtime_admission_refusal_is_delivered_as_its_own_kind() {
         requested: 4096,
         available: 0,
         retryable: true,
+        waited: None,
     });
     let delivered = delivered(FfiError::open(&error));
     assert_eq!(

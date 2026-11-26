@@ -232,6 +232,10 @@ fn parse_checkpoint_staging_generation(name: &str) -> Option<u64> {
         .ok()
 }
 
+/// Reclaims abandoned candidates during writable admission, while the caller
+/// holds exclusive directory ownership and no live preparation can exist.
+/// Generation-bound temporary files are never selected by a manifest, even
+/// when their generation is older than or equal to the published generation.
 pub fn cleanup_abandoned_checkpoint_preparations(
     root: &Path,
     published_generation: u64,
@@ -243,7 +247,22 @@ pub fn cleanup_abandoned_checkpoint_preparations(
         let Some(name) = name.to_str() else {
             continue;
         };
-        if entry.file_type()?.is_dir()
+        let file_type = entry.file_type()?;
+        let known_temporary = name
+            .strip_suffix(".tmp")
+            .filter(|name| name.ends_with(".hawdb"))
+            .and_then(storage_generation_for_file)
+            .is_some();
+        // A process crash bypasses writer-owned RAII cleanup. Reclaim only
+        // recognized regular scratch files here, never by truncating an
+        // existing path in a live writer. Unknown files, links and directories
+        // remain evidence rather than being adopted as our temporary files.
+        if known_temporary && file_type.is_file() {
+            fs::remove_file(entry.path())?;
+            changed = true;
+            continue;
+        }
+        if file_type.is_dir()
             && parse_checkpoint_staging_generation(name)
                 .is_some_and(|generation| generation > published_generation)
         {
@@ -332,3 +351,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "artifact_files/checkpoint_cleanup_tests.rs"]
+mod checkpoint_cleanup_tests;

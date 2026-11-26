@@ -471,6 +471,7 @@ impl ExpectedErrorClass {
             | HawDBError::SearchProjectionPrefixBehindSource { .. }
             | HawDBError::SearchProjectionBatchBudgetExceeded { .. }
             | HawDBError::SearchProductionQualificationGraphEpochMismatch { .. }
+            | HawDBError::SystemSchemaUpgradeRequired { .. }
             | HawDBError::SearchProductionQualificationRefused { .. } => Self::Execution,
             HawDBError::CapabilityUnavailable { .. } => Self::CapabilityUnavailable,
         }

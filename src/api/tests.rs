@@ -53,6 +53,8 @@ mod augmentation_jobs_lifecycle;
 mod augmentation_jobs_reads;
 mod background_maintenance;
 mod canonical_snapshot;
+#[cfg(feature = "background-maintenance")]
+mod checkpoint_beside_queued_waiters;
 mod community_assignments;
 mod community_cleanup;
 mod community_lifecycle;
@@ -87,6 +89,8 @@ mod graph_meta;
 mod graph_rag_schema_guidance;
 mod hidden_row_id;
 mod identity_group_keys;
+#[cfg(feature = "test-support")]
+pub(super) mod immutable_retirement_reads;
 mod induced_edge_reads;
 mod joint_ndv_statistics;
 mod knowledge_community_entity_visibility;
@@ -2823,6 +2827,7 @@ fn assert_background_refusal(error: &HawDBError, requested: u64, available: u64,
             requested,
             available,
             retryable,
+            waited: None,
         }),
         "{error}"
     );

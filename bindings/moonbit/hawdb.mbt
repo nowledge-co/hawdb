@@ -18,14 +18,18 @@ type NativeHandle
 
 ///|
 #borrow(path)
-extern "C" fn ffi_open(path : Bytes, length : Int, read_only : Int) -> NativeHandle = "moonbit_hawdb_open"
+extern "C" fn ffi_open(
+  path : Bytes,
+  length : Int32,
+  read_only : Int32,
+) -> NativeHandle = "moonbit_hawdb_open"
 
 ///|
 extern "C" fn ffi_open_in_memory() -> NativeHandle = "moonbit_hawdb_open_in_memory"
 
 ///|
 #borrow(handle)
-extern "C" fn ffi_is_open(handle : NativeHandle) -> Int = "moonbit_hawdb_is_open"
+extern "C" fn ffi_is_open(handle : NativeHandle) -> Int32 = "moonbit_hawdb_is_open"
 
 ///|
 #borrow(handle)
@@ -36,10 +40,10 @@ extern "C" fn ffi_close(handle : NativeHandle) -> Unit = "moonbit_hawdb_close"
 extern "C" fn ffi_execute(
   handle : NativeHandle,
   statement : Bytes,
-  statement_length : Int,
+  statement_length : Int32,
   params : Bytes,
-  params_length : Int,
-  sql : Int,
+  params_length : Int32,
+  sql : Int32,
 ) -> Bytes = "moonbit_hawdb_execute"
 
 ///|
@@ -80,7 +84,10 @@ pub fn open(path : String) -> Result[Database, HawdbError] {
 }
 
 ///|
-fn open_with_mode(path : String, read_only : Int) -> Result[Database, HawdbError] {
+fn open_with_mode(
+  path : String,
+  read_only : Int32,
+) -> Result[Database, HawdbError] {
   let encoded = @utf8.encode(path)
   let handle = ffi_open(encoded, encoded.length(), read_only)
   if ffi_is_open(handle) == 1 {
@@ -120,7 +127,7 @@ fn Database::run(
   self : Database,
   statement : String,
   params_json : String,
-  sql : Int,
+  sql : Int32,
 ) -> Result[String, String] {
   let statement_bytes = @utf8.encode(statement)
   let params_bytes = @utf8.encode(params_json)

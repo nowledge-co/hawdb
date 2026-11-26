@@ -189,6 +189,58 @@ impl Kernel {
     }
 }
 
+/// Operand bytes read between checkpoints stay within 64 KiB for one left and
+/// four right operands.
+#[cfg(all(
+    any(target_arch = "x86", target_arch = "x86_64"),
+    target_endian = "little"
+))]
+const FOUR_WORK_COORDINATES: usize = (64 * 1024 / (5 * size_of::<f32>())) & !3;
+
+/// Ordered sums of four right operands, bit for bit those of `calculate`, or
+/// `None` when no batched kernel applies or a coordinate is non-finite. Callers
+/// then use the one-operand path, which also reports the error.
+pub(super) fn calculate_four(
+    left: &[f32],
+    right: [Input<'_>; 4],
+    mode: Mode,
+    checkpoint: &mut dyn FnMut() -> Result<()>,
+) -> Result<Option<[Sums; 4]>> {
+    #[cfg(all(
+        any(target_arch = "x86", target_arch = "x86_64"),
+        target_endian = "little"
+    ))]
+    if left.len() >= 16
+        && right.iter().all(|input| input.len() == left.len())
+        && matches!(mode, Mode::PreparedCosine | Mode::Euclidean)
+        && Kernel::get().1 == "avx2"
+    {
+        let mut sums: [Sums; 4] = Default::default();
+        for start in (0..left.len()).step_by(FOUR_WORK_COORDINATES) {
+            checkpoint()?;
+            let end = left.len().min(start + FOUR_WORK_COORDINATES);
+            let block = Input::Slice(left).block(start, end);
+            let rows = right.map(|input| input.block(start, end));
+            // SAFETY: the selected kernel established AVX2 support; all blocks
+            // have equal lengths and hold initialized little-endian coordinates.
+            let valid = unsafe {
+                if matches!(mode, Mode::Euclidean) {
+                    avx2::run_four::<true>(block, rows, &mut sums)
+                } else {
+                    avx2::run_four::<false>(block, rows, &mut sums)
+                }
+            };
+            if !valid {
+                return Ok(None);
+            }
+        }
+        checkpoint()?;
+        return Ok(Some(sums));
+    }
+    let _ = (left, right, mode, checkpoint);
+    Ok(None)
+}
+
 unsafe fn scalar(left: Input<'_>, right: Input<'_>, mode: Mode, sums: &mut Sums) -> bool {
     let decode = |bytes: &[u8; 4]| f32::from_le_bytes(*bytes);
     match (left, right) {

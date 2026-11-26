@@ -54,8 +54,8 @@ A reader decodes the selector in two stages:
    `HawDBError::UnsupportedStorageFormat(StorageFormatError::UnsupportedVersion {
    format: SEARCH_PROJECTION_MANIFEST_FORMAT, found, supported })`. `found` is the
    selector's `min_reader_version`, saturated to `u16::MAX`. The message is
-   `unsupported search projection manifest version 4; this reader supports
-   version 3`.
+   `unsupported search projection manifest version 5; this reader supports
+   version 4`.
 2. **Strict decode.** Otherwise the reader decodes and validates the body
    exactly as before, with `deny_unknown_fields`.
 
@@ -247,6 +247,10 @@ Segment value summaries (#1746) are covered by
 - block-framed content alone requires reader version 3; combining it with V4
   descriptors requires version 4 through epoch advances, appends and delete-only
   updates, while legacy stream content retains its original minimum version;
+- closures mixing `stream1` and `blocks1` segments in either order, compaction
+  with a carried segment, and partitioned initial and delta publication require
+  the highest version among the selected segments, reopen and verify, and older
+  readers refuse them with the typed error;
 - a V3 descriptor with full bodies reopens with bounded summaries;
 - reader-retained value bytes and admitted reader memory do not grow with the
   body length.

@@ -27,6 +27,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 mod automatic_checkpoint;
 mod branch_abandonment;
 mod branch_wal_reclamation;
+mod checkpoint_leftovers;
+mod checkpoint_temporaries;
 mod consumer_reclamation;
 #[cfg(feature = "vector-search")]
 mod consumer_vector_incremental;
@@ -74,13 +76,18 @@ impl Drop for MaterializedImage {
 
 impl Fixture {
     fn new() -> Self {
+        Self::with_max_open_files(32)
+    }
+
+    fn with_max_open_files(limit: usize) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let root = std::env::temp_dir().join(format!(
             "hawdb-power-branch-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        let project = ProjectFileDescriptors::acquire_with_capacity_limit(&root, 32, true).unwrap();
+        let project =
+            ProjectFileDescriptors::acquire_with_capacity_limit(&root, limit, true).unwrap();
         let model = PowerLossModel::attach(&project, ImageLimits::default()).unwrap();
         Self {
             root,

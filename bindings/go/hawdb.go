@@ -56,7 +56,10 @@ type DB struct {
 // storage failure; "search_production_qualification_graph_epoch_mismatch"
 // and "search_production_qualification_refused" for a qualified out-of-core
 // search open whose production qualification is stale or does not qualify
-// the projection, which is not a storage failure: qualify again and reopen);
+// the projection, which is not a storage failure: qualify again and reopen;
+// "system_schema_upgrade_required" for a read-only open of a database with
+// pending system-schema migrations, which is not a storage failure: open it
+// writable to upgrade);
 // "invalid_argument" marks a caller-side contract violation and "panic" a
 // contained Rust panic.
 type Error struct {

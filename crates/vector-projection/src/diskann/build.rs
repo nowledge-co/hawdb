@@ -240,7 +240,10 @@ impl DiskAnnIndex {
                                 max_visited: count,
                                 max_working_bytes: config.max_working_bytes,
                                 task,
+                                result_bound: None,
                             },
+                            None,
+                            None,
                             |_| Ok(true),
                             |other| index.construction_distance(ordinal, other, task),
                         )?;
@@ -344,7 +347,10 @@ impl DiskAnnIndex {
                         max_visited: count,
                         max_working_bytes: config.max_working_bytes,
                         task,
+                        result_bound: None,
                     },
+                    None,
+                    None,
                     |_| Ok(true),
                     |other| self.construction_distance(ordinal, other, task),
                 )?;

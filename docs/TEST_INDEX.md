@@ -1,5 +1,26 @@
 # Test ownership and known slow paths
 
+Checkpoint crash temporaries ([#1974](https://github.com/nowledge-co/hawdb/issues/1974))
+are covered by `artifact_files::checkpoint_cleanup_tests` in the existing
+`//crates/storage:hawdb_storage_tests` crates presubmit. These cases preserve
+published bytes, read-only admission, unknown names, directories and Unix
+symlinks while reclaiming known temporary files from older, selected and future
+generations. A legacy store reopens, checkpoints and reads the recovered nodes.
+Replay with `cargo test --locked -p hawdb-storage --lib checkpoint_cleanup_tests`.
+The existing `api::tests::power_loss::checkpoint_temporaries` recorder family
+captures real create/write/file-sync boundaries for checkpoint, append,
+property and canonical manifests, before the first checkpoint and after an
+earlier checkpoint. Its 48 process-crash images are each reopened through the
+same producer API (`Database` or `EmbeddedStoreHandle`) with manual and automatic
+checkpointing (96 recovery cases with `background-maintenance`), then written,
+checkpointed, read and reopened again. It runs in the required
+`//:hawdb_unit_test_support_tests` lane (#1965) and in the weekly power-loss
+qualification lane (`remaining` on Windows). Replay with `cargo test --locked
+-p hawdb --features test-support --lib api::tests::power_loss::checkpoint_temporaries
+-- --test-threads=1`. Persist-all snapshots model process death with surviving
+page cache; they do not establish lost-write or device power-loss behavior. No
+test profile, timeout, or CI selection changes.
+
 PostgreSQL partial indexes ([#1872](https://github.com/nowledge-co/hawdb/issues/1872))
 use the existing SQL, relational, storage, row-page checkpoint, and index-shadow
 unit owners. SQL compatibility tests own `WHERE` preservation and explicit
@@ -550,6 +571,83 @@ host itself is under critical memory pressure. No new lane, profile or timeout.
 Replay with `cargo test --locked -p hawdb-qos --lib host_refresh_tests` and
 `cargo test --locked -p hawdb --lib stale_memory_pressure_tests`.
 
+Synchronous admission waits ([#1947](https://github.com/nowledge-co/hawdb/issues/1947))
+use the existing `//crates/qos:hawdb_qos_tests`, core and root
+`//:hawdb_unit_general_tests` owners. QoS `runtime::blocking_admission_tests`
+drive `RuntimeGovernor::admit_waiting` on a one-CPU governor: a parked caller is
+admitted after a release; a later Foreground waiter precedes an unaged
+Background one (its enqueue time is pinned so slow hosts cannot age it); an
+aged Background waiter wakes itself without a release; same-priority waiters
+are FIFO and an immediate request yields `queued_ahead` to a queued waiter
+even with free capacity; an aged queued Background waiter makes an immediate
+Foreground request yield by default but not under strict Foreground precedence
+(`set_foreground_preempts_queued_background`), while an immediate Background
+request always yields; a
+short-deadline Foreground waiter takes the slot a running Background task
+releases ahead of a queued Background waiter and its trace records the queued
+time; the admission deadline returns the retryable refusal with `waited`; an
+unsatisfiable request is refused without queueing (`waited` absent); and
+cancellation or the task deadline while queued return the typed stop. Three or more aged Background
+waiters overtake one short-deadline Foreground waiter at most once (default
+and strict precedence), a later Foreground waiter may again be overtaken once,
+and an immediate request yields `queued_ahead` only when it competes with the
+selected waiter for a scarce resource (checkpoint-like maintenance passes a
+waiter short of Foreground I/O but not one short of the only CPU; on two
+CPUs it passes a waiter short only of I/O while a writer holds the other
+CPU); a waiter short of process resident memory is not overtaken by small
+memory-reserving requests; and a Background-ranked waiter in the Foreground
+pool is ordered behind users and ahead of Background-ranked immediates without
+taking the Background pool. Every case leaves the queue empty. The unit-test build raises the bounded re-check
+interval to 60 s, so the 20 s completion bounds prove signal wake-ups rather
+than polling. Core `cancellation::tests::admission_policy_*` pin the
+task-context defaults, scoping and shared admission trace. Root
+`embedded_store::admission_wait_tests` open a handle on a one-CPU governor
+(one Background task): the default context still refuses at once with no
+`waited`; Background reads and queries run in the Background pool; a waiting
+bounded read is admitted after release and traced; the wait deadline (with
+`waited`), cancellation and the task deadline return their typed errors;
+queued statement transactions and typed maintenance hold no store guard (a
+third thread takes the write guard within the bound); a reader queues behind an
+open transaction. Host-shaped loops: a waiting Foreground writer completes 300
+commits beside a greedy immediate Foreground reader; waiting reader and writer
+alternate FIFO; a waiting reader completes 100 reads beside two greedy readers
+saturating a one-slot I/O depth on seven CPUs; on a governor with strict
+Foreground precedence a user read is admitted while a Background replay is
+queued past aging (by default it yields `queued_ahead`) and a Background shadow
+read yields `queued_ahead`; a waiting Background replay completes 300 commits
+beside a greedy Background shadow reader; greedy user reads never see
+`queued_ahead` from a queued Background replay; a short-deadline Foreground mailbox read is
+admitted when a Background task releases the CPU; a Background shadow search
+(`search_candidates_with_report_context`) queues on a held Background pool while
+the Foreground search runs, then completes and is traced; and a Background shadow
+reader beside a Foreground writer paced 1 ms apart never refuses the writer
+while the reader progresses. `admission_wait_tests::recommended_tiering`
+(feature `background-maintenance`) runs the recommended host tiering on a
+durable four-CPU handle with the default one-task Background pool and 20 ms
+automatic checkpoints: a Background-ranked replay writer commits 100 times
+beside two Background-ranked shadow readers that hold each read open for 20 ms
+and a greedy user reader; checkpoints keep completing, users never see
+`queued_ahead`; the same holds for a writer given
+`with_admission_priority(Background)`. Parked writers are covered by
+`automatic_checkpoint::tests::headroom::queued_callers`: a real commit waits for
+the paused checkpoint owner near capacity, with the writer on four CPUs at the
+default Background limit, beside a long shadow read, and on two CPUs with a
+caller queued for I/O; the owner's first attempt must be admitted and the commit
+must succeed. Root
+`api::tests::checkpoint_beside_queued_waiters` (feature
+`background-maintenance`) open a durable database with a 20 ms automatic
+checkpoint age on a four-CPU governor with one Foreground I/O slot and write
+until automatic checkpoints complete: with a waiter queued for the held I/O
+slot, beside three callers that keep re-queuing for it, and on two CPUs while
+writer A holds one CPU and the I/O slot and B is queued; before the
+contention rule the checkpoint was refused `queued_ahead` indefinitely. Only
+that pacing and one 150 ms aging pause sleep; no new lane, profile or timeout.
+Replay with `cargo test --locked -p hawdb --all-features --lib
+checkpoint_beside_queued_waiters`,
+`cargo test --locked -p hawdb-qos --lib blocking_admission_tests`,
+`cargo test --locked -p hawdb-core --lib admission_policy` and
+`cargo test --locked -p hawdb --lib admission_wait_tests`.
+
 `embedded_store::tests::storage_pressure_tests` (`nowledge-co/hawdb#1725`)
 belongs to the existing root `//:hawdb_unit_general_tests` owner. It opens a
 durable handle with explicit checkpoints only and pins
@@ -815,7 +913,10 @@ sets and ranges still skip segments. A V4 generation requires selector reader ve
 4; readers of versions 1-3 refuse it with the typed error. The manifest-version
 owner also covers all four stream1/blocks1 and complete/omitted-summary
 combinations through epoch advance, short-field append and delete-only
-publication, plus legacy version-2 and version-3 selector reopen. A V3 descriptor with
+publication, plus legacy version-2 and version-3 selector reopen. `value_summary_bounds`
+covers the selector version of closures mixing `stream1` and `blocks1` segments,
+compaction with a carried segment, and partitioned initial and delta
+publication (`nowledge-co/hawdb#1958`). A V3 descriptor with
 full bodies reopens with bounded summaries, and reader-retained value bytes and
 admitted reader memory do not grow with the body length. No lane, profile or
 timeout is added. Local replay:
@@ -1863,6 +1964,7 @@ legacy document tombstones before reducing the complete pinned source interval.
 | Lane / entry point | Problems covered | Execution policy |
 | --- | --- | --- |
 | Prow root: `//:hawdb_unit_tests`, `//:hawdb_system_sql_loom_tests`, `//:hawdb_linux_ci_smoke_tests`, CLI/shadow and package-parity targets | Embedded facade behavior, concurrent publication, recovery, public consumers, compatibility protocols and benchmark evidence | Required PR and mainline regression coverage. The PR lane excludes the explicit checkpoint targets below; the mainline lane retains the aggregate coverage. Fuzz is excluded. |
+| Prow root, `test-support`: `//:hawdb_unit_test_support_tests` (member of `//:hawdb_unit_tests`) | Root unit cases that exist only with the `test-support` feature: reads beside immutable-object retirement (#1959), leftover checkpoint candidates (#1979), checkpoint crash temporaries (#1974), WAL-tail failures, stationary-Consumer refusals, carried-graph repair | Required in the existing Prow root context through its suite; see [root cases gated on test-support](#root-cases-gated-on-test-support-1965). |
 | Prow crates: `//:hawdb_presubmit_crate_tests` | Internal component contracts and exact Search feature profiles | Required checked-profile component coverage (the release-only observer target runs in the native lane). Each package owns `:presubmit_tests`; manual-only targets must not accidentally enter implicit suite discovery. |
 | Prow checkpoint growing-table presubmit: `//:hawdb_unit_checkpoint_headroom_growing_table_tests` | Complete steady-insert growing-table headroom regression | Required PR context `ci/skein-bazel-test-checkpoint-growing-table`; exclusive local test execution over the shared checked root binary. |
 | Prow checkpoint large-commit presubmit: `//:hawdb_unit_checkpoint_large_commit_tests` | Uninterrupted whole-district and oversized-commit checkpoint controls | Required PR context `ci/skein-bazel-test-checkpoint-large-commit`; exclusive local test execution over the shared checked root binary. |
@@ -2187,7 +2289,10 @@ workload does not change default or CI benchmark selection.
 | Cypher JSON scalar selection ([#1605](https://github.com/nowledge-co/hawdb/issues/1605)) | `//:hawdb_in_memory_portable_tests` owns strict `json_value` selection and its explicit `NULL ON NONSCALAR` array/object-to-NULL mode. Literal and parameter paths cover projection, predicates, `CASE`, `COALESCE`, `WITH` and bounded aggregates; malformed/non-string/oversized documents, integer overflow, query-memory refusal and cancellation remain errors. The same target is the minimal browser WASM contract. Replay: `cargo test --locked -p hawdb --test in_memory_portable null_on_nonscalar` and the strict-Clippy command in `docs/WASM.md`. See [contract](CYPHER_JSON_VALUE.md). |
 | Cypher string-only JSON selection ([#1759](https://github.com/nowledge-co/hawdb/issues/1759)) | Existing `//:hawdb_in_memory_portable_tests` owns decoded exact string selection, escaped/nested keys, parameter-path rebinding, NULL and every non-string kind including signed/unsigned boundaries, predicate/CASE, nested scalar expressions over UNWIND/WITH aliases, and partial/buffered aggregate behavior. Strict malformed/non-string/oversized-document, invalid-path, deadline and configured/runtime memory refusals remain covered. The shared JSON expression-position admission matrix runs both selectors for string fields. Existing cypher and plan-cypher crate targets own syntax/arity/clause rejection and distinct plan fingerprints. The portable owner also runs in the minimal browser WASM lane. Replay: `cargo test --locked -p hawdb --test in_memory_portable json_string`; shared admission guard: `cargo test --locked -p hawdb --test in_memory_portable json_expression_positions`; no new lane, profile or timeout. See [contract](CYPHER_JSON_VALUE.md#string-only-selection). |
 | Selected-record hydration ([#1611](https://github.com/nowledge-co/hawdb/issues/1611)) | `//crates/search:hawdb_search_tests` (`out_of_core::hydration::tests::document_line_summary_matches_the_decoded_document`) and every existing hydration owner, whose debug builds assert each selected record's summarized bytes equal its decoded `search_document_bytes`. Document hydration decodes only the selected records of a segment; the summary of the others gives their id and exact byte count. |
-| Configured default DiskANN navigation beam ([#1614](https://github.com/nowledge-co/hawdb/issues/1614)) | `//crates/search:hawdb_search_tests` (`out_of_core::tests::vector_segments::configured_default_navigation_beam_applies_unless_a_query_sets_one` and `default_navigation_beam_bounds_graph_work_and_preserves_explicit_wide_search`). The ordinary out-of-core reader beam is 256; resident and canonical serving remain at 1024. Reader configuration applies when a query sets none, and a per-query setting wins. The fixed 600-document fixture preserves its exact top ten while matching explicit-256 graph work and reading less than explicit 1024. The out-of-core admission/window fixture explicitly retains its graph-covering beam; resident admission keeps its original default contract. Replay `cargo test --locked -p hawdb-search --all-features --lib navigation_beam`. |
+| Configured default DiskANN navigation beam ([#1614](https://github.com/nowledge-co/hawdb/issues/1614)) | `//crates/search:hawdb_search_tests` (`out_of_core::tests::vector_segments::configured_default_navigation_beam_applies_unless_a_query_sets_one` and `default_navigation_beam_bounds_graph_work_and_preserves_explicit_wide_search`). The ordinary out-of-core reader beam is 256; resident and canonical serving remain at 1024. Reader configuration applies when a query sets none, and a per-query setting wins. The fixed 4,400-document fixture, larger than the small-domain scan covers at beam 256, preserves its exact top ten while matching explicit-256 graph work and reading less than explicit 1024. The out-of-core admission/window fixture explicitly retains its graph-covering beam; resident admission keeps its original default contract. Replay `cargo test --locked -p hawdb-search --all-features --lib navigation_beam`. |
+| Spread-probed exact completion in DiskANN search ([#1970](https://github.com/nowledge-co/hawdb/issues/1970)) | Kernel: `//crates/vector-projection:hawdb_vector_projection_tests` (`diskann::tests::diskann_small_domain_scan_*` and `diskann_completed_scans_match_exhaustive_results_bit_for_bit`). A cosine fixture whose nearest vector has one in-link is missed by direct beam-256 traversal that scores over 80% of the graph, and is returned by the default search, filtered and unfiltered; a narrow beam is the negative control. Other cases cover exhaustive parity for both metrics, LSG, sparse/missing IDs and ties, determinism, the size cap and spread threshold boundaries, scoring each vector once, work limits that keep traversal, unchanged memory admission and mid-scan cancellation. Search: `//crates/search:hawdb_search_tests` (`out_of_core::tests::vector_segments::small_store_default_query_finds_a_hard_to_reach_cosine_neighbor`) compares the default query with brute force and the explicit exact path bit for bit. Core: `vector::tests::prepared_encoded_distance_matches_validated_vectors_and_refuses_malformed_input` and `cancellation::work::tests::remaining_work_is_the_tightest_enclosing_limit`. The feedback fixtures use domains of 65 or more so that they still exercise traversal. Replay `cargo test --locked -p hawdb-core -p hawdb-vector-projection -p hawdb-search --all-features --lib -- small_ completed_scans prepared_encoded remaining_work`. |
+| Result bound shared by segment graphs ([#1918](https://github.com/nowledge-co/hawdb/issues/1918)) | Kernel: `//crates/vector-projection:hawdb_vector_projection_tests` (`diskann::bound_tests`). Scripted graphs pin the expansion where traversal ends for both metrics, beams 64 to 1024, the minimum rank, the reach condition (a detour before the nearest vertices, with a control that stops), the candidate count, complete and partial filters, the precedence of the small-domain scan including the hard-to-reach #1970 fixture, refusal of invalid bounds, work limits, unchanged memory admission and cancellation. Real graphs (uniform, clustered and clustered per graph, both metrics; about 10 s) compare recall and scored vectors with and without the bound. Search: `//crates/search:hawdb_search_tests` (`out_of_core::tests::vector_segments::segmented_graphs_share_a_result_bound_without_losing_results`) compares a three-graph store with brute force and a result as wide as the candidate window, filtered and unfiltered, with repeat determinism. `out_of_core::generation_writer::tests::diskann::graph_result_bound_ignores_superseded_and_deleted_versions` supersedes or deletes the ten nearest base vectors in a delta graph and checks the bound passed to that graph (recorded by a test-only hook) against visible base distances, and the results against the exact path. Replay `cargo test --locked -p hawdb-vector-projection -p hawdb-search --all-features --lib -- result_bound`. |
+| Batched four-vector distances | Core: `//crates/core` unit tests (`vector::tests::four_encoded_distances_match_single_bits_errors_and_work`) compare the batched encoded distance with four single ones bit for bit, over tiny, tail, block-boundary and multi-block dimensions, unaligned rows and extreme values, and check that non-finite, short and zero rows in each lane give the single-vector error and that every checkpoint can refuse. Kernel: `//crates/vector-projection:hawdb_vector_projection_tests` (`diskann::artifact::tests::diskann_batched_mapped_scores_match_single_scores_and_reports`) compares mapped (batched) with in-memory (single) searches: hits, distances and complete reports, filtered and unfiltered, with and without the exact completion. Non-AVX2 hosts run the single-vector path in both. Replay `cargo test --locked -p hawdb-core -p hawdb-vector-projection --all-features --lib -- four_encoded batched_mapped`. |
 | Candidate filters decode only their fields ([#1613](https://github.com/nowledge-co/hawdb/issues/1613)) | `//crates/search:hawdb_search_tests` (`document_decoding_tests::metadata_key_decode_keeps_only_the_requested_keys`) and every existing filtered-search owner, which now builds candidate sets through the key-restricted decode. Building a metadata-filtered candidate set decodes only the predicates' metadata keys, and segment pruning summarizes only those fields. |
 | Metadata value postings ([#1613](https://github.com/nowledge-co/hawdb/issues/1613)) | `//crates/search:hawdb_search_tests` (`out_of_core::postings::tests`). Layout V4 metadata artifacts hold per-segment value postings under one field-semantics registry: ordinary normalized scalars, canonical `kind` aliases and defaulted `space_id`; multi-valued and unsupported predicates remain residual. `postings_select_the_scanned_candidates_and_hits` and `query_admitted_postings_select_the_scanned_candidates` compare complete postings and postings-plus-residual prefilters with the forced metadata scan on the non-query and admitted query paths, across generation-writer and resident-checkpoint projections and a distinct-value cap that excludes a field. They cover candidate IDs and vector ordinals, hybrid hits, Eq/In/AND filters with mixed case and whitespace, missing/empty/default `space_id`, `kind` aliases, documents without embeddings, absent fields, and residual shapes (`labels`, `metadata.*`, NotIn, range, presence, unsatisfiable). `postingless_v2_layouts_search_through_the_metadata_scan` builds a real V2 projection without postings, compares it with V4, and checks that V2 with postings, unknown formats and misplaced postings ranges are refused. `payload_validation_refuses_inconsistent_postings` also verifies that legacy `HDPOST01` postings still serve ordinary fields but make V4 semantic fields fall back. `corrupt_postings_ranges_fail_closed` flips a postings byte. `postings_reads_fail_closed_under_a_tight_query_budget` sweeps query budgets, which either refuse with a budget error or return identical candidates with a refunded ledger. `candidate_evidence::boundaries::report_json_preserves_complete_field_set_and_provenance` pins all four postings counters in both candidate and readiness JSON. Encoder admission regressions use an 8 KiB account to verify byte-identical postings for ordinary scalars and `space_id` with large ASCII/Unicode whitespace padding, empty scalars and Unicode lowercase expansion, while unknown `kind` values retain exact spelling and raw-byte admission; both successful encoding and budget refusal refund the ledger. The remaining cases cover fields left unindexed by the distinct-value or 256-byte value cap, payload size limits, reader-budget fallback, structural corruption and overwritten/deleted/newer-layer documents. Test segments hold two documents, so the cap is set per thread in tests (production: 4,096). |
 | Ordinary squared-L2 projection scoring | Existing Search vector feature-matrix owners run `vector_metric_tests::ordinary_squared_l2`, `vector_metric_tests::out_of_core_squared_l2` and `vector_metric_tests::squared_l2_refuses`: nonunit norms, 1536-dimensional 0.80 boundaries, zero vectors, zero-score neighbor order, resident exact/default, checkpoint/reopen and retained generations, streamed exact/DiskANN, document/scores-only output, inherited incremental policy, cancellation/memory refusal, incompatible metadata and conflicting-option checkpoint refusal before snapshot replacement. Root general unit owners run `embedded_vector_seed_preserves_ordinary_squared_l2_score` for resident/out-of-core embedded Cypher output. Existing profiles, feature selections, timeouts and CI lanes remain unchanged. Replay: `bazel test //crates/search:hawdb_search_tests --test_arg=squared_l2` and `bazel test //:hawdb_unit_general_tests --test_arg=embedded_vector_seed_preserves_ordinary_squared_l2_score`. See [scoring contract](SEARCH_VECTOR_SCORING.md); ref [#1541](https://github.com/nowledge-co/hawdb/issues/1541). |
@@ -2234,6 +2339,7 @@ workload does not change default or CI benchmark selection.
 | Checkpoint context bookkeeping per unit ([#1651](https://github.com/nowledge-co/hawdb/issues/1651)) | Existing `//crates/storage:hawdb_storage_tests` / Prow crates owner (`canonical::checkpoint_writer::state::rebind_tests`, `background::checkpoint::batch_tests`) and `//crates/core:hawdb_core_tests` (`cancellation::tests::reason_fast_path_and_ancestor_walk_select_the_same_first_cause`). A canonical writer encodes 300 nodes under one shared `CheckpointWorkContext` handle and again under a distinct handle per record (the former per-record clone). Started, completed and progress units, batch stats (units, finished, abandoned, admissions, refusals, clock reads) and records are identical. Cancelling after units 1, 2, 7, 63, 64, 65, 129 and 500 stops at the same unit in both modes, and no unit starts after the cut. The test-only `REBINDS` counter shows the shared handle replaces no builder context while a fresh handle per record replaces at least four per record. Batch cases: clones charge one batch and progress counter, and builders copy on write. `rebind` replaces only another context or a `classify` scope. Units without a scheduler count progress exactly and observe cancellation at every unit, and a unit with no progress counter holds nothing. The core case checks that a root token answers from its own state and that linked and child tokens keep their depth-first reason order. Replay: `cargo test --locked -p hawdb-storage --lib -- rebind_tests batch_tests`, `cargo test --locked -p hawdb-core --lib reason_fast_path`. No new lane, profile or timeout. Spec: [pressure-driven checkpoint](specs/PRESSURE_DRIVEN_CHECKPOINT_SPEC.md#per-unit-context-bookkeeping). |
 | Same-process published-object re-hash skip ([#1521](https://github.com/nowledge-co/hawdb/issues/1521), [#1440](https://github.com/nowledge-co/hawdb/issues/1440)) | Existing `//crates/storage:hawdb_storage_tests` / Prow crates owner (`immutable_object::published_tests`, `file_descriptors::tests::published_object_mount_and_cold_handle_skip_rehash_until_forgotten`) and root `//:hawdb_unit_general_tests` (`api::tests::published_object_verification`). A streamed `publish_file` records its synced, hashed staging inode (native identity, length, mtime) after the namespace barrier; the branch-selector dependency check (`verify_stored_trusting_publication`), branch mount and cold immutable-handle validation then skip the identity re-hash and charge no validation bytes for that exact unmodified inode. Buffered publication, reuse of an existing object, reclamation, recovery `verify_and_sync`, and `verify_stored` as used by doctor WAL repair and derived-artifact health (`diagnostic_verification_ignores_publication_records`) never consult the record. A forgotten record (as in a new process), a replaced inode or a later mtime re-hash and reject a flipped byte. End to end, a same-process reopen returns identical graph and SQL results with skips recorded; after forgetting every record, nothing is skipped and scrub passes. Every non-empty skipped object of the fixture (checkpoint image, manifests, descriptor roots and pages, canonical segments, adjacency, row pages, property projection and spill artifacts; at least 10 required), damaged in place with its mtime preserved, is either refused by a format checksum on open/read or reported by `scrub_storage`, and reads that succeed return the clean results; a cold open refuses the same damage at branch admission. Replay: `cargo test --locked -p hawdb-storage --lib published` and `cargo test --locked -p hawdb --lib published_object_verification`. No new lane, profile, fixture amplification or timeout. |
 | Mount verification reused by the next cold handle open ([#1440](https://github.com/nowledge-co/hawdb/issues/1440)) | Existing `//crates/storage:hawdb_storage_tests` / Prow crates owner (`file_descriptors::tests::mount_verification_is_reused_once_by_the_next_cold_open`, `file_descriptors::tests::a_write_racing_the_mount_hash_leaves_no_reusable_record`, `file_descriptors::tests::mount_verification_records_are_bounded_per_project`, `file_descriptors::tests::mount_verification_record_payload_is_bounded`) and root `//:hawdb_unit_general_tests` (`api::tests::published_object_verification::new_process_open_hashes_each_mounted_object_once`). An object found on disk (no publication record) is hashed in full by every mount; the next cold handle open of it charges no validation and hashes nothing (`FileDescriptorMetrics::identity_verified_bytes` unchanged, `mount_verification_reuses` + 1) and reads the exact bytes. The record is one-shot: after eviction a cold open hashes again and refuses an mtime-preserving flipped byte. A refused remount discards an earlier unconsumed record, so the following cold open still hashes and refuses. A later mtime or a replaced inode with equal bytes is hashed in full. The mount stamps the descriptor before its first payload read and records only a stamp unchanged after the hash, so a modification-time change that lands while the mount is hashing leaves no record and the next cold open hashes in full. Unconsumed records are capped per project: mounting one more object than the cap without opening any evicts exactly the oldest record (`mount_verification_evictions` = 1), whose cold open then hashes in full while the newest record is still reused, and remounting an object that still has a record replaces it without evicting another. End to end, a new-process open (every publication record forgotten) returns identical graph and SQL results, `identity_verified_bytes` equals the total size of the distinct artifacts named in the active sealed root's checkpoint bindings. The expectation excludes retained producers from older generations. At least one mount verification is reused, and mtime-preserving damage to the largest mounted object is refused with `StorageIntegrity` at branch admission. `relational_index_view::tests::mounted_context_tests::mounted_base_validation_accounts_once_and_warm_reads_keep_complete_results` now pins that the first cold read after a mount charges only root and leaf, while a cold read after eviction still charges whole-object validation plus root and leaf exactly once; that fixture's damage helper advances the mtime explicitly so coarse timestamp clocks stay deterministic. Replay: `cargo test --locked -p hawdb-storage --lib mount_verification_is_reused`, `cargo test --locked -p hawdb-storage --lib a_write_racing_the_mount_hash`, `cargo test --locked -p hawdb-storage --lib mounted_context_tests` and `cargo test --locked -p hawdb --lib published_object_verification`. No new lane, profile, fixture amplification or timeout. |
+| Reads beside immutable-object retirement ([#1959](https://github.com/nowledge-co/hawdb/issues/1959)) | `//crates/storage:hawdb_storage_tests` / Prow crates owner: `immutable_files::retirement_tests` pauses one retirement inside its critical section (`RetirementPause`, `test-support` only): warm reads finish, cold reads wait, stop on cancellation/deadline, or report damage; leases, sweeps, name reuse, aliases and an exhaustive step model. Root unit owner: `api::tests::immutable_retirement_reads` (row pages, out-of-core graph, damage) and `api::search_projection_consumer::tests::stationary::search_artifact_reads_survive_a_paused_immutable_retirement`. Each root case takes a few seconds; the pause is bounded at 60 s. Replay: `cargo test --locked -p hawdb-storage --lib immutable_files::retirement`; `cargo test --locked -p hawdb --all-features --lib retirement`. The root cases need `test-support` and run in the required `//:hawdb_unit_test_support_tests` lane (#1965). |
 | Canonical segment corruption after checkpoint sharing | Root `//:hawdb_unit_recovery_tests` and `//:hawdb_unit_analytics_core_general_tests`. Fixture corruption flips a single payload byte in place while preserving the mounted inode, length and mtime. The segment digest detects the damage, and the query tests require the mismatch counter, handle poisoning, and invalidation of previously pinned snapshots. Graph algorithm tests first read all nodes successfully, then require a relationship digest failure with no result, unchanged commit epoch and unchanged publication frontier. Replay: `cargo test --locked -p hawdb --lib -- out_of_core_segment_is_corrupted user_invalidates_old_snapshots_when_checkpoint_or_projection_reads_corrupt_canonical_data projected_graph_relationship_corruption_fails_without_partial_results`. Existing lanes and timeouts apply. |
 | Relational checkpoint read-ahead on open ([#1440](https://github.com/nowledge-co/hawdb/issues/1440)) | Existing `//crates/storage:hawdb_storage_tests` / Prow crates owner (`relational::codec::read_ahead_tests`). The ordinary relational checkpoint decode and format-validation input reads and hashes the payload in 64 KiB blocks. Fields of mixed sizes, including fields straddling blocks and one larger than a block, reproduce a 3-block payload; the first one-byte field reads exactly one block and read-ahead never runs more than one block ahead. A request past the payload end fails before any read-ahead, with the unchanged message, logical position, underlying offset and an untouched destination. A flipped byte in the last block fails at `finish` with the unchanged checksum message, and `verify_remaining` hashes the unread tail. Replay: `cargo test --locked -p hawdb-storage --lib relational::codec::read_ahead_tests`. No new lane, profile or timeout. |
 | Out-of-core relationship property writes ([#1584](https://github.com/nowledge-co/hawdb/issues/1584)) | Root `//:hawdb_unit_general_tests` (`api::tests::out_of_core_relationship_set`). After a checkpoint, an out-of-core store copies a canonical relationship into the delta when a property is written; the copy must enter the delta adjacency and relationship property index because canonical reads skip delta-held relationships. A `SET` on one of two canonical relationships of a node is followed by unlabeled and typed outgoing expands, an incoming expand, a typed relationship scan and an expand on an untouched property of the rewritten relationship, all returning both relationships, inside the uncommitted transaction and after commit, and the property index consistency report is clean. A materialized store runs the same flow as a control. Replay: `cargo test --locked -p hawdb --lib out_of_core_relationship_set`. No new lane, profile or timeout. |
@@ -3023,6 +3129,16 @@ surface as NotFound for the child. Preserve the requested absolute path in that
 refusal and leave the existing file untouched. The release profile and feature
 set match the existing Linux wheel lane.
 
+The same Python binding family covers explicit `Database.checkpoint()` in
+`test_file.py`: publication followed by read-only graph/SQL reopen, read-only,
+open-write-transaction and closed-handle refusals, and an in-memory no-op.
+`test_stubs.py` checks that the method's type-stub signature matches the native
+binding. These cases use the existing `//bindings/python:hawdb_python_tests`
+target and Python Bindings workflow lanes, with no profile or scheduling
+changes. Replay `pytest tests/test_file.py -k checkpoint` and
+`pytest tests/test_stubs.py` from `bindings/python` with the corresponding
+installed wheel. Ref [#1455](https://github.com/nowledge-co/hawdb/issues/1455).
+
 The same Python path family covers explicit `namespace_durability_anchor`
 forwarding through `open`, `Database` and DB-API `connect`: graph/SQL commit,
 writable/read-only reopen, string/PathLike boundaries, preservation of read
@@ -3784,6 +3900,8 @@ one-batch WAL/reopen in the existing root API partition.
 - `scripts/check-license-headers.test.py` is a pinned-HawkEye fixture
   check for full/SPDX forms, Python/Shell shebangs, excluded/unsupported files,
   Go line headers/build constraints, MoonBit sources/interfaces/manifests,
+  exact-name `pkg.generated.mbti` exclusions at root and nested paths while
+  similarly named `.mbt` sources and other `.mbti` files remain checked,
   generated output/dependency exclusions, historical benchmark evidence,
   mixed valid/invalid batches, wrong owners/licenses and byte preservation.
   The staged-file hook uses the same HawkEye rules for both header templates.
@@ -4777,6 +4895,30 @@ Specification: [LOGICAL_DUMP.md](LOGICAL_DUMP.md).
     case above fails verification without writing, and
     `confirm_logical_dump_publication` is idempotent on an export and an
     import, changes no byte, and refuses a missing path or a file.
+  - host system schema registries (#1975,
+    `tests/logical_dump/system_schema.rs`, filter `system_schema::`):
+    `dump_of_an_older_persistent_format_restores_installed_migrations` imports
+    the checked-in dump that v0.37.0 (persistent format 5) wrote of two
+    registries (`golden_v1_host_ledger/`; these bytes must never change) and
+    checks the migration records, the owned tables' rows, keys, foreign key
+    and covering index, that installed migrations do not run again and that a
+    pending one does, and that SQL still cannot write the registry table.
+    `same_format_round_trip_restores_installed_and_pending_migrations` covers
+    eleven versions, import with and without registries, and a byte-identical
+    re-export. `forged_or_corrupt_ledgers_are_refused_before_anything_is_written`
+    rewrites the records and the table definition with consistent manifest
+    hashes (19 record edits, 6 definition edits; `verify_logical_dump` and
+    import refuse each and publish nothing), fails a host table after the
+    records were restored, then imports at the same destination.
+    `host_registries_decide_whether_restored_records_are_trusted` covers a
+    drifted, short, missing, reserved and repeated registry, and a well-formed
+    forgery that the registry refuses on import or on open. The record decoder
+    is covered by the `hawdb-relational` unit
+    `external_ledger_rows_must_be_ones_a_registry_upgrade_writes`, the
+    fresh-target restriction by the root unit
+    `ledger_restore_is_limited_to_a_fresh_database`, and the C ABI path by
+    `host_system_schema_records_survive_export_and_import` in
+    `bindings/ffi/src/dump_tests.rs`. No new lane or timeout.
   - the checked-in golden format 1 dump (`tests/logical_dump/golden_v1/`)
     imports with exact values. These bytes must never change. Regenerate a
     new golden version only with the `#[ignore]`d `write_golden_format_1_dump`
@@ -4851,7 +4993,8 @@ and no legacy `relational.N.hawdb` file; persistent format 6.
   checkpoint; `interrupted_incremental_relational_checkpoint_recovers_every_committed_row`
   reuses the `CheckpointPublishStage` failpoints (persisted, WAL prepared,
   manifest published); `legacy_full_row_checkpoint_reopens_and_moves_to_incremental_checkpoints`
-  writes the pre-format-6 full-row layout with `legacy_relational_checkpoint_file`, reopens it
+  writes the pre-format-6 full-row layout with `legacy_relational_checkpoint_file` (under a v2
+  storage manifest, so it is no downgrade path, #1976), reopens it
   with a WAL tail, and checks that overflow values stay readable in the same
   session after reclamation removes the old full-row file;
   `row_root_rebuild_and_overflow_rebind_keep_descriptor_exhaustion_typed`
@@ -4888,6 +5031,70 @@ and no legacy `relational.N.hawdb` file; persistent format 6.
   materialize its rows instead of refusing.
 
 No new lane, profile, timeout or feature. Recorder images do not qualify
+physical devices.
+
+## Root cases gated on test-support (#1965)
+
+Lanes that enable `test-support` (or the recorder under `cfg(test)`):
+
+| Lane | Runs on | Scope |
+| --- | --- | --- |
+| `//crates/storage:hawdb_storage_tests` | required Prow crates | Storage recorder, image engine and `RetirementPause` under `cfg(test)`; no root case |
+| `//:hawdb_unit_test_support_tests` | required Prow root | Every root unit case absent from the default binary, except as below |
+| Windows Bazel shards (`facade_all` profile) | required Windows contracts | Selected families only: WAL tail, Consumer reclamation, incremental vector, `registered_stationary`; not the #1959 or leftover cases |
+| Weekly Platform CI, branch power-loss | weekly/manual Linux, macOS, Windows | Complete `api::tests::power_loss` matrix with all features |
+| Windows abandonment GC qualification | manual | `api::tests::power_loss::branch_abandonment` |
+| Workspace Clippy (`prek`, Windows) | commit hook, required Windows contracts | Compiles the gated cases, runs none |
+
+`//:hawdb_unit_test_support_binary` builds `//:hawdb_unit_test_binary` in the
+`facade_test_support` feature profile, the features of `cargo test -p hawdb
+--features test-support --lib`. `scripts/run-root-test-support.sh` selects the
+difference between the two inventories, so a new gated case needs no
+registration, and fails if the #1959 or leftover cases are missing. Of
+`api::tests::power_loss`, it keeps `checkpoint_leftovers` and
+`checkpoint_temporaries`; the other families keep their weekly owner. That
+prefix rule also leaves out
+`api::tests::power_loss::interrupted_admission_alias_mount_keeps_authoritative_schema_and_data`,
+which fails on main ([#1941](https://github.com/nowledge-co/hawdb/issues/1941)),
+without naming it.
+
+Local x86-64 run, 6 jobs, default Bazel profile: 34 cases in 21 s (`long`
+ceiling, 900 s). The first build of the profile recompiles all 331 actions of
+the root test graph, 275 s beside 309 s for the default binary; Bazel does not
+share outputs between configurations. No compilation parameter differs.
+
+Replay with `bazel test //:hawdb_unit_test_support_tests`.
+`//:root_test_support_script_test` covers the selection and its refusals.
+
+## Leftover publication candidates (#1979)
+
+- Storage unit owner (`cargo test --locked -p hawdb-storage --lib`, no feature):
+  `branch_head::tests::publication_skips_a_crashed_process_candidate` occupies
+  earlier-version and reused-PID candidate names; the publication succeeds at
+  the first attempt and a failed one removes only its own file.
+  `durability::tests::candidate_creation_skips_and_keeps_names_it_does_not_own`
+  covers the helper shared with catalog, identity and object staging files.
+- Root power-loss family `api::tests::power_loss::checkpoint_leftovers`
+  (`cargo test --locked -p hawdb --features test-support --lib api::tests::power_loss::checkpoint_leftovers`)
+  complements `checkpoint_temporaries` (#1974): it cuts a manual, an automatic
+  and a child-branch checkpoint after every file creation, and a manual and an
+  automatic one before every rename, and requires all 13 exclusively created
+  kinds among the cuts. Manual creation cuts are recovered as a killed process
+  by each of `Database`, `EmbeddedStoreHandle` (main branch) and the automatic
+  owner; the other schedules rotate them. Every cut is also recovered as a
+  power loss by `Database`: the first checkpoint must succeed and a
+  further reopen must read every row. It runs in the required
+  `//:hawdb_unit_test_support_tests` lane (#1965) and falls in the Windows
+  `remaining` partition.
+- The automatic schedules wait for as long as the owner's state, counters or
+  work units keep changing, not for a fixed time (#1985): 60 s without any
+  change is a stall, and 300 s bounds an owner that changes without finishing.
+  `a_stalled_automatic_owner_is_reported_without_waiting_for_the_total_limit`
+  parks the owner before its handoff and requires the stall report, then
+  success after release; `only_a_changing_owner_state_counts_as_progress`
+  drives both bounds with explicit times.
+
+No new profile, timeout or feature. Recorder images do not qualify
 physical devices.
 
 ## Relational row-root checkpoint compatibility
@@ -4952,6 +5159,21 @@ publication fault plan, in `Materialized` and `OutOfCore` residency with both
 durability policies, and checks that rows committed after the batch survive
 whole or not at all. Fsync counts are measured with a local profiling harness,
 not in CI. No new lane, fixture, feature or timeout.
+
+## Pending system schema on read-only handles (#1950)
+
+Root unit owner `api::tests::system_schema_registry`
+(`cargo test --locked -p hawdb --lib system_schema_registry`).
+`read_only_database_rejects_pending_application_system_schema_upgrade` and
+`read_only_open_reports_a_pending_engine_system_schema` require the typed
+`SystemSchemaUpgradeRequired` with its owner and versions for a host registry
+and for an engine registry missing from a store written without the facade, the
+unchanged message text, and a usable handle or store afterwards.
+`system_schema_status_reports_every_owner_without_writing` compares the status
+query with the upgrade refusal on writable, `Materialized` and `OutOfCore`
+read-only, and in-memory handles. Error kinds are owned by the existing C ABI
+(`error_tests`), Python (`errors::tests`) and MoonBit native unit tests. No new
+lane, fixture, feature or timeout.
 
 
 ### Query-local posting reuse and multi-term merge (#1940)

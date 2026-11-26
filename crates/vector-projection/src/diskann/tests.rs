@@ -73,7 +73,7 @@ impl DiskAnnRead for FeedbackGraph {
 fn diskann_feedback_switches_once_and_matches_the_complete_filtered_domain() {
     for sparse_ids in [false, true] {
         for ratio in [10, 100, 1000] {
-            for eligible in [33, 64, 129] {
+            for eligible in [65, 96, 129] {
                 let graph = FeedbackGraph {
                     count: eligible * ratio,
                     eligible,
@@ -128,13 +128,13 @@ fn diskann_feedback_keeps_productive_navigation_and_preserves_refusal() {
     for (useful_links, work) in [(true, 8192), (false, 80)] {
         let graph = FeedbackGraph {
             count: 6400,
-            eligible: 64,
+            eligible: 65,
             sparse_ids: false,
             useful_links,
             scored: RefCell::default(),
             cancel: None,
         };
-        let ids: Vec<_> = (0..64).collect();
+        let ids: Vec<_> = (0..65).collect();
         let result = search_diskann(
             &graph,
             &[0.0, 0.0],
@@ -161,13 +161,13 @@ fn diskann_feedback_cancellation_during_exact_completion_returns_no_output() {
     let task = RuntimeTaskContext::without_deadline(token.clone());
     let graph = FeedbackGraph {
         count: 6400,
-        eligible: 64,
+        eligible: 65,
         sparse_ids: false,
         useful_links: false,
         scored: RefCell::default(),
         cancel: Some((12, token)),
     };
-    let ids: Vec<_> = (0..64).collect();
+    let ids: Vec<_> = (0..65).collect();
     assert!(matches!(
         search_diskann(
             &graph,
@@ -916,6 +916,7 @@ fn diskann_query_workspace_is_bounded_by_work_rather_than_disk_graph_size() {
             max_visited: 4,
             max_working_bytes: 1024,
             task: None,
+            result_bound: None,
         },
     )
     .unwrap();
@@ -944,7 +945,8 @@ fn diskann_invalid_provider_links_are_refused_before_indexing_workspace() {
 #[test]
 fn diskann_small_beam_recall_is_compared_with_exhaustive_filtered_groundtruth() {
     let dimension = 12;
-    let count = 384;
+    // Both domains exceed what the small-domain scan covers at this beam.
+    let count = 768;
     let mut random = 0x1234_5678_9abc_def0u64;
     let mut entries = Vec::new();
     for id in 0..count {
@@ -986,7 +988,7 @@ fn diskann_small_beam_recall_is_compared_with_exhaustive_filtered_groundtruth() 
         } else {
             baseline_links = Some(links);
         }
-        let eligible: Vec<_> = (0..count).filter(|id| id % 4 == 0).collect();
+        let eligible: Vec<_> = (0..count).filter(|id| id % 4 != 0).collect();
         for allowlist in [None, Some(CandidateSet::exact(&eligible))] {
             let mut matched = 0;
             for query_index in 0..16 {
@@ -1009,6 +1011,7 @@ fn diskann_small_beam_recall_is_compared_with_exhaustive_filtered_groundtruth() 
                 });
                 let output = search_diskann(&graph, &query, 10, allowlist, options(32)).unwrap();
                 assert_eq!(output.hits.len(), 10);
+                assert!(!output.report.adaptive_exact_scan);
                 matched += output
                     .hits
                     .iter()
@@ -1026,4 +1029,359 @@ fn diskann_small_beam_recall_is_compared_with_exhaustive_filtered_groundtruth() 
             );
         }
     }
+}
+
+/// A near-orthogonal outlier that is the nearest neighbor of the query but of
+/// no other vertex, so pruning leaves it almost no in-links (#1970).
+pub(super) fn hard_to_reach_entries() -> (Vec<(u64, Vec<f32>)>, Vec<f32>) {
+    const COUNT: u64 = 900;
+    const DIMENSION: usize = 32;
+    let mut random = 0x1234_5678_9abc_def0u64;
+    let mut noise = || {
+        (0..4).fold(0.0f64, |sum, _| {
+            random ^= random << 13;
+            random ^= random >> 7;
+            random ^= random << 17;
+            sum + (random % 10_000) as f64 / 5000.0 - 1.0
+        })
+    };
+    let entries = (0..COUNT)
+        .map(|id| {
+            let mut vector: Vec<f64> = (0..DIMENSION).map(|_| noise()).collect();
+            if id == COUNT - 1 {
+                vector[1] += 14.0;
+                vector[0] = vector[1..]
+                    .iter()
+                    .map(|value| value * value)
+                    .sum::<f64>()
+                    .sqrt();
+            } else {
+                vector[1] = -3.0;
+                vector[0] = if id < 400 { 2.5 } else { -1.0 };
+            }
+            (id, vector.into_iter().map(|value| value as f32).collect())
+        })
+        .collect();
+    let mut query = vec![0.0f32; DIMENSION];
+    query[0] = 1.0;
+    (entries, query)
+}
+
+fn exhaustive(
+    entries: &[(u64, Vec<f32>)],
+    metric: VectorDistance,
+    query: &[f32],
+    allowed: impl Fn(u64) -> bool,
+) -> Vec<DiskAnnHit> {
+    let mut hits: Vec<_> = entries
+        .iter()
+        .filter(|(id, _)| allowed(*id))
+        .map(|(id, vector)| DiskAnnHit {
+            id: *id,
+            distance: distance(metric, query, vector, None).unwrap(),
+        })
+        .collect();
+    hits.sort_by(|left, right| {
+        left.distance
+            .total_cmp(&right.distance)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    hits
+}
+
+fn traversed(graph: &DiskAnnIndex, query: &[f32], beam_width: usize) -> (Vec<u64>, usize) {
+    let options = options(beam_width);
+    let mut scratch = Scratch::new(graph.len(), beam_width, options.max_visited).unwrap();
+    let query = validate_query(graph.dimension(), graph.metric(), query, None).unwrap();
+    let report = traverse(
+        graph,
+        &mut scratch,
+        options,
+        None,
+        None,
+        |_| Ok(true),
+        |ordinal| graph.distance_prepared(&query, ordinal, None),
+    )
+    .unwrap();
+    (
+        scratch.beam.iter().take(10).map(|hit| hit.id).collect(),
+        report.distance_comparisons,
+    )
+}
+
+#[test]
+fn diskann_small_domain_scan_finds_a_neighbor_that_traversal_cannot_reach() {
+    let (entries, query) = hard_to_reach_entries();
+    let target = entries.len() as u64 - 1;
+    let graph = DiskAnnIndex::build(
+        query.len(),
+        VectorDistance::Cosine,
+        entries.clone(),
+        Default::default(),
+        None,
+    )
+    .unwrap();
+    // The fixture must keep showing the defect: traversal scores most of the
+    // graph, yet the nearest vector is never discovered.
+    let (navigated, scored) = traversed(&graph, &query, 256);
+    assert!(!navigated.contains(&target));
+    assert!(scored * 5 > entries.len() * 4, "scored {scored}");
+    let output = search_diskann(&graph, &query, 10, None, options(256)).unwrap();
+    assert!(output.report.adaptive_exact_scan);
+    // Vertices scored by the probe are not scored again.
+    assert_eq!(output.report.distance_comparisons, entries.len());
+    assert_eq!(output.report.expanded_nodes, 256 / 16);
+    assert_eq!(
+        output.hits,
+        exhaustive(&entries, VectorDistance::Cosine, &query, |_| true)[..10]
+    );
+    // Negative control: a narrow beam keeps the graph traversal and its miss.
+    let narrow = search_diskann(&graph, &query, 10, None, options(48)).unwrap();
+    assert!(!narrow.report.adaptive_exact_scan);
+    assert!(narrow.report.expanded_nodes >= 48);
+    assert!(narrow.hits.iter().all(|hit| hit.id != target));
+    // A non-selective filter has the same gap. This probe also sees wide
+    // spreading here, so the filtered search finishes exactly too.
+    let eligible: Vec<_> = (0..=target).filter(|id| id % 10 != 3).collect();
+    let filtered = search_diskann(
+        &graph,
+        &query,
+        10,
+        Some(CandidateSet::exact(&eligible)),
+        options(256),
+    )
+    .unwrap();
+    assert!(filtered.report.adaptive_exact_scan);
+    assert_eq!(filtered.report.distance_comparisons, eligible.len());
+    assert_eq!(
+        filtered.hits,
+        exhaustive(&entries, VectorDistance::Cosine, &query, |id| id % 10 != 3)[..10]
+    );
+}
+
+#[test]
+fn diskann_completed_scans_match_exhaustive_results_bit_for_bit() {
+    let mut random = 0x0dd0_5eed_1234_5678u64;
+    let mut next = || {
+        random ^= random << 13;
+        random ^= random >> 7;
+        random ^= random << 17;
+        random
+    };
+    let mut completed = [0; 2];
+    for (dimension, coarse) in [(2, true), (8, false)] {
+        let entries: Vec<_> = (0..240u64)
+            .map(|index| {
+                // Coarse coordinates repeat whole vectors and distances, so
+                // ties decide both the retained set and its order.
+                let vector = (0..dimension)
+                    .map(|_| {
+                        if coarse {
+                            (next() % 5) as f32 - 2.5
+                        } else {
+                            (next() % 10_000) as f32 / 5000.0 - 1.0
+                        }
+                    })
+                    .collect();
+                (index * 3 + 7, vector)
+            })
+            .collect();
+        // Missing IDs are ignored, as in traversal.
+        let mut every = entries.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+        every.push(100_000);
+        let half: Vec<_> = every.iter().copied().step_by(2).collect();
+        for metric in [VectorDistance::Cosine, VectorDistance::Euclidean] {
+            for lsg in [false, true] {
+                let graph = DiskAnnIndex::build(
+                    dimension,
+                    metric,
+                    entries.clone(),
+                    DiskAnnBuildConfig {
+                        max_degree: 8,
+                        build_beam: 32,
+                        lsg: lsg.then_some(LsgBuildConfig::default()),
+                        ..Default::default()
+                    },
+                    None,
+                )
+                .unwrap();
+                for _ in 0..4 {
+                    let query: Vec<_> = (0..dimension)
+                        .map(|_| (next() % 1000) as f32 / 400.0 - 1.1)
+                        .collect();
+                    for filter in [None, Some(&every), Some(&half)] {
+                        let filter = filter.map(|ids| CandidateSet::exact(ids));
+                        let expected = exhaustive(&entries, metric, &query, |id| {
+                            filter.is_none_or(|set| set.ids.contains(&id))
+                        });
+                        for top_k in [1, 9, 60] {
+                            let search = || {
+                                search_diskann(&graph, &query, top_k, filter, options(96)).unwrap()
+                            };
+                            let output = search();
+                            let again = search();
+                            assert_eq!(output.hits, again.hits);
+                            assert_eq!(output.report, again.report);
+                            if output.report.adaptive_exact_scan {
+                                completed[usize::from(filter.is_some())] += 1;
+                                assert_eq!(
+                                    output.report.distance_comparisons,
+                                    expected.len(),
+                                    "every eligible vector is scored exactly once"
+                                );
+                                assert!(output
+                                    .hits
+                                    .iter()
+                                    .zip(&expected)
+                                    .all(|(left, right)| left.id == right.id
+                                        && left.distance.to_bits() == right.distance.to_bits()));
+                                assert_eq!(output.hits.len(), top_k);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(completed.iter().all(|count| *count >= 20), "{completed:?}");
+}
+
+/// Counts scored vertices; links form a ring of `degree` successors.
+struct RingGraph {
+    count: usize,
+    degree: usize,
+    scored: RefCell<Vec<u32>>,
+    cancel: Option<(usize, RuntimeCancellationToken)>,
+}
+impl DiskAnnRead for RingGraph {
+    fn len(&self) -> usize {
+        self.count
+    }
+    fn dimension(&self) -> usize {
+        2
+    }
+    fn metric(&self) -> VectorDistance {
+        VectorDistance::Euclidean
+    }
+    fn max_degree(&self) -> usize {
+        self.degree
+    }
+    fn entry_point(&self) -> Option<u32> {
+        Some(0)
+    }
+    fn id(&self, ordinal: u32) -> Result<u64> {
+        Ok(u64::from(ordinal))
+    }
+    fn neighbors(&self, ordinal: u32) -> Result<impl Iterator<Item = u32>> {
+        let count = self.count;
+        Ok((1..=self.degree).map(move |step| ((ordinal as usize + step) % count) as u32))
+    }
+    fn distance(&self, _: &[f32], ordinal: u32, _: Option<&RuntimeTaskContext>) -> Result<f64> {
+        let mut scored = self.scored.borrow_mut();
+        scored.push(ordinal);
+        if let Some((count, token)) = &self.cancel
+            && scored.len() == *count
+        {
+            token.cancel();
+        }
+        Ok(f64::from(ordinal))
+    }
+}
+
+fn ring(count: usize) -> RingGraph {
+    RingGraph {
+        count,
+        degree: 8,
+        scored: RefCell::default(),
+        cancel: None,
+    }
+}
+
+#[test]
+fn diskann_small_domain_scan_is_bounded_by_the_beam_and_admitted_work() {
+    // The domain is capped at a third of beam * degree (16 * 8).
+    for (count, scans) in [(42, true), (43, false), (4096, false)] {
+        let graph = ring(count);
+        let output = search_diskann(&graph, &[0.0, 0.0], 4, None, options(16)).unwrap();
+        assert_eq!(output.report.adaptive_exact_scan, scans, "{count}");
+        if scans {
+            assert_eq!(output.report.neighbor_reads, 8, "one probe expansion");
+            let mut scored = graph.scored.borrow().clone();
+            scored.sort_unstable();
+            assert_eq!(scored, (0..42).collect::<Vec<_>>());
+        }
+    }
+    // Within the cap, a traversal that stays local keeps going: 24 probe
+    // expansions of the ring discover 32 vertices, at least 1/14 of 448 only.
+    for (count, scans) in [(448, true), (449, false)] {
+        let output = search_diskann(&ring(count), &[0.0, 0.0], 4, None, options(384)).unwrap();
+        assert_eq!(output.report.adaptive_exact_scan, scans, "{count}");
+    }
+    // A scan that does not fit the admitted work leaves the traversal, which
+    // does fit here, in place.
+    for (work, scans) in [(42, true), (41, false)] {
+        let task = RuntimeTaskContext::default().with_work_limit(work);
+        for (max_visited, task) in [(work, None), (4096, Some(&task))] {
+            let output = search_diskann(
+                &ring(42),
+                &[0.0, 0.0],
+                4,
+                None,
+                DiskAnnSearchOptions {
+                    max_visited,
+                    task,
+                    ..options(16)
+                },
+            )
+            .unwrap();
+            assert_eq!(output.report.adaptive_exact_scan, scans);
+            assert_eq!(
+                output.hits.iter().map(|hit| hit.id).collect::<Vec<_>>(),
+                [0, 1, 2, 3]
+            );
+            if let Some(task) = task {
+                assert_eq!(task.work_units(), output.report.visited_nodes);
+            }
+        }
+    }
+    // Memory admission is unchanged and precedes any distance.
+    let graph = ring(42);
+    let bound = options(16).working_memory_bound(42, 4).unwrap();
+    for (available, admitted) in [(bound - 1, false), (bound, true)] {
+        let result = search_diskann(
+            &graph,
+            &[0.0, 0.0],
+            4,
+            None,
+            DiskAnnSearchOptions {
+                max_working_bytes: available,
+                ..options(16)
+            },
+        );
+        assert_eq!(result.is_ok(), admitted);
+        assert_eq!(graph.scored.borrow().is_empty(), !admitted);
+    }
+}
+
+#[test]
+fn diskann_small_domain_scan_cancellation_returns_no_output() {
+    let token = RuntimeCancellationToken::new();
+    let task = RuntimeTaskContext::without_deadline(token.clone());
+    let graph = RingGraph {
+        // After the probe, beyond what a full traversal would score.
+        cancel: Some((40, token)),
+        ..ring(42)
+    };
+    let result = search_diskann(
+        &graph,
+        &[0.0, 0.0],
+        4,
+        None,
+        DiskAnnSearchOptions {
+            task: Some(&task),
+            ..options(16)
+        },
+    );
+    assert!(matches!(result, Err(ProjectionError::Cancelled(_))));
+    assert_eq!(graph.scored.borrow().len(), 40);
 }

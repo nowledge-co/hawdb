@@ -127,9 +127,9 @@ impl GraphStore {
 
     /// Selects whether checkpoints also write the legacy full-row relational
     /// file. The canonical row-page and overflow roots carry the complete
-    /// relational state either way; the legacy file only lets releases before
-    /// persistent format 6 reopen the database outside OutOfCore residency
-    /// with Authoritative relational indexes (#1737).
+    /// relational state either way (#1737). The legacy file does not let releases
+    /// before persistent format 7 reopen the database: they refuse the v2
+    /// storage manifest every checkpoint publishes (#1976).
     pub fn set_legacy_relational_checkpoint_file_enabled(&mut self, enabled: bool) {
         self.legacy_relational_checkpoint_file = enabled;
     }

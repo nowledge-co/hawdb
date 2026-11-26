@@ -44,7 +44,7 @@ mod value;
 use std::num::NonZeroUsize;
 use std::path::Path;
 
-use crate::api::{Database, DatabaseReadTransaction};
+use crate::api::{Database, DatabaseReadTransaction, SystemSchemaRegistry};
 use crate::embedded::HawDBEmbedded;
 use crate::{HawDBError, Result};
 
@@ -149,7 +149,8 @@ pub struct LogicalDumpVerifyReport {
 /// Verifies the logical dump at `path` without writing anything: the
 /// manifest is a supported format version, the schema and every data file
 /// match their manifest length, SHA-256 and record count, and the manifest
-/// counts match the files. A damaged or incomplete dump fails with
+/// counts match the files. Migration records are validated as import
+/// validates them. A damaged or incomplete dump fails with
 /// [`HawDBError::StorageIntegrity`]; a dump from a newer release with
 /// [`HawDBError::UnsupportedStorageFormat`].
 pub fn verify_logical_dump(path: impl AsRef<Path>) -> Result<LogicalDumpVerifyReport> {
@@ -204,6 +205,12 @@ impl Database {
 
     /// Builds a new database at `destination` (which must not exist) from the
     /// logical dump at `source`, and publishes it only on complete success.
+    ///
+    /// Migration records of application [`SystemSchemaRegistry`] owners are
+    /// restored, but without a registry only their shape can be checked; the
+    /// registry is verified against them when the host applies it on open.
+    /// [`Database::import_logical_dump_with_system_schema`] verifies it before
+    /// anything is written.
     pub fn import_logical_dump(
         source: impl AsRef<Path>,
         destination: impl AsRef<Path>,
@@ -216,7 +223,29 @@ impl Database {
         destination: impl AsRef<Path>,
         options: &LogicalDumpOptions,
     ) -> Result<LogicalDumpImportReport> {
-        import::import(source.as_ref(), destination.as_ref(), options)
+        import::import(source.as_ref(), destination.as_ref(), options, None)
+    }
+
+    /// Imports like [`Database::import_logical_dump_with_options`], and first
+    /// verifies the dump's application migration records against the host's
+    /// own registries: every application owner in the dump must be one of
+    /// `registries`, with records that are a checksum-verified prefix of it.
+    /// Otherwise nothing is written.
+    ///
+    /// Import applies no migration. Migrations pending in `registries` are
+    /// applied when the host registers them on open.
+    pub fn import_logical_dump_with_system_schema(
+        source: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+        options: &LogicalDumpOptions,
+        registries: &[SystemSchemaRegistry],
+    ) -> Result<LogicalDumpImportReport> {
+        import::import(
+            source.as_ref(),
+            destination.as_ref(),
+            options,
+            Some(registries),
+        )
     }
 }
 

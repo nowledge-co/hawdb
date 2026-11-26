@@ -99,6 +99,26 @@ pub fn golden_v1_files() -> Vec<(&'static str, &'static [u8])> {
     ]
 }
 
+/// A dump v0.37.0 wrote of a database with two host system schema registries.
+pub fn golden_host_ledger_files() -> Vec<(&'static str, &'static [u8])> {
+    macro_rules! file {
+        ($path:literal) => {
+            (
+                $path,
+                include_bytes!(concat!("golden_v1_host_ledger/", $path)).as_slice(),
+            )
+        };
+    }
+    vec![
+        file!("manifest.json"),
+        file!("schema.json"),
+        file!("data/table-00000-00000.jsonl"),
+        file!("data/table-00001-00000.jsonl"),
+        file!("data/table-00002-00000.jsonl"),
+        file!("data/table-00003-00000.jsonl"),
+    ]
+}
+
 /// `SELECT id, title, body, amount, score, payload, embedding, at, made FROM
 /// docs ORDER BY id` after importing the golden dump.
 pub fn golden_v1_rows() -> Vec<Vec<Value>> {

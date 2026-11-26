@@ -1,0 +1,4 @@
+["example.content:1","example.content",1,"create_documents","bdf9e2aec1b3fb4d1e147f14005d8041fef11c12c11d93d83699d2c326defff5"]
+["example.content:2","example.content",2,"rank_documents","1d9b3c4a28fac7b584db8caff763e5c53e2d8a4b75c7d20d3f749c87edf5d168"]
+["example.settings:1","example.settings",1,"create_settings","d51ac022f3d04b584fab2da8de186cf4cadc0e9d8bb6ec5773fdcb17ec80ad35"]
+["hawdb.engine:1","hawdb.engine",1,"create_schema_registry","dcea6cc0947b09807d5384de5630f03c34787f4ea698c8aad4eb31ac53d21e85"]

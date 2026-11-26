@@ -30,12 +30,12 @@
 use crate::branch_catalog::{self, BranchId, BranchRecord, BranchState, CatalogMetadataLease};
 use crate::durability;
 use crate::file_descriptors::ProjectFileDescriptors;
-use crate::file_io::{self as fs, File, OpenOptions, SourceDirectory};
+use crate::file_io::{self as fs, File, SourceDirectory};
 use hawdb_core::{HawDBError, Result};
 use hawdb_integrity::crc32c;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 pub const PROJECT_HEADER: &str = "HAWDB_BRANCH_PROJECT_V2";
@@ -520,24 +520,13 @@ fn publish_identity_file(path: &Path, selector: ProjectSelector, header: &str) -
         .file_name()
         .ok_or_else(|| integrity("identity has no filename"))?
         .to_string_lossy();
-    let (candidate, mut file) = loop {
-        let sequence = CANDIDATE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let candidate = path.with_file_name(format!(
-            ".{name}.candidate-{}-{sequence}",
-            std::process::id(),
-        ));
-        match OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&candidate)
-        {
-            Ok(file) => break (candidate, file),
-            // A previous process can leave a candidate and later reuse its
-            // PID. Preserve the old evidence and choose another private name.
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error.into()),
-        }
-    };
+    let (candidate, mut file) =
+        crate::durability::create_candidate_file(&CANDIDATE_SEQUENCE, |sequence| {
+            path.with_file_name(format!(
+                ".{name}.candidate-{}-{sequence}",
+                std::process::id(),
+            ))
+        })?;
     {
         file.write_all(&selector.encode_with_header(header))?;
         file.sync_all()?;

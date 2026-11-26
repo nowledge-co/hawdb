@@ -1,0 +1,145 @@
+{
+  "tables": [
+    {
+      "name": "documents",
+      "columns": [
+        {
+          "name": "id",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "body",
+          "type": "text",
+          "nullable": true
+        },
+        {
+          "name": "rank",
+          "type": "bigint",
+          "nullable": true
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "unique": [],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "name": "documents_rank",
+          "columns": [
+            "rank"
+          ],
+          "included_columns": [
+            "body"
+          ],
+          "unique": false
+        }
+      ]
+    },
+    {
+      "name": "hawdb_schema_migrations",
+      "columns": [
+        {
+          "name": "migration_id",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "owner",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "version",
+          "type": "bigint",
+          "nullable": false
+        },
+        {
+          "name": "name",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "checksum",
+          "type": "text",
+          "nullable": false
+        }
+      ],
+      "primary_key": [
+        "migration_id"
+      ],
+      "unique": [
+        [
+          "owner",
+          "version"
+        ]
+      ],
+      "foreign_keys": [],
+      "indexes": []
+    },
+    {
+      "name": "revisions",
+      "columns": [
+        {
+          "name": "document",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "seq",
+          "type": "bigint",
+          "nullable": false
+        }
+      ],
+      "primary_key": [
+        "document",
+        "seq"
+      ],
+      "unique": [],
+      "foreign_keys": [
+        {
+          "columns": [
+            "document"
+          ],
+          "references_table": "documents",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "cascade",
+          "on_update": "no_action"
+        }
+      ],
+      "indexes": []
+    },
+    {
+      "name": "settings",
+      "columns": [
+        {
+          "name": "k",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "v",
+          "type": "text",
+          "nullable": true
+        }
+      ],
+      "primary_key": [
+        "k"
+      ],
+      "unique": [],
+      "foreign_keys": [],
+      "indexes": []
+    }
+  ],
+  "graph": {
+    "node_labels": [],
+    "relationship_types": [],
+    "tables": [],
+    "properties": [],
+    "indexes": [],
+    "constraints": []
+  }
+}

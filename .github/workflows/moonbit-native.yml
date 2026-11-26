@@ -113,12 +113,6 @@ jobs:
           cargo build --locked --release
           if ($LASTEXITCODE -ne 0) { throw "Rust staticlib build failed" }
           if (!(Test-Path "target/release/hawdb_moonbit.lib")) { throw "Missing Rust .lib output" }
-      - name: Configure Windows native linker
-        working-directory: bindings/moonbit
-        shell: pwsh
-        run: |
-          python tools/configure_native_link.py --os windows
-          if ($LASTEXITCODE -ne 0) { throw "Linker config failed" }
       - name: Run real embedded HawDB conformance
         working-directory: bindings/moonbit
         shell: pwsh

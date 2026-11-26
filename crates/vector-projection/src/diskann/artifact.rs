@@ -392,9 +392,28 @@ impl<R> DiskAnnRead for FileDiskAnn<R> {
         task: Option<&RuntimeTaskContext>,
     ) -> Result<f64> {
         checkpoint(task)?;
-        let vector = self.vector(ordinal, task)?;
+        // Opening verified every component of this immutable mapping, and the
+        // distance kernel refuses non-finite components again.
+        let record = self.record(ordinal)?;
+        let encoded = &record[20..RECORD_PREFIX_BYTES + self.dimension() * 4];
         with_distance_work(task, |checkpoint| {
-            query.distance_to_vector_with_work(self.metric(), vector, checkpoint)
+            query.distance_to_encoded_with_work(self.metric(), encoded, checkpoint)
+        })
+    }
+    fn distances_prepared(
+        &self,
+        query: &hawdb_core::vector::PreparedVectorQuery<'_>,
+        ordinals: [u32; 4],
+        task: Option<&RuntimeTaskContext>,
+    ) -> Result<[f64; 4]> {
+        checkpoint(task)?;
+        let end = RECORD_PREFIX_BYTES + self.dimension() * 4;
+        let mut encoded: [&[u8]; 4] = [&[]; 4];
+        for (encoded, ordinal) in encoded.iter_mut().zip(ordinals) {
+            *encoded = &self.record(ordinal)?[20..end];
+        }
+        with_distance_work(task, |checkpoint| {
+            query.distances_to_encoded_with_work(self.metric(), encoded, checkpoint)
         })
     }
 }

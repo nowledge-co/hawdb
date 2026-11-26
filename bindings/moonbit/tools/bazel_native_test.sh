@@ -50,10 +50,6 @@ esac
 cd "$sdk"
 moon check --target native
 
-if [[ "$(uname -s)" == Darwin ]]; then
-  python3 tools/configure_native_link.py --os macos
-fi
-
 rm -rf tests/conformance-db
 moon run --target native tests/conformance 2>&1 | tee conformance.log
 ! grep -q '^CASE_FAIL ' conformance.log
