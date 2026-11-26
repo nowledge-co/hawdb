@@ -1,0 +1,133 @@
+# Copyright 2026 Nowledge
+# SPDX-License-Identifier: Apache-2.0
+
+name: Zstd Compatibility
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zstd-compatibility-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  injected:
+    name: Injectable compression consumer
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: injected-compression
+      - name: Verify the library without a native codec dependency
+        run: |
+          cargo generate-lockfile --manifest-path tests/compression-consumer/Cargo.toml
+          cargo tree --locked --manifest-path tests/compression-consumer/Cargo.toml --features default-facade --edges normal --prefix none > target-compression-dependencies.txt
+          python3 -c 'from pathlib import Path; names={line.split()[0] for line in Path("target-compression-dependencies.txt").read_text().splitlines()}; assert not names.intersection({"zstd", "zstd-safe", "zstd-sys"}), names'
+          cargo test --locked --manifest-path tests/compression-consumer/Cargo.toml --features default-facade
+      - name: Verify an independently supplied host implementation
+        run: |
+          cargo test --locked --manifest-path tests/compression-consumer/Cargo.toml --features host-zstd
+          root=$(mktemp -d)
+          cargo run --locked --manifest-path tests/compression-consumer/Cargo.toml --features test-zstd,persistence --bin persistence -- create "$root/database"
+          cargo run --locked --manifest-path tests/compression-consumer/Cargo.toml --features host-zstd,persistence --bin persistence -- host "$root/database"
+          cargo run --locked --manifest-path tests/compression-consumer/Cargo.toml --features test-zstd,persistence --bin persistence -- verify "$root/database"
+          cargo run --locked --manifest-path tests/compression-consumer/Cargo.toml --features test-zstd,persistence --bin persistence -- create "$root/binding-database"
+          cargo run --locked --manifest-path tests/compression-consumer/Cargo.toml --features binding-zstd,persistence --bin persistence -- binding "$root/binding-database"
+          cargo run --locked --manifest-path tests/compression-consumer/Cargo.toml --features test-zstd,persistence --bin persistence -- verify "$root/binding-database"
+          cargo generate-lockfile --manifest-path bindings/compression-zstd/Cargo.toml
+          cargo test --locked --manifest-path bindings/compression-zstd/Cargo.toml
+          cargo fmt --manifest-path bindings/compression-zstd/Cargo.toml -- --check
+          cargo clippy --locked --manifest-path bindings/compression-zstd/Cargo.toml --all-targets --all-features -- -D warnings
+          cargo fmt --manifest-path tests/compression-consumer/Cargo.toml -- --check
+          cargo clippy --locked --manifest-path tests/compression-consumer/Cargo.toml --all-targets -- -D warnings
+          cargo clippy --locked --manifest-path tests/compression-consumer/Cargo.toml --all-targets --features host-zstd -- -D warnings
+          cargo clippy --locked --manifest-path tests/compression-consumer/Cargo.toml --all-targets --all-features -- -D warnings
+
+  consumer:
+    name: Zstd 1.6 consumer and allocator
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain and WASM tools
+        run: |
+          rustup show active-toolchain
+          rustup target add wasm32-unknown-unknown
+          rustup component add llvm-tools
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: zstd-1.6
+      - name: Resolve a fresh independent consumer
+        run: |
+          cargo generate-lockfile --manifest-path tests/zstd-consumer/Cargo.toml
+          cargo tree --locked --manifest-path tests/zstd-consumer/Cargo.toml -i zstd-sys
+      - name: Check the native and WASM custom-memory declarations
+        run: |
+          include=$(cargo metadata --locked --manifest-path tests/zstd-consumer/Cargo.toml --format-version 1 | python3 -c 'import json,pathlib,sys; print(next(pathlib.Path(p["manifest_path"]).parent / "zstd/lib" for p in json.load(sys.stdin)["packages"] if p["name"] == "zstd-sys"))')
+          clang -std=c11 -Wall -Werror -fsyntax-only -I "$include" tests/zstd-consumer/custom_memory_abi.c
+          clang --target=wasm32-unknown-unknown -std=c11 -Wall -Werror -fsyntax-only -I "$include" tests/zstd-consumer/custom_memory_abi.c
+      - name: Test default and minimal consumer allocation ownership
+        run: |
+          cargo test --locked --manifest-path tests/zstd-consumer/Cargo.toml
+          cargo test --locked --manifest-path tests/zstd-consumer/Cargo.toml --no-default-features
+          cargo clippy --locked --manifest-path tests/zstd-consumer/Cargo.toml --all-targets --all-features -- -D warnings
+      - name: Qualify workspace codecs with Zstd 1.6
+        # Ordinary locked Prow/native lanes retain Zstd 1.5.7 coverage.
+        run: |
+          cargo update -p zstd --precise 0.14.5
+          cargo update -p zstd-safe --precise 8.4.0
+          cargo update -p zstd-sys --precise 2.2.0
+          cargo test --locked -p hawdb-storage --lib compression::
+          cargo test --locked -p hawdb-search --lib build_memory::
+          cargo test --locked -p hawdb-search --lib artifacts::encoding::tests
+      - uses: browser-actions/setup-chrome@v2
+        id: chrome
+        with:
+          install-chromedriver: true
+      - name: Test the minimal consumer in a browser worker
+        env:
+          CC_wasm32_unknown_unknown: clang
+          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+          WASM_BINDGEN_USE_BROWSER: "1"
+          CHROME_BINARY: ${{ steps.chrome.outputs.chrome-path }}
+          CHROMEDRIVER: ${{ steps.chrome.outputs.chromedriver-path }}
+          WASM_BINDGEN_TEST_WEBDRIVER_JSON: ${{ runner.temp }}/hawdb-webdriver.json
+        run: |
+          python3 -c 'import json,os; json.dump({"goog:chromeOptions": {"binary": os.environ["CHROME_BINARY"]}}, open(os.environ["WASM_BINDGEN_TEST_WEBDRIVER_JSON"], "w"))'
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          AR_wasm32_unknown_unknown="$(rustc --print sysroot)/lib/rustlib/$host/bin/llvm-ar"
+          export AR_wasm32_unknown_unknown
+          version=$(cargo metadata --locked --manifest-path tests/zstd-consumer/Cargo.toml --format-version 1 | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "wasm-bindgen"))')
+          cargo install wasm-bindgen-cli --version "$version" --locked
+          cargo test --locked --manifest-path tests/zstd-consumer/Cargo.toml --no-default-features --target wasm32-unknown-unknown
+          cargo clippy --locked -p hawdb --no-default-features --features test-zstd --target wasm32-unknown-unknown --lib --test in_memory_portable --test host_allocator -- -D warnings
+      - name: Retain the resolved dependency graphs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: zstd-1.6-lockfiles
+          path: |
+            Cargo.lock
+            tests/zstd-consumer/Cargo.lock

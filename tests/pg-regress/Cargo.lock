@@ -380,7 +380,6 @@ dependencies = [
  "serde",
  "serde_json",
  "unicode-width",
- "zstd",
 ]
 
 [[package]]
@@ -717,7 +716,6 @@ dependencies = [
  "regex-syntax",
  "serde",
  "serde_json",
- "zstd",
 ]
 
 [[package]]

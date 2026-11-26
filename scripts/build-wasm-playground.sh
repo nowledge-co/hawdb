@@ -32,7 +32,7 @@ if ! command -v "${AR_wasm32_unknown_unknown}" > /dev/null; then
   exit 1
 fi
 
-cargo build --locked -p hawdb --no-default-features \
+cargo build --locked -p hawdb --no-default-features --features test-zstd \
   --target wasm32-unknown-unknown --example wasm_playground
 target_dir="$(cargo metadata --locked --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
 wasm-bindgen --target web --out-dir examples/wasm-playground/pkg \

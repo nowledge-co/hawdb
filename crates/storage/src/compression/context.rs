@@ -18,16 +18,19 @@ use std::alloc::{alloc, dealloc, Layout};
 use std::ffi::c_void;
 use std::io;
 use std::ptr::{self, NonNull};
-use zstd::stream::raw::{InBuffer, Operation, OutBuffer, WriteBuf};
+use zstd::stream::raw::{InBuffer, OutBuffer, WriteBuf};
 use zstd::zstd_safe::zstd_sys as sys;
 
-const QUALIFIED_VERSION: u32 = 10507;
+const fn qualified_version(version: u32) -> bool {
+    matches!(version, 10507 | 10600)
+}
+
 const _: () = assert!(
-    sys::ZSTD_VERSION_NUMBER == QUALIFIED_VERSION,
+    qualified_version(sys::ZSTD_VERSION_NUMBER),
     "requalify the Zstd custom-memory ABI before updating its bindings"
 );
 
-// These two static-only declarations match zstd 1.5.7's zstd.h. Keep their
+// These two static-only declarations match zstd 1.5.7 and 1.6.0's zstd.h. Keep their
 // ABI private instead of enabling every experimental zstd-rs interface.
 #[repr(C)]
 struct CustomMemory {
@@ -159,8 +162,13 @@ unsafe fn free_inner(address: *mut c_void) {
     drop(ownership.memory);
 }
 
-fn require_version() -> io::Result<()> {
-    if zstd::zstd_safe::version_number() == QUALIFIED_VERSION {
+pub(super) fn require_version() -> io::Result<()> {
+    validate_version(zstd::zstd_safe::version_number())
+}
+
+fn validate_version(linked: u32) -> io::Result<()> {
+    // A qualified binding does not qualify a substituted native library.
+    if qualified_version(linked) && linked == sys::ZSTD_VERSION_NUMBER {
         Ok(())
     } else {
         Err(io::Error::other("unqualified Zstd custom-memory ABI"))
@@ -323,36 +331,6 @@ impl CompressionContext {
     }
 }
 
-impl Operation for CompressionContext {
-    fn run<C: WriteBuf + ?Sized>(
-        &mut self,
-        input: &mut InBuffer<'_>,
-        output: &mut OutBuffer<'_, C>,
-    ) -> io::Result<usize> {
-        self.step(input, output, sys::ZSTD_EndDirective::ZSTD_e_continue)
-    }
-
-    fn flush<C: WriteBuf + ?Sized>(&mut self, output: &mut OutBuffer<'_, C>) -> io::Result<usize> {
-        self.step(
-            &mut InBuffer::around(&[]),
-            output,
-            sys::ZSTD_EndDirective::ZSTD_e_flush,
-        )
-    }
-
-    fn finish<C: WriteBuf + ?Sized>(
-        &mut self,
-        output: &mut OutBuffer<'_, C>,
-        _finished_frame: bool,
-    ) -> io::Result<usize> {
-        self.step(
-            &mut InBuffer::around(&[]),
-            output,
-            sys::ZSTD_EndDirective::ZSTD_e_end,
-        )
-    }
-}
-
 impl Drop for CompressionContext {
     fn drop(&mut self) {
         self.release_native();
@@ -361,10 +339,8 @@ impl Drop for CompressionContext {
 
 pub struct DecompressionContext {
     pointer: NonNull<sys::ZSTD_DCtx>,
+    initial_bytes: usize,
     failed: bool,
-    prefix: [u8; 4],
-    prefix_length: usize,
-    prefix_position: usize,
     _memory_context: Option<Box<MemoryContext>>,
 }
 
@@ -397,10 +373,9 @@ impl DecompressionContext {
             .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
         let context = Self {
             pointer,
+            // SAFETY: the newly allocated native context is live and idle.
+            initial_bytes: unsafe { sys::ZSTD_sizeof_DCtx(pointer.as_ptr()) },
             failed: false,
-            prefix: [0; 4],
-            prefix_length: 0,
-            prefix_position: 0,
             _memory_context: memory,
         };
         // SAFETY: the newly owned context is idle.
@@ -417,14 +392,21 @@ impl DecompressionContext {
             )
         })?;
         self.failed = false;
-        self.prefix_length = 0;
-        self.prefix_position = 0;
         Ok(())
     }
 
     pub fn sizeof(&self) -> usize {
         // SAFETY: the context is live and immutable during this read.
         unsafe { sys::ZSTD_sizeof_DCtx(self.pointer.as_ptr()) }
+    }
+
+    pub(super) fn accounted_bytes(&self) -> usize {
+        let native = self.sizeof();
+        // No dictionaries/workers: one DCtx and, once needed, one combined
+        // input/output allocation. Include our callback prefixes and owner box.
+        native
+            + (1 + usize::from(native > self.initial_bytes)) * size_of::<AllocationHeader>()
+            + usize::from(self._memory_context.is_some()) * size_of::<MemoryContext>()
     }
 
     pub fn decompress_stream<C: WriteBuf + ?Sized>(
@@ -443,49 +425,14 @@ impl DecompressionContext {
                 "invalid Zstd input position",
             ));
         }
-        // Zstd's pre-1.0 legacy decoders allocate through libc rather than
-        // customMem. HawDB writes modern frames; reject legacy magic before
-        // native decoding can enter that separate allocation path.
-        if self.prefix_length < self.prefix.len() {
-            let count = (self.prefix.len() - self.prefix_length).min(input.src.len() - input.pos());
-            self.prefix[self.prefix_length..self.prefix_length + count]
-                .copy_from_slice(&input.src[input.pos()..input.pos() + count]);
-            self.prefix_length += count;
-            input.set_pos(input.pos() + count);
-            if self.prefix_length < self.prefix.len() {
-                return Ok(self.prefix.len() - self.prefix_length);
-            }
-            let magic = u32::from_le_bytes(self.prefix);
-            if magic != 0xfd2fb528 && magic & 0xfffffff0 != 0x184d2a50 {
-                self.failed = true;
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "invalid Zstd frame magic",
-                ));
-            }
-        }
-        if self.prefix_position < self.prefix.len() {
-            let mut prefix = InBuffer::around(&self.prefix);
-            prefix.set_pos(self.prefix_position);
-            let result = stream(&mut prefix, output, |input, output| {
-                // SAFETY: only validated modern/skippable magic is forwarded;
-                // the context and both descriptors are exclusively borrowed.
-                unsafe { sys::ZSTD_decompressStream(self.pointer.as_ptr(), output, input) }
-            });
-            self.prefix_position = prefix.pos();
-            self.failed = result.is_err();
-            return result;
-        }
+        // The backend-neutral session validates modern/skippable magic before
+        // forwarding bytes. This keeps libc-owned pre-1.0 decoders unreachable.
         let result = stream(input, output, |input, output| {
             // SAFETY: the context is exclusively borrowed and both buffer
             // descriptors are valid for this call.
             unsafe { sys::ZSTD_decompressStream(self.pointer.as_ptr(), output, input) }
         });
         self.failed = result.is_err();
-        if matches!(result, Ok(0)) {
-            self.prefix_length = 0;
-            self.prefix_position = 0;
-        }
         result
     }
 }
@@ -505,3 +452,24 @@ unsafe impl Send for CompressionContext {}
 unsafe impl Sync for CompressionContext {}
 unsafe impl Send for DecompressionContext {}
 unsafe impl Sync for DecompressionContext {}
+
+#[cfg(test)]
+mod version_tests {
+    use super::*;
+
+    #[test]
+    fn only_qualified_bindings_with_the_matching_library_are_accepted() {
+        for version in [10507, 10600] {
+            assert!(qualified_version(version));
+            assert_eq!(
+                validate_version(version).is_ok(),
+                version == sys::ZSTD_VERSION_NUMBER
+            );
+        }
+        for version in [0, 10506, 10508, 10599, 10601, u32::MAX] {
+            assert!(!qualified_version(version));
+            assert!(validate_version(version).is_err());
+        }
+        require_version().unwrap();
+    }
+}

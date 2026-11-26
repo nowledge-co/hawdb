@@ -15,7 +15,7 @@
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use jieba_rs::Jieba;
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-use std::sync::LazyLock;
+use std::sync::{Mutex, OnceLock};
 
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub(super) const ANALYZER_FORMAT_VERSION: &[u8] =
@@ -26,14 +26,37 @@ pub(super) const ANALYZER_FORMAT_VERSION: &[u8] =
     b"hawdb-search-analyzer-v3-no-jieba-search-han-ngrams";
 
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-static CHINESE_TOKENIZER: LazyLock<Jieba> = LazyLock::new(crate::cjk_dictionary::load);
+static CHINESE_TOKENIZER: OnceLock<Jieba> = OnceLock::new();
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+static DICTIONARY_INITIALIZATION: Mutex<()> = Mutex::new(());
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+fn chinese_tokenizer() -> super::Result<&'static Jieba> {
+    if let Some(tokenizer) = CHINESE_TOKENIZER.get() {
+        return Ok(tokenizer);
+    }
+    let _initialization = DICTIONARY_INITIALIZATION.lock().map_err(|_| {
+        super::HawDBError::Execution("search dictionary initialization lock poisoned".into())
+    })?;
+    if let Some(tokenizer) = CHINESE_TOKENIZER.get() {
+        return Ok(tokenizer);
+    }
+    // A missing provider or decode refusal must not poison the process cache.
+    // Serialize the large dictionary allocation; publish only a complete load.
+    let tokenizer = crate::cjk_dictionary::load()?;
+    let _ = CHINESE_TOKENIZER.set(tokenizer);
+    Ok(CHINESE_TOKENIZER
+        .get()
+        .expect("dictionary was published under its initialization lock"))
+}
 
 #[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
 pub(super) fn chinese_search_tokens(text: &str) -> Vec<String> {
     if !text.chars().any(is_han_search_char) {
         return Vec::new();
     }
-    CHINESE_TOKENIZER
+    chinese_tokenizer()
+        .unwrap()
         .cut_for_search(text, true)
         .into_iter()
         .filter(|token| token.word.chars().any(is_han_search_char))
@@ -58,7 +81,7 @@ pub(super) fn visit_chinese_search_tokens_with_workspace<'a>(
     let _scratch = workspace
         .map(|workspace| workspace.admit(text))
         .transpose()?;
-    let tokens = CHINESE_TOKENIZER.cut_for_search(text, true);
+    let tokens = chinese_tokenizer()?.cut_for_search(text, true);
     for (index, token) in tokens.into_iter().enumerate() {
         if index.is_multiple_of(1024)
             && let Some(workspace) = workspace
@@ -89,12 +112,13 @@ pub(super) fn prime_workspace(text: &str) -> super::Result<()> {
     // An unknown two-Han word forces the pinned analyzer TLS to initialize on
     // this worker. The private dictionary is immutable; fail closed if a future
     // dictionary invalidates the dependency qualification fixture.
-    if CHINESE_TOKENIZER.has_word(text) {
+    let tokenizer = chinese_tokenizer()?;
+    if tokenizer.has_word(text) {
         return Err(super::HawDBError::Execution(
             "search analyzer dictionary invalidated workspace initialization".into(),
         ));
     }
-    drop(CHINESE_TOKENIZER.cut_for_search(text, true));
+    drop(tokenizer.cut_for_search(text, true));
     Ok(())
 }
 

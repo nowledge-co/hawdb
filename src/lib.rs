@@ -66,6 +66,18 @@ pub use compatibility_facades::{
     search_candidate_shadow_evidence, search_projection_evidence, storage_recovery_evidence,
 };
 
+/// Process-wide, host-selectable implementations of the persistent Zstd codec.
+pub mod compression {
+    pub use hawdb_storage::background::{CheckpointWorkContext, CheckpointWorkError};
+    #[cfg(feature = "test-zstd")]
+    pub use hawdb_storage::compression::TestZstdBackend;
+    pub use hawdb_storage::compression::{
+        install_compression_backend, parse_frame_header, CodecProgress, CompressionBackend,
+        CompressionBackendAlreadyInitialized, CompressionDecoder, CompressionEncoder, DecoderState,
+        EncodeOperation, EncoderState, FrameHeader,
+    };
+}
+
 pub mod error {
     pub use hawdb_core::error::*;
 }

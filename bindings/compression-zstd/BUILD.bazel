@@ -1,0 +1,20 @@
+# Copyright 2026 Nowledge
+# SPDX-License-Identifier: Apache-2.0
+
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_library(
+    name = "hawdb_binding_zstd",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = ["//:hawdb", "@crate_index//:zstd"],
+)
+
+rust_test(
+    name = "hawdb_binding_zstd_tests",
+    crate = ":hawdb_binding_zstd",
+    deps = ["//crates/storage:hawdb_storage"],
+)

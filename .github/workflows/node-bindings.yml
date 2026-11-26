@@ -5,6 +5,7 @@ on:
     paths:
       - "bindings/node/**"
       - "bindings/ffi/**"
+      - "bindings/compression-zstd/**"
       - "bindings/bun/src/json.ts"
       - "bindings/bun/src/platform.ts"
       - "src/**"
@@ -20,6 +21,7 @@ on:
     paths:
       - "bindings/node/**"
       - "bindings/ffi/**"
+      - "bindings/compression-zstd/**"
       - "bindings/bun/src/json.ts"
       - "bindings/bun/src/platform.ts"
       - "src/**"

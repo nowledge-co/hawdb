@@ -21,6 +21,7 @@ use hawdb_executor::QueryMemoryLease;
 use hawdb_integrity::Crc32cHasher;
 use std::io::{self, Write};
 
+#[cfg(test)]
 use crate::build_memory::compression::COMPRESSION_WORKSPACE_BYTES;
 const HEADER_CAPACITY: usize = 512;
 const _: () = assert!(SEARCH_COMPRESSION_LEVEL == 3);
@@ -63,8 +64,9 @@ pub(super) fn encode_segment_payload_with_context<T: crate::document_encoding::R
             encoding.len(),
         )));
     }
-    crate::build_memory::compression::require_qualified_zstd("workspace admission")?;
-    let workspace = memory.retained.reserve(COMPRESSION_WORKSPACE_BYTES)?;
+    let workspace = memory
+        .retained
+        .reserve(crate::build_memory::compression::workspace_bytes()?)?;
     let _scratch = memory
         .spool
         .reserve(HEX_BUFFER_BYTES + 3 * HEADER_CAPACITY)?;

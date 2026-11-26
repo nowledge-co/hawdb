@@ -54,7 +54,6 @@ _SEARCH_BASE_DEPS = [
     "@crate_index//:regex-syntax",
     "@crate_index//:serde",
     "@crate_index//:serde_json",
-    "@crate_index//:zstd",
     "//crates/core:hawdb_core",
     "//crates/evidence:hawdb_evidence",
     "//crates/executor:hawdb_executor",
@@ -87,10 +86,11 @@ rust_library(
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
-# Matches `hawdb-search = { default-features = false }` for embedded hosts
+# Minimal capability profile for embedded hosts
 # that exclude the optional vector-projection capability.
 rust_library(
     name = "hawdb_search_minimal",
+    crate_features = [],
     crate_name = "hawdb_search",
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"]) + ["tests/support/live_allocation.rs"],
@@ -673,6 +673,7 @@ rust_test(
         "@crate_index//:jieba-rs",
         "@crate_index//:zstd",
         "//crates/integrity:hawdb_integrity",
+        "//crates/storage:hawdb_storage",
         "@crate_index//:regex",
         "@crate_index//:regex-automata",
         "@crate_index//:regex-syntax",

@@ -15,9 +15,10 @@ hawdb-executor = { path = "../executor", version = "0.40.0" }
 hawdb-plan-cache = { path = "../plan-cache", version = "0.40.0" }
 hawdb-query = { path = "../query", version = "0.40.0" }
 hawdb-sql = { path = "../sql", version = "0.40.0" }
-hawdb-storage = { path = "../storage", version = "0.40.0" }
+hawdb-storage = { path = "../storage", version = "0.40.0", default-features = false }
 
 [dev-dependencies]
+hawdb-storage = { path = "../storage", version = "0.40.0", default-features = false, features = ["test-zstd"] }
 loom = "0.7"
 
 [features]

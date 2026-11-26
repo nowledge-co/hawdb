@@ -204,3 +204,52 @@ fn decoder_host_callback_panics_preserve_typed_failure_and_refund_memory() {
         assert_eq!(controller.live.load(Ordering::SeqCst), 0);
     }
 }
+
+#[test]
+fn boxed_backend_state_admission_and_release_panics_fail_closed() {
+    for decoder in [false, true] {
+        let controller = Arc::new(Controller::default());
+        let work = CheckpointWorkContext::new(
+            RuntimeTaskContext::default().with_memory_controller(controller.clone()),
+        );
+        let boxed_state_call = if decoder {
+            let context = DecompressionContext::with_work_context(Some(&work)).unwrap();
+            let call = controller.calls.load(Ordering::SeqCst) - 1;
+            drop(context);
+            call
+        } else {
+            let encoder = Encoder::new_with_work_context(io::sink(), 3, &work).unwrap();
+            let call = controller.calls.load(Ordering::SeqCst) - 1;
+            drop(encoder);
+            call
+        };
+        assert_eq!(controller.live.load(Ordering::SeqCst), 0);
+        for release in [false, true] {
+            let controller = Arc::new(Controller {
+                panic_allocation: (!release).then_some(boxed_state_call),
+                panic_release: release.then_some(boxed_state_call),
+                ..Default::default()
+            });
+            let work = CheckpointWorkContext::new(
+                RuntimeTaskContext::default().with_memory_controller(controller.clone()),
+            );
+            let (result, _) = observe(None, || {
+                work.classify(|scoped| -> io::Result<()> {
+                    if decoder {
+                        drop(DecompressionContext::with_work_context(Some(scoped))?);
+                    } else {
+                        Encoder::new_with_work_context(io::sink(), 3, scoped)?.finish()?;
+                    }
+                    Ok(())
+                })
+            });
+            assert!(matches!(
+                result,
+                Err(CheckpointOperationError::Work(
+                    CheckpointWorkError::Allocation { .. }
+                ))
+            ));
+            assert_eq!(controller.live.load(Ordering::SeqCst), 0);
+        }
+    }
+}

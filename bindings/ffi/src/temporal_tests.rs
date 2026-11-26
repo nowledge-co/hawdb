@@ -60,6 +60,7 @@ fn temporal_json_values_round_trip_as_tagged_iso_strings() {
 
 #[test]
 fn temporal_query_results_and_parameters_use_tagged_json() {
+    hawdb_binding_zstd::install();
     let mut db = hawdb::Database::new();
     db.query_with_params(
         "CREATE (:Event {on: $on, took: duration('PT90M')})",

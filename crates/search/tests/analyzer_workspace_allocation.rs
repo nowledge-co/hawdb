@@ -28,7 +28,7 @@ mod cjk_dictionary;
 #[test]
 fn opaque_workspace_capacity_covers_construction_growth_and_tls_destruction() {
     // Dictionary residency is a shared process owner, outside the operation.
-    let jieba = cjk_dictionary::load();
+    let jieba = cjk_dictionary::load().unwrap();
     let (regex, peak) = allocation::measure(|| regex::Regex::new(bounds::REGEX_PATTERN).unwrap());
     assert!(peak <= bounds::regex_retained().unwrap() + bounds::regex_construction().unwrap());
     assert!(allocation::live() <= bounds::regex_retained().unwrap());

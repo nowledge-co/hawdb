@@ -8,6 +8,7 @@ exports_files(["include/hawdb_ffi.h"])
 
 _FFI_DEPS = [
     "//:hawdb",
+        "//bindings/compression-zstd:hawdb_binding_zstd",
     "@crate_index//:serde_json",
     "@ffi_crates//:base64",
 ]

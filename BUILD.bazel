@@ -1,4 +1,4 @@
-load("@bazel_skylib//rules:common_settings.bzl", "string_flag")
+load("@bazel_skylib//rules:common_settings.bzl", "bool_flag", "string_flag")
 load("@crate_index//:defs.bzl", "aliases", "all_crate_deps")
 load("@python_test_deps//:requirements.bzl", "requirement")
 load("@rules_python//python:defs.bzl", "py_test")
@@ -8,6 +8,17 @@ load("//:benchmarks.bzl", "HAWDB_BENCHMARKS", "HAWDB_BENCHMARK_TARGETS", "hawdb_
 load("//:windows_native_features.bzl", "WINDOWS_NATIVE_FEATURE_PROFILES", "feature_profile_test_binary", "windows_native_features")
 
 package(default_visibility = ["//visibility:public"])
+
+# Explicitly selected by test commands; ordinary builds contain no codec fixture.
+bool_flag(
+    name = "compression_test_support",
+    build_setting_default = False,
+)
+
+config_setting(
+    name = "compression_test_support_enabled",
+    flag_values = {":compression_test_support": "true"},
+)
 
 # Cargo-parity features are independent of the repository-wide build profile.
 string_flag(
@@ -207,7 +218,6 @@ _HAWDB_COMMON_BASE_DEPS = [
     "@crate_index//:serde",
     "@crate_index//:serde_json",
     "@crate_index//:unicode-width",
-    "@crate_index//:zstd",
     "//crates/analytics:hawdb_analytics",
     "//crates/artifact:hawdb_artifact",
     "//crates/compat:hawdb_compat",
@@ -302,7 +312,7 @@ rust_library(
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
-# Matches `hawdb = { default-features = false }` for dependency-boundary checks.
+# Minimal capability profile. Compression is supplied by the host.
 rust_library(
     name = "hawdb_minimal",
     crate_features = windows_native_features("hawdb", []),

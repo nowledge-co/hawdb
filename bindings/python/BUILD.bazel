@@ -28,6 +28,7 @@ rust_shared_library(
     version = "0.40.0",
     deps = [
         "//:hawdb",
+        "//bindings/compression-zstd:hawdb_binding_zstd",
         "@python_crates//:pyo3",
     ],
 )
@@ -130,6 +131,7 @@ rust_shared_library(
     version = "0.40.0",
     deps = [
         "//:hawdb",
+        "//bindings/compression-zstd:hawdb_binding_zstd",
         "@python_crates//:pyo3",
     ],
 )

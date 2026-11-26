@@ -14,6 +14,6 @@ name = "hawdb-mvcc-fuzz"
 path = "src/main.rs"
 
 [dependencies]
-hawdb = { path = "../..", default-features = false }
+hawdb = { path = "../..", default-features = false, features = ["test-zstd"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -125,7 +125,7 @@ pub fn encode_durable_text_with_work_context(
         DurableCompression::Zstd => {
             let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
             let mut encoder =
-                zstd::stream::write::Encoder::new(Vec::new(), DEFAULT_COMPRESSION_LEVEL).map_err(
+                crate::compression::Encoder::new(Vec::new(), DEFAULT_COMPRESSION_LEVEL).map_err(
                     |error| HawDBError::Storage(format!("zstd compression failed: {error}")),
                 )?;
             unit.finish();

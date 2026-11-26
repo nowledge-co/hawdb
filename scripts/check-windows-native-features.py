@@ -92,7 +92,7 @@ for name, initial, development in [
 for name, initial, relevant in [
     ("search_all", {"hawdb-search": features["hawdb-search"]}, ["hawdb-search", "hawdb-storage", "hawdb-telemetry"]),
     ("storage_all", {"hawdb-storage": features["hawdb-storage"]}, ["hawdb-storage", "hawdb-telemetry"]),
-    ("component_default", {}, ["hawdb-storage", "hawdb-telemetry"]),
+    ("component_default", {"hawdb-storage": ["test-zstd"]}, ["hawdb-storage", "hawdb-telemetry"]),
 ]:
     expected = expected_features(initial, False)
     for package in relevant:

@@ -8,6 +8,7 @@ on:
     branches: [main]
     paths:
       - "bindings/moonbit/**"
+      - "bindings/compression-zstd/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - "crates/**"
@@ -16,6 +17,7 @@ on:
   pull_request:
     paths:
       - "bindings/moonbit/**"
+      - "bindings/compression-zstd/**"
       - ".github/workflows/moonbit-native.yml"
   workflow_dispatch:
 

@@ -224,8 +224,8 @@ the change affects those boundaries rather than adding unrelated test matrices.
 Examples of focused commands (select the targets relevant to your change):
 
 ```console
-bazel test //crates/storage:hawdb_storage_tests
-bazel test //:hawdb_unit_fast_tests --test_arg=plan_cache
+bazel test --//:compression_test_support=true //crates/storage:hawdb_storage_tests
+bazel test --//:compression_test_support=true //:hawdb_unit_fast_tests --test_arg=plan_cache
 cargo test --locked -p hawdb-storage
 cargo check --locked -p hawdb --no-default-features
 ```
@@ -238,7 +238,7 @@ Routine local code verification includes the repository's fuzz regression
 command, also available as `make fuzz-test`:
 
 ```console
-bazel test //tools/shiro:shiro_tests //tools/shiro:shiro_cli_tests //:hawdb_linux_ci_fuzz_smoke_test
+bazel test --//:compression_test_support=true //tools/shiro:shiro_tests //tools/shiro:shiro_cli_tests //:hawdb_linux_ci_fuzz_smoke_test
 ```
 
 Fuzz remains local-only; do not add default, dedicated, or scheduled CI fuzz

@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
+      - "bindings/compression-zstd/**"
       - "bindings/python/**"
       - "integrations/llama-index-graph-stores-hawdb/**"
       - "integrations/langchain-hawdb/**"

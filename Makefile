@@ -77,34 +77,34 @@ fuzz: fuzz-optimizer fuzz-storage fuzz-append fuzz-parser
 shiro: shiro-fuzz
 
 mvcc-fuzz:
-	$(BAZEL) run //tools/mvcc-fuzz:hawdb_mvcc_fuzz -- run --seconds $(MVCC_SECONDS) --seed $(MVCC_SEED) --log-directory "$(MVCC_LOG_DIRECTORY)" --explain $(MVCC_FUZZ_ARGS)
+	$(BAZEL) run --//:compression_test_support=true //tools/mvcc-fuzz:hawdb_mvcc_fuzz -- run --seconds $(MVCC_SECONDS) --seed $(MVCC_SEED) --log-directory "$(MVCC_LOG_DIRECTORY)" --explain $(MVCC_FUZZ_ARGS)
 
 shiro-fuzz:
-	$(BAZEL) run //tools/shiro:shiro -- $(if $(SHIRO_SECONDS),--timeout-seconds $(SHIRO_SECONDS),) --seed $(SHIRO_SEED) --log-directory "$(SHIRO_LOG_DIRECTORY)" $(SHIRO_FUZZ_ARGS)
+	$(BAZEL) run --//:compression_test_support=true //tools/shiro:shiro -- $(if $(SHIRO_SECONDS),--timeout-seconds $(SHIRO_SECONDS),) --seed $(SHIRO_SEED) --log-directory "$(SHIRO_LOG_DIRECTORY)" $(SHIRO_FUZZ_ARGS)
 
 fuzz-optimizer:
-	$(BAZEL) run //tools/shiro:shiro -- $(if $(or $(FUZZ_CASES),$(FUZZ_CASE_INDEX)),,--cases 128) $(FUZZ_COMMON_ARGS) $(FUZZ_CAMPAIGN_EXECUTION_ARGS) $(FUZZ_OPTIMIZER_ARGS)
+	$(BAZEL) run --//:compression_test_support=true //tools/shiro:shiro -- $(if $(or $(FUZZ_CASES),$(FUZZ_CASE_INDEX)),,--cases 128) $(FUZZ_COMMON_ARGS) $(FUZZ_CAMPAIGN_EXECUTION_ARGS) $(FUZZ_OPTIMIZER_ARGS)
 
 fuzz-optimizer-resume: FUZZ_RESUME := 1
 fuzz-optimizer-resume: fuzz-optimizer
 
 fuzz-storage:
-	$(BAZEL) run //tools/shiro:shiro_storage -- $(FUZZ_COMMON_ARGS) $(FUZZ_STORAGE_ARGS)
+	$(BAZEL) run --//:compression_test_support=true //tools/shiro:shiro_storage -- $(FUZZ_COMMON_ARGS) $(FUZZ_STORAGE_ARGS)
 
 fuzz-parser:
-	$(BAZEL) run //tools/shiro:shiro_parser -- $(FUZZ_COMMON_ARGS) $(FUZZ_PARSER_ARGS)
+	$(BAZEL) run --//:compression_test_support=true //tools/shiro:shiro_parser -- $(FUZZ_COMMON_ARGS) $(FUZZ_PARSER_ARGS)
 
 fuzz-append:
-	$(BAZEL) run //tools/shiro:shiro_append -- $(FUZZ_COMMON_ARGS) $(FUZZ_STEPS_ARG) $(FUZZ_CAMPAIGN_EXECUTION_ARGS) $(FUZZ_APPEND_ARGS)
+	$(BAZEL) run --//:compression_test_support=true //tools/shiro:shiro_append -- $(FUZZ_COMMON_ARGS) $(FUZZ_STEPS_ARG) $(FUZZ_CAMPAIGN_EXECUTION_ARGS) $(FUZZ_APPEND_ARGS)
 
 fuzz-append-resume: FUZZ_RESUME := 1
 fuzz-append-resume: fuzz-append
 
 fuzz-smoke:
-	$(BAZEL) test //:hawdb_linux_ci_fuzz_smoke_test
+	$(BAZEL) test --//:compression_test_support=true //:hawdb_linux_ci_fuzz_smoke_test
 
 fuzz-test:
-	$(BAZEL) test \
+	$(BAZEL) test --//:compression_test_support=true \
 		//tools/shiro:shiro_tests \
 		//tools/shiro:shiro_cli_tests \
 		//:hawdb_linux_ci_fuzz_smoke_test

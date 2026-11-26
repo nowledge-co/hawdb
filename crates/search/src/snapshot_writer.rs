@@ -151,10 +151,9 @@ pub(crate) fn write_search_snapshot_with_context<'a>(
             ));
         }
     }
-    crate::build_memory::compression::require_qualified_zstd("workspace admission")?;
     let _workspace = memory
         .retained
-        .reserve(crate::build_memory::compression::COMPRESSION_WORKSPACE_BYTES)?;
+        .reserve(crate::build_memory::compression::workspace_bytes()?)?;
     let _metadata = memory.spool.reserve(checked_add(
         64 * 1024,
         checked_mul(target.as_os_str().as_encoded_bytes().len(), 16)?,

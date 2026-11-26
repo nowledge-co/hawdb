@@ -110,8 +110,9 @@ pub(in super::super) fn append_block_segment<T: RecordSource>(
     reserve_capacity(&mut index, HEADER_BYTES + index_len, &mut index_memory)?;
     index.resize(HEADER_BYTES, 0);
 
-    crate::build_memory::compression::require_qualified_zstd("workspace admission")?;
-    let workspace = memory.retained.reserve(COMPRESSION_WORKSPACE_BYTES)?;
+    let workspace = memory
+        .retained
+        .reserve(crate::build_memory::compression::workspace_bytes()?)?;
     let _scratch = memory.spool.reserve(
         2 * HEX_BUFFER_BYTES + hawdb_storage::compression::FrameEncoder::staging_bytes(),
     )?;
@@ -180,7 +181,7 @@ pub(in super::super) fn append_block_segment<T: RecordSource>(
             },
         )?;
     }
-    drop(encoder);
+    encoder.close()?;
     drop(workspace);
     checkpoint(task)?;
     if index.len() != HEADER_BYTES + index_len {

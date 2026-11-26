@@ -135,7 +135,7 @@ injection is not qualification of an actual engine panic. Native bridge and
 JavaScript regressions (Node.js 22 or newer) are available with:
 
 ```sh
-cargo test --locked -p hawdb --no-default-features --example wasm_playground
+cargo test --locked -p hawdb --no-default-features --features test-zstd --example wasm_playground
 bazel test //:hawdb_wasm_playground_bridge_tests //:hawdb_in_memory_portable_tests
 node --test examples/wasm-playground/worker.test.js
 ```
@@ -194,7 +194,7 @@ Use the repository's pinned Rust toolchain and lockfile:
 
 ```sh
 rustup target add wasm32-unknown-unknown
-cargo build --locked -p hawdb --lib --no-default-features --target wasm32-unknown-unknown
+cargo build --locked -p hawdb --lib --no-default-features --features test-zstd --target wasm32-unknown-unknown
 ```
 
 This builds a Rust library for a consuming WASM package; the consumer owns its
@@ -231,7 +231,7 @@ Install the CLI version matching wasm-bindgen in `Cargo.lock` (currently
 cargo install wasm-bindgen-cli --version 0.2.130 --locked
 CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner \
   WASM_BINDGEN_USE_BROWSER=1 \
-  cargo test --locked -p hawdb --no-default-features \
+  cargo test --locked -p hawdb --no-default-features --features test-zstd \
     --target wasm32-unknown-unknown --test in_memory_portable
 ```
 
@@ -240,7 +240,7 @@ path. This is a runtime smoke test, not a comprehensive cross-browser promise.
 The common tests also run natively:
 
 ```sh
-cargo test --locked -p hawdb --no-default-features --test in_memory_portable
+cargo test --locked -p hawdb --no-default-features --features test-zstd --test in_memory_portable
 bazel test //:hawdb_in_memory_portable_tests
 ```
 
@@ -253,7 +253,7 @@ preserves the target-default allocator coverage in `in_memory_portable`.
 ```sh
 CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner \
   WASM_BINDGEN_USE_BROWSER=1 \
-  cargo test --locked -p hawdb --no-default-features \
+  cargo test --locked -p hawdb --no-default-features --features test-zstd \
     --target wasm32-unknown-unknown --test host_allocator
 ```
 
@@ -275,7 +275,7 @@ native regression or recovery coverage.
   In-memory mode does not promise every query will fit within the configured budget.
 - Persistent storage, OPFS/IndexedDB, snapshots, full-text/vector search,
   background maintenance, Tokio, and multi-tab access are outside this initial
-  target. Use `--no-default-features`; native defaults remain unchanged.
+  target. Use `--no-default-features --features test-zstd`; production hosts install their own backend.
 - Panic recovery, bundle-size targets, native performance parity, and production
   compatibility are not promised. This work does not authorize HawDB in stable
   Mem release artifacts.

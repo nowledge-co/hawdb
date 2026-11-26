@@ -1,4 +1,4 @@
-load("@crate_index//:defs.bzl", "aliases", "all_crate_deps")
+load("@crate_index//:defs.bzl", "aliases", "all_crate_deps", "crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 load("//:windows_native_features.bzl", "windows_native_features")
@@ -23,7 +23,18 @@ rust_library(
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
     aliases = aliases(),
-    deps = all_crate_deps(normal = True) + [
+    # crate_universe exposes optional normal dependencies even when disabled.
+    deps = crate_deps(["rayon", "roaring", "serde", "serde_json", "memmap2"]) + select({
+        "@platforms//cpu:wasm32": [],
+        "//conditions:default": crate_deps(["fs2"]),
+    }) + select({
+        "@platforms//cpu:wasm32": [],
+        "@platforms//os:windows": [],
+        "//conditions:default": crate_deps(["libc"]),
+    }) + select({
+        "//:compression_test_support_enabled": ["@crate_index//:zstd"],
+        "//conditions:default": [],
+    }) + [
         "//crates/analytics:hawdb_analytics",
         "//crates/core:hawdb_core",
         "//crates/integrity:hawdb_integrity",

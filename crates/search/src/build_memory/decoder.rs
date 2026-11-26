@@ -12,26 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Admit pinned zstd buffers before the native decoder sees each frame header.
+//! Admit provider workspace before decoding each Zstd frame.
 
 use crate::build_control::checkpoint;
-use crate::build_memory::{checked_add as add, BuildMemory};
+use crate::build_memory::BuildMemory;
 use crate::{HawDBError, Result};
 use hawdb_core::RuntimeTaskContext;
 use hawdb_executor::{QueryMemoryAccount, QueryMemoryLease};
 use hawdb_storage::compression::DecompressionContext;
 use std::io::{self, BufRead, Read};
-use zstd::zstd_safe::{InBuffer, OutBuffer};
 
-// zstd 1.5.7 DCtx includes its entropy tables and fixed block scratch. Its
+// zstd 1.5.7/1.6.0 DCtx includes its entropy tables and fixed block scratch. Its
 // streaming in/out allocation is admitted separately from each frame header.
+#[cfg(test)]
 const CONTEXT_BYTES: usize = 256 * 1024;
-const BLOCK_BYTES: u64 = 128 * 1024;
 const DEFAULT_MAX_WINDOW: u64 = (1 << 27) + 1;
 
 pub(crate) struct Decoder<'a, R> {
     input: R,
     context: DecompressionContext,
+    context_bytes: usize,
     header: [u8; 18],
     position: usize,
     length: usize,
@@ -57,11 +57,11 @@ impl<'a, R: BufRead> Decoder<'a, R> {
         task: &'a RuntimeTaskContext,
     ) -> Result<Self> {
         checkpoint(task)?;
-        super::compression::require_qualified_zstd("decode admission")?;
-        let context_memory = memory.reserve(CONTEXT_BYTES)?;
+        let context_bytes = hawdb_storage::compression::decoder_context_bytes()?;
+        let context_memory = memory.reserve(context_bytes)?;
         let buffer_memory = memory.reserve(0)?;
         let context = DecompressionContext::new()?;
-        if context.sizeof() > CONTEXT_BYTES {
+        if context.sizeof() > context_bytes {
             return Err(HawDBError::Execution(
                 "search hydration decoder context exceeded admission".into(),
             ));
@@ -69,6 +69,7 @@ impl<'a, R: BufRead> Decoder<'a, R> {
         Ok(Self {
             input,
             context,
+            context_bytes,
             header: [0; 18],
             position: 0,
             length: 0,
@@ -102,8 +103,8 @@ impl<'a, R: BufRead> Decoder<'a, R> {
         };
         self.input.read_exact(&mut self.header[5..self.length])?;
         let required = frame_buffer_bytes(&self.header[..self.length]).map_err(io::Error::other)?;
-        // Pinned native resizing frees the previous in/out allocation before
-        // replacing it; otherwise it retains that allocation across frames.
+        // The provider contract covers retained buffers and replacement overlap
+        // within the maximum bound of all frames seen by this context.
         self.buffer_memory
             .grow(required.saturating_sub(self.buffer_memory.bytes()))
             .map_err(io::Error::other)?;
@@ -131,18 +132,21 @@ impl<R: BufRead> Read for Decoder<'_, R> {
                 self.input.fill_buf()?
             };
             let empty = input.is_empty();
-            let mut input = InBuffer::around(input);
             let limit = output.len().min(8192);
-            let mut output = OutBuffer::around(&mut output[..limit]);
-            let remaining = self.context.decompress_stream(&mut output, &mut input)?;
-            let consumed = input.pos();
-            let written = output.pos();
+            let progress = self.context.step(input, &mut output[..limit])?;
+            let remaining = progress.remaining;
+            let consumed = progress.consumed;
+            let written = progress.produced;
             if header {
                 self.position += consumed;
             } else {
                 self.input.consume(consumed);
             }
-            if self.context.sizeof() > CONTEXT_BYTES + self.buffer_memory.bytes() {
+            let admitted = self
+                .context_bytes
+                .checked_add(self.buffer_memory.bytes())
+                .ok_or_else(|| io::Error::other("decoder admission overflow"))?;
+            if self.context.sizeof() > admitted {
                 return Err(io::Error::other(
                     "search hydration native buffers exceeded admission",
                 ));
@@ -173,6 +177,7 @@ impl<R: BufRead> Read for Decoder<'_, R> {
 /// verified block length, and every input byte must belong to the frame.
 pub(crate) struct BlockDecoder<'a> {
     context: DecompressionContext,
+    context_bytes: usize,
     task: Option<&'a RuntimeTaskContext>,
     buffer_bytes: usize,
     // Native state drops before its capacity owners.
@@ -188,19 +193,20 @@ impl<'a> BlockDecoder<'a> {
         if let Some(task) = task {
             checkpoint(task)?;
         }
-        super::compression::require_qualified_zstd("decode admission")?;
+        let context_bytes = hawdb_storage::compression::decoder_context_bytes()?;
         let context_memory = memory
-            .map(|memory| memory.reserve(CONTEXT_BYTES))
+            .map(|memory| memory.reserve(context_bytes))
             .transpose()?;
         let buffer_memory = memory.map(|memory| memory.reserve(0)).transpose()?;
         let context = DecompressionContext::new()?;
-        if context.sizeof() > CONTEXT_BYTES {
+        if context.sizeof() > context_bytes {
             return Err(HawDBError::Execution(
                 "search content block decoder context exceeded admission".into(),
             ));
         }
         Ok(Self {
             context,
+            context_bytes,
             task,
             buffer_bytes: 0,
             _context_memory: context_memory,
@@ -234,37 +240,42 @@ impl<'a> BlockDecoder<'a> {
             self.buffer_bytes = required;
         }
         self.context.reset()?;
-        let mut source = InBuffer::around(input);
-        let mut target = OutBuffer::around(output);
+        let mut consumed = 0;
+        let mut produced = 0;
         loop {
             if let Some(task) = self.task {
                 checkpoint(task)?;
             }
-            let (before_in, before_out) = (source.pos(), target.pos());
-            let remaining = self
+            let progress = self
                 .context
-                .decompress_stream(&mut target, &mut source)
+                .step(&input[consumed..], &mut output[produced..])
                 .map_err(|error| invalid(&format!("decode failed: {error}")))?;
-            if self.context.sizeof() > CONTEXT_BYTES + self.buffer_bytes {
+            let admitted = self
+                .context_bytes
+                .checked_add(self.buffer_bytes)
+                .ok_or_else(|| HawDBError::Execution("decoder admission overflow".into()))?;
+            if self.context.sizeof() > admitted {
                 return Err(HawDBError::Execution(
                     "search content block native buffers exceeded admission".into(),
                 ));
             }
-            if remaining == 0 {
+            consumed += progress.consumed;
+            produced += progress.produced;
+            if progress.remaining == 0 {
                 break;
             }
-            if source.pos() == before_in && target.pos() == before_out {
-                return Err(invalid(if target.pos() == target.capacity() {
+            if progress.consumed == 0 && progress.produced == 0 {
+                return Err(invalid(if produced == output.len() {
                     "inflates past its indexed length"
                 } else {
                     "frame is truncated"
                 }));
             }
         }
-        if source.pos() != input.len() {
+        if consumed != input.len() {
             return Err(invalid("has bytes after its frame"));
         }
-        if target.pos() != target.capacity() {
+        if produced != output.len() {
             return Err(invalid("inflates short of its indexed length"));
         }
         Ok(())
@@ -272,33 +283,13 @@ impl<'a> BlockDecoder<'a> {
 }
 
 fn frame_buffer_bytes(header: &[u8]) -> Result<usize> {
-    let magic = u32::from_le_bytes(header[..4].try_into().unwrap());
-    if magic & 0xfffffff0 == 0x184d2a50 {
-        return Ok(0);
-    }
-    let content = zstd::zstd_safe::get_frame_content_size(header)
-        .map_err(|_| HawDBError::Storage("invalid search hydration zstd frame header".into()))?;
-    let window = if header[4] & 0x20 != 0 {
-        content
-            .ok_or_else(|| HawDBError::Storage("invalid single-segment zstd content size".into()))?
-    } else {
-        let descriptor = header[5];
-        let base = 1u64 << (10 + (descriptor >> 3));
-        base + (base >> 3) * u64::from(descriptor & 7)
-    };
-    // Preserve the existing decoder's default limit, including its +1 spelling.
-    if window > DEFAULT_MAX_WINDOW {
+    let header = hawdb_storage::compression::parse_frame_header(header)?;
+    if header.window_bytes > DEFAULT_MAX_WINDOW {
         return Err(HawDBError::Storage(
             "search hydration zstd window exceeds the native limit".into(),
         ));
     }
-    let block = window.min(BLOCK_BYTES);
-    // ZSTD_decodingBufferSize_internal: min(content, window + 2*block +
-    // 2*WILDCOPY_OVERLENGTH). The native decoder raises a tiny window to 1 KiB.
-    let output = content
-        .unwrap_or(u64::MAX)
-        .min(window.max(1024) + 2 * block + 64);
-    add(block.max(4) as usize, output as usize)
+    Ok(hawdb_storage::compression::decoder_buffer_bytes(&header)?)
 }
 
 #[cfg(test)]

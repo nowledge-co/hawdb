@@ -25,6 +25,7 @@ struct Activity {
     frees: usize,
     allocated_bytes: usize,
     freed_bytes: usize,
+    peak_bytes: usize,
     fail_after: Option<usize>,
 }
 
@@ -57,6 +58,9 @@ pub(super) fn record_allocation(bytes: usize, allocate: bool) {
             if allocate {
                 activity.allocations = activity.allocations.saturating_add(1);
                 activity.allocated_bytes = activity.allocated_bytes.saturating_add(bytes);
+                activity.peak_bytes = activity
+                    .peak_bytes
+                    .max(activity.allocated_bytes - activity.freed_bytes);
             } else {
                 activity.frees = activity.frees.saturating_add(1);
                 activity.freed_bytes = activity.freed_bytes.saturating_add(bytes);
@@ -133,6 +137,38 @@ fn streams_match_the_existing_codec_and_release_all_native_allocations() {
 }
 
 #[test]
+fn level_three_native_allocations_fit_search_workspace_admission() {
+    // Include callback headers and simultaneous context/workspace ownership.
+    // Search separately admits its 32-KiB Rust writer buffer. Exercise both
+    // unknown-size streams and pledged slices beyond the default window size.
+    let mut state = 42u64;
+    let input: Vec<u8> = (0..5 * 1024 * 1024)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state as u8
+        })
+        .collect();
+    for bytes in [0, 1, 1024, 128 * 1024, input.len()] {
+        for pledged in [false, true] {
+            let (encoded, activity) = observe(None, || {
+                if pledged {
+                    encode_slice(&input[..bytes], 3).unwrap()
+                } else {
+                    encode_all(&input[..bytes], 3).unwrap()
+                }
+            });
+            assert!(activity.peak_bytes <= 8 * 1024 * 1024, "{activity:?}");
+            assert_eq!(
+                zstd::stream::decode_all(encoded.as_slice()).unwrap(),
+                input[..bytes]
+            );
+        }
+    }
+}
+
+#[test]
 fn tiny_io_buffers_support_flush_concatenation_and_skippable_frames() {
     let mut encoder = Encoder::new(Vec::new(), 3).unwrap();
     encoder.write_all(b"first").unwrap();
@@ -201,7 +237,7 @@ fn malformed_truncated_and_failed_sink_paths_release_workspaces() {
 #[test]
 fn short_magic_prefixes_report_incomplete_frame_and_release_context() {
     let magic = 0xfd2fb528u32.to_le_bytes();
-    for length in 1..magic.len() {
+    for length in 0..magic.len() {
         let (_, activity) = observe(None, || {
             let input = BufReader::with_capacity(1, &magic[..length]);
             let mut decoder = Decoder::with_buffer(input).unwrap();
@@ -219,19 +255,21 @@ fn short_magic_prefixes_report_incomplete_frame_and_release_context() {
 fn native_error_requires_reset_before_context_reuse() {
     let mut context = DecompressionContext::new().unwrap();
     let mut bytes = [0; 64];
-    let mut output = OutBuffer::around(&mut bytes[..]);
-    assert!(context
-        .decompress_stream(&mut output, &mut InBuffer::around(b"invalid frame"))
-        .is_err());
-    assert!(context
-        .decompress_stream(&mut output, &mut InBuffer::around(&[]))
-        .is_err());
+    assert!(context.step(b"invalid frame", &mut bytes).is_err());
+    assert!(context.step(&[], &mut bytes).is_err());
     context.reset().unwrap();
     let encoded = encode_all(&b"valid"[..], 3).unwrap();
-    let mut output = OutBuffer::around(&mut bytes[..]);
-    let mut input = InBuffer::around(&encoded);
-    while context.decompress_stream(&mut output, &mut input).unwrap() != 0 {}
-    let written = output.pos();
+    let (mut consumed, mut written) = (0, 0);
+    loop {
+        let progress = context
+            .step(&encoded[consumed..], &mut bytes[written..])
+            .unwrap();
+        consumed += progress.consumed;
+        written += progress.produced;
+        if progress.remaining == 0 {
+            break;
+        }
+    }
     assert_eq!(&bytes[..written], b"valid");
 }
 
@@ -295,4 +333,27 @@ fn pledged_frame_size_mismatch_is_rejected_at_completion() {
     encoder.set_pledged_src_size(20).unwrap();
     encoder.write_all(b"short").unwrap();
     assert!(encoder.finish().is_err());
+}
+
+#[test]
+fn abandoned_or_failed_frame_writer_cannot_publish_another_frame() {
+    let mut encoder = FrameEncoder::new(3).unwrap();
+    drop(encoder.frame(Some(1), Vec::new()).unwrap());
+    assert!(encoder.frame(None, Vec::new()).is_err());
+
+    struct BrokenSink;
+    impl Write for BrokenSink {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::Error::other("sink failure"))
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::Error::other("sink failure"))
+        }
+    }
+    let mut encoder = FrameEncoder::new(3).unwrap();
+    let mut frame = encoder.frame(None, BrokenSink).unwrap();
+    assert!(frame.flush().is_err());
+    assert!(frame.write(b"later").is_err());
+    assert!(frame.finish().is_err());
+    assert!(encoder.frame(None, Vec::new()).is_err());
 }

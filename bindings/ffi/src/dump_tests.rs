@@ -203,6 +203,7 @@ fn host_system_schema_records_survive_export_and_import() {
     );
     let source = directory.0.join("source");
     {
+        hawdb_binding_zstd::install();
         let mut database = hawdb::Database::open(&source).unwrap();
         database.apply_system_schema_registry(&registry).unwrap();
         database
@@ -215,6 +216,7 @@ fn host_system_schema_records_survive_export_and_import() {
     unsafe { hawdb_close(db) };
     let imported = directory.0.join("imported");
     import(&dump, &imported).unwrap();
+    hawdb_binding_zstd::install();
     let mut database = hawdb::Database::open(&imported).unwrap();
     let report = database.apply_system_schema_registry(&registry).unwrap();
     assert!(report.applied_versions.is_empty());
