@@ -1165,6 +1165,8 @@ mod lifecycle_tests {
 
     #[test]
     fn close_releases_the_database_and_its_open_transactions() {
+        // This fixture opens the facade directly, bypassing the MoonBit entrypoint.
+        hawdb_binding_zstd::install();
         let path = std::env::temp_dir().join(format!(
             "hawdb-moonbit-close-{}-{}",
             std::process::id(),
