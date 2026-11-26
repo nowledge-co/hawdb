@@ -74,7 +74,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-core"
-version = "0.40.0"
+version = "0.41.0"
 dependencies = [
  "getrandom",
  "num-bigint",
