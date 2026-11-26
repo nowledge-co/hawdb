@@ -1733,7 +1733,7 @@ impl RelationalIndexShadowReader {
                 content_digest: content_digest(&slot),
                 representation: cache_identity.representation,
             };
-            match cache.insert_page_verified(key, slot) {
+            match cache.insert_page_verified_prehashed(key, slot) {
                 Ok(_) => {}
                 Err(error)
                     if matches!(

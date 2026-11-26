@@ -79,7 +79,8 @@ impl<'a> DocumentLookup<'a> {
                     "lexical document mapping is missing".to_string(),
                 ));
             }
-            self.bytes = self.projection.read_block_with_task(block, self.task)?;
+            self.projection
+                .read_block_into(block, self.task, &mut self.bytes)?;
             validate_document_block(&self.bytes, self.projection.manifest.generation, block)?;
             self.bytes_read = self.bytes_read.saturating_add(self.bytes.len() as u64);
             self.block = Some(block);
@@ -134,6 +135,9 @@ impl LexicalProjectionReader {
         visitor: &mut dyn FnMut(&str) -> Result<bool>,
     ) -> Result<()> {
         super::query_context::checkpoint(task)?;
+        // Reuse the block buffer across document mapping pages; each page is
+        // checksum-validated after the in-place read.
+        let mut bytes = Vec::new();
         for block in self
             .manifest
             .blocks
@@ -151,7 +155,7 @@ impl LexicalProjectionReader {
             ) {
                 continue;
             }
-            let bytes = self.read_block_with_task(block, Some(task))?;
+            self.read_block_into(block, Some(task), &mut bytes)?;
             validate_document_block(&bytes, self.manifest.generation, block)?;
             let mut cursor = SliceCursor::new(&bytes);
             let count = decode_block_header(

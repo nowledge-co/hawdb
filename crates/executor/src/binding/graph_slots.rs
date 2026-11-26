@@ -34,6 +34,16 @@ impl<T> GraphSlots<T> {
         Self::default()
     }
 
+    /// Build one graph slot without staging an intermediate `BTreeMap`.
+    ///
+    /// Scans and mutation preflight bind exactly one record per row; the
+    /// conversion path allocated a map node solely to discard it immediately.
+    pub fn singleton(name: &str, value: T) -> Self {
+        Self {
+            slots: Some(Arc::new(vec![(Arc::new(name.to_owned()), Arc::new(value))])),
+        }
+    }
+
     fn entries(&self) -> &[Slot<T>] {
         self.slots.as_deref().map(Vec::as_slice).unwrap_or(&[])
     }
@@ -341,6 +351,16 @@ mod tests {
         assert!(replaced.is_empty());
         assert!(replaced.slots.is_none());
         assert_eq!(clones.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn singleton_matches_the_map_conversion_contract() {
+        let singleton = GraphSlots::singleton("n", 7);
+        let converted = GraphSlots::from(BTreeMap::from([("n".to_string(), 7)]));
+        assert_eq!(singleton, converted);
+        assert_eq!(singleton.get("n"), Some(&7));
+        assert_eq!(singleton.len(), 1);
+        assert!(!singleton.contains_key("missing"));
     }
 
     #[test]

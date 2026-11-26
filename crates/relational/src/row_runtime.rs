@@ -88,21 +88,33 @@ pub struct RelationalRowExecutionEvidence {
 #[derive(Debug, Clone)]
 pub struct RelationalReadRow {
     row: Arc<RelationalProjectedRow>,
+    /// A query-selected column that is not stored in the row page, such as a
+    /// vector distance computed after index access.
+    virtual_field: Option<(usize, RelationalValue)>,
 }
 
 impl RelationalReadRow {
-    pub(crate) fn with_vector_distance(self, ordinal: usize, distance: f64) -> Self {
-        let mut row = Arc::unwrap_or_clone(self.row);
-        row.fields.push(RelationalProjectedField {
-            ordinal,
-            value: hawdb_storage::relational::RelationalValue::DoublePrecision(distance),
-        });
-        Self { row: Arc::new(row) }
+    fn from_projected(row: RelationalProjectedRow) -> Self {
+        Self {
+            row: Arc::new(row),
+            virtual_field: None,
+        }
+    }
+
+    /// Attach a computed column without copying the projected row. The shared
+    /// row remains immutable; the distance lives beside it for this handle.
+    pub(crate) fn with_vector_distance(mut self, ordinal: usize, distance: f64) -> Self {
+        self.virtual_field = Some((ordinal, RelationalValue::DoublePrecision(distance)));
+        self
     }
 
     pub fn as_ref(&self) -> RelationalReadRowRef<'_> {
         RelationalReadRowRef {
             row: RelationalProjectedRowView::Owned(&self.row),
+            virtual_field: self
+                .virtual_field
+                .as_ref()
+                .map(|(ordinal, value)| (*ordinal, value.as_ref())),
         }
     }
 
@@ -111,6 +123,11 @@ impl RelationalReadRow {
     }
 
     pub fn value(&self, ordinal: usize) -> Result<&hawdb_storage::relational::RelationalValue> {
+        if let Some((virtual_ordinal, value)) = &self.virtual_field
+            && *virtual_ordinal == ordinal
+        {
+            return Ok(value);
+        }
         let field = self
             .row
             .fields
@@ -152,16 +169,23 @@ impl RelationalReadRow {
 #[derive(Debug, Clone, Copy)]
 pub struct RelationalReadRowRef<'a> {
     row: RelationalProjectedRowView<'a>,
+    virtual_field: Option<(usize, RelationalValueRef<'a>)>,
 }
 
 impl<'a> RelationalReadRowRef<'a> {
     pub fn from_projected(row: &'a RelationalProjectedRow) -> Self {
         Self {
             row: RelationalProjectedRowView::Owned(row),
+            virtual_field: None,
         }
     }
 
     pub fn value(self, ordinal: usize) -> Result<RelationalValueRef<'a>> {
+        if let Some((virtual_ordinal, value)) = self.virtual_field
+            && virtual_ordinal == ordinal
+        {
+            return Ok(value);
+        }
         self.row.value(ordinal).ok_or_else(|| {
             HawDBError::StorageIntegrity(format!(
                 "relational row projection omitted required field {ordinal}"
@@ -520,10 +544,7 @@ impl<'a> RelationalRowRuntime<'a> {
         if let Some(report) = report {
             self.record_point(&report)?;
         }
-        Ok((
-            row.map(|row| RelationalReadRow { row: Arc::new(row) }),
-            allocation,
-        ))
+        Ok((row.map(RelationalReadRow::from_projected), allocation))
     }
 
     pub fn read_output_point(
@@ -703,9 +724,7 @@ impl<'a> RelationalRowRuntime<'a> {
             1,
             "relational index-covered row",
         )?;
-        Ok(Some(RelationalReadRow {
-            row: Arc::new(projected),
-        }))
+        Ok(Some(RelationalReadRow::from_projected(projected)))
     }
 
     fn read_point_with_fields(
@@ -764,7 +783,7 @@ impl<'a> RelationalRowRuntime<'a> {
                 }
                 drop(hydration);
                 self.record_point(&report)?;
-                Ok(row.map(|row| RelationalReadRow { row: Arc::new(row) }))
+                Ok(row.map(RelationalReadRow::from_projected))
             }
             None => unreachable!("memory row mode handled before snapshot dispatch"),
         }
@@ -851,7 +870,7 @@ impl<'a> RelationalRowRuntime<'a> {
                 self.record_points(&report)?;
                 Ok(rows
                     .into_iter()
-                    .map(|(key, row)| (key, RelationalReadRow { row: Arc::new(row) }))
+                    .map(|(key, row)| (key, RelationalReadRow::from_projected(row)))
                     .collect())
             }
             None => unreachable!("memory row mode handled before snapshot dispatch"),
@@ -962,7 +981,7 @@ impl<'a> RelationalRowRuntime<'a> {
                         },
                         |row, range_hydration| {
                             self.hydration.replace(*range_hydration);
-                            let keep_going = match visit(RelationalReadRow { row: Arc::new(row) }) {
+                            let keep_going = match visit(RelationalReadRow::from_projected(row)) {
                                 Ok(keep_going) => keep_going,
                                 Err(error) => {
                                     callback_error = Some(error);
@@ -1050,7 +1069,10 @@ impl<'a> RelationalRowRuntime<'a> {
                         },
                         |row, range_hydration| {
                             self.hydration.replace(*range_hydration);
-                            let keep_going = match visit(RelationalReadRowRef { row }) {
+                            let keep_going = match visit(RelationalReadRowRef {
+                                row,
+                                virtual_field: None,
+                            }) {
                                 Ok(keep_going) => keep_going,
                                 Err(error) => {
                                     callback_error = Some(error);
@@ -1225,12 +1247,10 @@ impl<'a> RelationalRowRuntime<'a> {
                     })
             })
             .collect::<Result<Vec<_>>>()?;
-        Ok(RelationalReadRow {
-            row: Arc::new(RelationalProjectedRow {
-                primary_key,
-                fields: projected,
-            }),
-        })
+        Ok(RelationalReadRow::from_projected(RelationalProjectedRow {
+            primary_key,
+            fields: projected,
+        }))
     }
 
     fn projection_page_limits(&self) -> Result<ProjectionGenerationReadLimits> {
@@ -1334,9 +1354,7 @@ impl<'a> RelationalRowRuntime<'a> {
                 Some(self.task),
             )
             .map_err(map_state_error)?;
-        Ok(RelationalReadRow {
-            row: Arc::new(projected),
-        })
+        Ok(RelationalReadRow::from_projected(projected))
     }
 
     fn admit_memory_row(&self) -> Result<()> {

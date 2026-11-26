@@ -631,10 +631,10 @@ impl BindingBatchSource<()> for CandidateRows<'_> {
             let (row, _point_allocation) =
                 self.row_runtime.read_point_admitted(self.table, &key)?;
             let row = row.ok_or_else(|| HawDBError::StorageIntegrity(self.score.absent.into()))?;
-            // The decoded row remains admitted while adding the virtual column.
-            // Projection and sort copies are admitted per expression below.
-            let _row_memory =
-                account.reserve(row.resident_bytes().saturating_mul(2).saturating_add(8192))?;
+            // The decoded row remains admitted. The virtual distance column is
+            // stored beside the shared row, so no row copy is needed here;
+            // projection and sort copies are admitted per expression below.
+            let _row_memory = account.reserve(row.resident_bytes().saturating_add(8192))?;
             let row = row.with_vector_distance(self.schema.columns.len() - 1, distance);
             let binding = BoundRow {
                 bindings: vec![Binding {
