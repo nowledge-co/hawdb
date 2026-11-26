@@ -5201,6 +5201,18 @@ WAL group commit, two `branch_lifecycle` SQL branch tests,
 checkpoint explicitly after their setup DDL. Replay
 with `cargo test --locked -p hawdb-storage --lib empty_table_schema_checkpoint`
 and `cargo test --locked -p hawdb --lib empty_table_ddl deferred_system_schema`.
+`api::automatic_checkpoint::tests::relational_live_overlay::live_overlay_drains_publish_a_deferred_schema_checkpoint`
+defers the schema checkpoint of an empty table and its index, then rewrites
+every row of another table until live-overlay pressure drains twice: a drain
+must publish the deferred schema, writers may retry a bounded capacity refusal,
+and every row, the new table, its index and a reopen stay correct.
+`capacity_refusal_with_a_deferred_schema_checkpoint_retries_after_the_drain`
+parks the owner at capacity pressure while the schema waits: the refused update
+appends no WAL and grows no overlay, the schema still waits, and after the
+drain the same update succeeds, the schema is published and a reopen keeps
+both tables. A rewrite plan that drops the other table's changes, or a commit
+that captures them without the live envelope, fails both tests. Replay with
+`cargo test --locked -p hawdb --lib deferred_schema_checkpoint`.
 The fsync counts in the pull request come from a local release harness under
 `strace`, not CI. No new lane, fixture, feature or timeout.
 

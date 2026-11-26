@@ -811,3 +811,186 @@ fn steady_inserts_outlast_a_transient_checkpoint_fault_and_keep_draining() {
     reopened.checkpoint().unwrap();
     assert_order_line_totals(&mut reopened, lines);
 }
+
+fn schema_checkpoint_pending(db: &Database) -> (bool, bool) {
+    let runtime = db.runtime.get().unwrap();
+    (
+        runtime.store.relational_row_schema_checkpoint_required(),
+        runtime.store.relational_row_schema_checkpoint_can_wait(),
+    )
+}
+
+fn checkpoint_epoch(db: &Database) -> Option<u64> {
+    db.storage_reclamation_watermark().unwrap().checkpoint_epoch
+}
+
+/// Creates an empty table and an index on it. Neither commit checkpoints
+/// (#1942), so the schema checkpoint waits while `hot` takes live updates.
+fn defer_schema_checkpoint(db: &mut Database) {
+    let checkpoint = checkpoint_epoch(db);
+    db.query_sql("CREATE TABLE pending (id BIGINT PRIMARY KEY, body TEXT)")
+        .unwrap();
+    db.query_sql("CREATE INDEX pending_body ON pending (body)")
+        .unwrap();
+    assert_eq!(schema_checkpoint_pending(db), (true, true));
+    assert_eq!(
+        checkpoint_epoch(db),
+        checkpoint,
+        "empty-table DDL checkpointed"
+    );
+}
+
+fn fill_pending(db: &mut Database) {
+    db.query_sql("INSERT INTO pending (id, body) VALUES (1, 'one'), (2, 'two')")
+        .unwrap();
+    assert!(!schema_checkpoint_pending(db).0);
+}
+
+fn assert_pending(db: &mut Database) {
+    let rows = db
+        .query_sql("SELECT id FROM pending WHERE body = 'two'")
+        .unwrap()
+        .rows
+        .into_rows();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("id"), Some(&Value::Int(2)));
+    let rows = db
+        .query_sql("SELECT count(*) AS n FROM pending")
+        .unwrap()
+        .rows
+        .into_rows();
+    assert_eq!(rows[0].get("n"), Some(&Value::Int(2)));
+}
+
+/// Live-overlay pressure on another table while a schema checkpoint is
+/// deferred: the pressure-triggered drain publishes the deferred schema with
+/// the overlay, writers retry a bounded capacity refusal, and the schema,
+/// the rows and a reopen stay correct (#1942).
+#[test]
+fn live_overlay_drains_publish_a_deferred_schema_checkpoint() {
+    let fixture = Fixture::new();
+    let mut db = Database::open_with_config(&fixture.0, config()).unwrap();
+    load(&mut db);
+    defer_schema_checkpoint(&mut db);
+    let initial = db
+        .automatic_checkpoint_report()
+        .unwrap()
+        .unwrap()
+        .completed_checkpoints;
+    let mut previous_entries = 0usize;
+    let mut drains = 0usize;
+    let mut round = 0;
+    let mut busy_retries = 0;
+    let mut published_at = None;
+    while drains < 2 {
+        assert!(round < 400, "live-overlay pressure must drain twice");
+        match update_round(&mut db, round) {
+            Ok(()) => {}
+            Err(HawDBError::BranchBusy {
+                resource: "automatic checkpoint capacity",
+            }) if busy_retries < 32 => {
+                busy_retries += 1;
+                continue;
+            }
+            Err(error) => panic!(
+                "round {round} failed after {busy_retries} capacity retries: {error}; {:?}",
+                db.automatic_checkpoint_report()
+            ),
+        }
+        let live = live_rows(&db);
+        drains += usize::from(live.0 < previous_entries);
+        previous_entries = live.0;
+        if published_at.is_none() && !schema_checkpoint_pending(&db).0 {
+            published_at = Some(round);
+        }
+        round += 1;
+    }
+    let report = db.automatic_checkpoint_report().unwrap().unwrap();
+    eprintln!(
+        "deferred schema under overlay pressure: rounds={round}, \
+         capacity_retries={busy_retries}, published_at={published_at:?}"
+    );
+    assert!(report.completed_checkpoints > initial, "{report:?}");
+    assert!(
+        published_at.is_some(),
+        "an overlay drain must publish the deferred schema: {report:?}"
+    );
+    let query = "SELECT id, round, body FROM hot ORDER BY id";
+    assert_round(db.query_sql(query).unwrap().rows, round - 1);
+    fill_pending(&mut db);
+    assert_pending(&mut db);
+    drop(db);
+    let mut reopened = Database::open(&fixture.0).unwrap();
+    assert!(!schema_checkpoint_pending(&reopened).0);
+    assert_round(reopened.query_sql(query).unwrap().rows, round - 1);
+    assert_pending(&mut reopened);
+}
+
+/// A capacity refusal while the schema checkpoint is deferred is pre-WAL:
+/// it appends nothing, grows no overlay and keeps the schema waiting. After
+/// the drain the same update succeeds and the schema is published (#1942).
+#[test]
+fn capacity_refusal_with_a_deferred_schema_checkpoint_retries_after_the_drain() {
+    let fixture = Fixture::new();
+    let mut db = Database::open_with_config(&fixture.0, config()).unwrap();
+    load(&mut db);
+    let suspension = db.runtime.suspend_automatic_checkpoint().unwrap().unwrap();
+    defer_schema_checkpoint(&mut db);
+    let control = db.runtime.checkpoint_control_for_test();
+    let mut round = 0;
+    while !preparation_needs_capacity(&control.lock().unwrap()) {
+        assert!(round < 100, "fixture must reach capacity pressure");
+        update_round(&mut db, round).unwrap();
+        round += 1;
+    }
+    assert_eq!(
+        schema_checkpoint_pending(&db),
+        (true, true),
+        "updates to another table must keep the schema checkpoint waiting"
+    );
+    let (sealed, observed) = std::sync::mpsc::channel();
+    let (resume, continuation) = std::sync::mpsc::channel();
+    control.lock().unwrap().prefix_seal_probe = Some(Arc::new(PrefixSealProbe {
+        sealed,
+        resume: Mutex::new(continuation),
+    }));
+    drop(suspension);
+    observed.recv_timeout(Duration::from_secs(15)).unwrap();
+    let store = |db: &Database| {
+        db.runtime
+            .peek()
+            .unwrap()
+            .store
+            .checkpoint_source_identity()
+    };
+    let before = store(&db);
+    let live_before = live_rows(&db);
+    let result = update_round(&mut db, round);
+    let after = store(&db);
+    let live_after = live_rows(&db);
+    control.lock().unwrap().prefix_seal_probe = None;
+    resume.send(()).unwrap();
+    assert!(
+        matches!(
+            result,
+            Err(HawDBError::BranchBusy {
+                resource: "automatic checkpoint capacity",
+            })
+        ),
+        "{result:?}"
+    );
+    assert_eq!(before, after, "refusal must not append WAL or publish data");
+    assert_eq!(live_before, live_after, "refusal must not grow the overlay");
+    db.checkpoint().unwrap();
+    assert!(!schema_checkpoint_pending(&db).0);
+    let query = "SELECT id, round, body FROM hot ORDER BY id";
+    assert_round(db.query_sql(query).unwrap().rows, round - 1);
+    update_round(&mut db, round).unwrap();
+    assert_round(db.query_sql(query).unwrap().rows, round);
+    fill_pending(&mut db);
+    assert_pending(&mut db);
+    drop(db);
+    let mut reopened = Database::open(&fixture.0).unwrap();
+    assert_round(reopened.query_sql(query).unwrap().rows, round);
+    assert_pending(&mut reopened);
+}
