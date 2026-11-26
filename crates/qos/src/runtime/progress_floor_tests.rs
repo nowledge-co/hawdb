@@ -209,3 +209,35 @@ fn progress_floor_never_exceeds_sensed_available_memory() {
             .unwrap_err(),
     );
 }
+
+#[test]
+fn progress_floor_needs_sensed_available_memory() {
+    // A host whose limit is known but whose availability is not sensed (for
+    // example a failed cgroup read): the floor must not apply, so an idle
+    // governor decides exactly as it would without it.
+    let state = |available: Option<u64>| {
+        let governor = RuntimeGovernor::new(
+            RuntimeGovernorConfig {
+                result_budget_bytes: 64 * MIB,
+                ..RuntimeGovernorConfig::shared_host()
+            },
+            RuntimeResourceSnapshot::from_parts(
+                RuntimeResourceBudget::from_limits(NonZeroUsize::new(4).unwrap(), None, None),
+                RuntimeMemorySnapshot::from_limits(Some(8 * GIB), available, None, None, None),
+            ),
+            IoConcurrencyBudget::new(4, 1),
+        );
+        governor.pin_resources();
+        governor
+    };
+    let unsensed = state(None);
+    assert!(!progress_floor_admits(
+        &mutex_lock(&unsensed.inner.state),
+        TYPED_READ
+    ));
+    let sensed = state(Some(GIB));
+    assert!(progress_floor_admits(
+        &mutex_lock(&sensed.inner.state),
+        TYPED_READ
+    ));
+}

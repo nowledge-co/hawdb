@@ -2153,6 +2153,9 @@ fn admission_error(
 /// unchanged.
 fn progress_floor_admits(state: &RuntimeGovernorState, request: RuntimeWorkRequest) -> bool {
     let reserved = request.reserved_memory_bytes();
+    // Every admitted task is counted as either Foreground or Background;
+    // blocking and IO-slot work are flags of those same requests, so these
+    // two counters alone decide whether the governor is idle.
     request.priority == RuntimeWorkPriority::Foreground
         && state.active_foreground_tasks == 0
         && state.active_background_tasks == 0
@@ -2164,7 +2167,10 @@ fn progress_floor_admits(state: &RuntimeGovernorState, request: RuntimeWorkReque
             .resources
             .memory
             .effective_available_bytes
-            .is_none_or(|available| reserved <= available)
+            // The floor only overrides the dynamic budget when the host's
+            // headroom is known to cover the request. Unsensed availability
+            // (including a failed cgroup read) keeps the ordinary rules.
+            .is_some_and(|available| reserved <= available)
 }
 
 const fn admission_error_value(
