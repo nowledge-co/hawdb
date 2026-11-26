@@ -54,7 +54,6 @@ pub use hawdb_storage::relational::RelationalRowPageRecoveryStatus;
 
 pub(super) use hawdb_storage::relational::{
     RelationalRowLiveUnavailable, RelationalRowPageServingResources, RelationalRowPageState,
-    RelationalRowSchemaRewrite,
 };
 
 // Test hooks stay compiled in every build, like the other `*_for_test`
@@ -515,6 +514,7 @@ impl GraphStore {
         self.relational_row_pages.schema_checkpoint_required = false;
         self.relational_row_pages.schema_checkpoint_deferred = None;
         self.relational_row_pages.schema_rewrite = None;
+        self.relational_row_pages.schema_checkpoint_can_wait = false;
         self.relational_row_pages.recovery_status =
             RelationalRowPageRecoveryStatus::CheckpointReady {
                 generation,
@@ -991,6 +991,7 @@ impl GraphStore {
     ) {
         if self.relational_row_pages.recovery_builder.is_some()
             || self.relational_row_pages.read_view.is_some()
+            || self.relational_row_pages.schema_rewrite.is_some()
         {
             // Whole-snapshot WAL replaces both schema and rows. A live read
             // view cannot advance with an empty delta over the old tables.
@@ -1001,9 +1002,15 @@ impl GraphStore {
     pub(super) fn relational_row_live_capture_limits(
         &self,
     ) -> Option<RelationalRowChangeCaptureLimits> {
-        self.relational_row_pages
+        (self
+            .relational_row_pages
             .current_read_view(self.commit_epoch)
-            .map(|_| self.relational_row_pages.live_limits)
+            .is_some()
+            || self
+                .relational_row_pages
+                .current_waiting_schema_rewrite(self.commit_epoch)
+                .is_some())
+        .then_some(self.relational_row_pages.live_limits)
     }
 
     pub(super) fn stage_relational_row_live_publication(
@@ -1124,6 +1131,7 @@ impl GraphStore {
                 self.relational_row_pages.schema_checkpoint_required = false;
                 self.relational_row_pages.schema_checkpoint_deferred = None;
                 self.relational_row_pages.schema_rewrite = None;
+                self.relational_row_pages.schema_checkpoint_can_wait = false;
                 self.relational_row_pages.recovery_status =
                     RelationalRowPageRecoveryStatus::LiveCurrent {
                         base_generation: identity.base_generation,
@@ -1141,19 +1149,31 @@ impl GraphStore {
                     &unavailable.error,
                     RelationalRowPageLiveError::RequiresCheckpoint { .. }
                 );
+                let schema_rewrite = unavailable.schema_rewrite.filter(|_| checkpoint_required);
+                let can_wait = match &unavailable.error {
+                    RelationalRowPageLiveError::RequiresCheckpoint { tables }
+                        if schema_rewrite.is_some() =>
+                    {
+                        self.relational_row_schema_rewrite_can_wait(
+                            unavailable.failed_commit_epoch,
+                            tables,
+                        )
+                    }
+                    _ => false,
+                };
+                // Name every table the pending checkpoint rewrites.
+                let reason = match &schema_rewrite {
+                    Some(rewrite) => RelationalRowPageLiveError::RequiresCheckpoint {
+                        tables: rewrite.tables.iter().cloned().collect(),
+                    }
+                    .to_string(),
+                    None => unavailable.error.to_string(),
+                };
                 self.relational_row_pages.read_view = None;
                 self.relational_row_pages.schema_checkpoint_required = checkpoint_required;
                 self.relational_row_pages.schema_checkpoint_deferred = None;
-                self.relational_row_pages.schema_rewrite = match &unavailable.error {
-                    RelationalRowPageLiveError::RequiresCheckpoint { tables } => unavailable
-                        .schema_rewrite_view
-                        .clone()
-                        .map(|view| RelationalRowSchemaRewrite {
-                            view,
-                            tables: tables.iter().cloned().collect(),
-                        }),
-                    _ => None,
-                };
+                self.relational_row_pages.schema_rewrite = schema_rewrite;
+                self.relational_row_pages.schema_checkpoint_can_wait = can_wait;
                 self.relational_row_pages.recovery_status =
                     RelationalRowPageRecoveryStatus::LiveUnavailable {
                         base_generation: unavailable.identity.base_generation,
@@ -1161,7 +1181,7 @@ impl GraphStore {
                         last_visible_commit_epoch: unavailable.identity.visible_commit_epoch,
                         failed_commit_epoch: unavailable.failed_commit_epoch,
                         checkpoint_required,
-                        reason: unavailable.error.to_string(),
+                        reason,
                     };
             }
         }
@@ -1503,6 +1523,7 @@ impl GraphStore {
         self.relational_row_pages.schema_checkpoint_required = checkpoint_required;
         self.relational_row_pages.schema_checkpoint_deferred = None;
         self.relational_row_pages.schema_rewrite = None;
+        self.relational_row_pages.schema_checkpoint_can_wait = false;
         self.relational_row_pages.recovery_status = RelationalRowPageRecoveryStatus::Unavailable {
             base_generation,
             base_commit_epoch,
@@ -1515,6 +1536,49 @@ impl GraphStore {
     #[doc(hidden)]
     pub fn relational_row_schema_checkpoint_required(&self) -> bool {
         self.relational_row_pages.schema_checkpoint_required
+    }
+
+    /// Whether the pending schema checkpoint may wait for the next ordinary
+    /// checkpoint instead of running inside the commit that required it.
+    ///
+    /// It may while each schema change since the last checkpoint rewrote only
+    /// tables that were empty in its commit, no commit has written a row to
+    /// such a table since, and the incremental rewrite plan is current. Until it publishes, the
+    /// durable WAL holds the schema change, resident rows serve reads and
+    /// recovery replays it exactly as after a crash before the checkpoint
+    /// (#1942).
+    #[doc(hidden)]
+    pub fn relational_row_schema_checkpoint_can_wait(&self) -> bool {
+        self.relational_row_pages
+            .current_waiting_schema_rewrite(self.commit_epoch)
+            .is_some()
+    }
+
+    /// A pending rewrite can wait when rows stay resident with materialized
+    /// indexes, so no out-of-core row or persistent index view waits for it,
+    /// every table the commit's schema change rewrites is empty, and any
+    /// earlier pending rewrite was waiting too.
+    fn relational_row_schema_rewrite_can_wait(
+        &self,
+        commit_epoch: u64,
+        commit_tables: &[String],
+    ) -> bool {
+        (!self.relational_row_pages.schema_checkpoint_required
+            || self
+                .relational_row_pages
+                .current_waiting_schema_rewrite(commit_epoch.saturating_sub(1))
+                .is_some())
+            && self.durable.is_some()
+            && self.relational_state.materialized_rows_resident()
+            && !self.relational_state.canonical_row_metadata_only()
+            && !self
+                .relational_index_shadow
+                .mode
+                .publishes_persistent_indexes()
+            && commit_tables.iter().all(|table| {
+                self.relational_state.table_schema(table).is_some()
+                    && self.relational_state.row_count(table) == 0
+            })
     }
 
     /// Records a resource or budget failure of the required schema
@@ -3740,6 +3804,155 @@ mod tests {
                 .len(),
             1
         );
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn empty_table_schema_checkpoint_waits_and_stays_incremental_across_commits() {
+        let path = unique_test_dir("schema-waits");
+        let _row_cap = LegacyRowCap::new(&path);
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open_with_durability_and_replay_config(
+            &path,
+            &mut catalog,
+            DurabilityPolicy::default(),
+            WalReplayConfig::default(),
+        )
+        .unwrap();
+        let commit = |store: &mut GraphStore, catalog: &mut Catalog, writes| {
+            store
+                .commit_relational_transaction(catalog, RelationalTransaction { writes })
+                .unwrap();
+        };
+        let mut writes = Vec::new();
+        for table in ["documents", "messages", "notes"] {
+            writes.push(RelationalWrite::CreateTable(named_schema(table)));
+            writes.push(RelationalWrite::Insert {
+                table: table.to_string(),
+                rows: (0..300)
+                    .map(|id| row(id, &format!("{table}-{id}")))
+                    .collect(),
+                mode: RelationalInsertMode::Error,
+            });
+        }
+        commit(&mut store, &mut catalog, writes);
+        store.checkpoint(&catalog).unwrap();
+        let first = bound_row_root(&store, &path);
+        let documents = table_pages(&first, "documents");
+        let notes = table_pages(&first, "notes");
+        let messages = table_pages(&first, "messages");
+        drop(first);
+        let index = |table: &str| RelationalWrite::CreateIndex {
+            table: table.to_string(),
+            index: hawdb_storage::relational::RelationalIndexSchema {
+                name: format!("{table}_body"),
+                columns: vec!["body".to_string()],
+                included_columns: Vec::new(),
+                unique: false,
+                predicate: None,
+            },
+        };
+        let insert = |table: &str, id: i64| RelationalWrite::Insert {
+            table: table.to_string(),
+            rows: vec![row(id, &format!("{table}-{id}"))],
+            mode: RelationalInsertMode::Error,
+        };
+
+        // A new empty table, with an index and a row change to another table
+        // in the same commit, leaves the checkpoint waiting (#1942).
+        commit(
+            &mut store,
+            &mut catalog,
+            vec![
+                RelationalWrite::CreateTable(named_schema("fresh")),
+                index("fresh"),
+                insert("messages", 1_000),
+            ],
+        );
+        assert!(store.relational_row_schema_checkpoint_required());
+        assert!(store.relational_row_schema_checkpoint_can_wait());
+        // Later commits advance the waiting rewrite: another table's change,
+        // a non-relational commit, a second empty table and an index on it.
+        commit(&mut store, &mut catalog, vec![insert("messages", 1_001)]);
+        store
+            .create_node(&mut catalog, "Graph", std::collections::BTreeMap::new())
+            .unwrap();
+        commit(
+            &mut store,
+            &mut catalog,
+            vec![RelationalWrite::CreateTable(named_schema("later"))],
+        );
+        commit(
+            &mut store,
+            &mut catalog,
+            vec![index("later"), insert("messages", 1_002)],
+        );
+        assert!(store.relational_row_schema_checkpoint_can_wait());
+        // A row in a pending table ends the wait: the overlay cannot bound it.
+        commit(&mut store, &mut catalog, vec![insert("fresh", 1)]);
+        assert!(store.relational_row_schema_checkpoint_required());
+        assert!(!store.relational_row_schema_checkpoint_can_wait());
+
+        // The checkpoint publishes every deferred schema, keeps the untouched
+        // tables' pages and holds every insert made while it waited.
+        store.checkpoint(&catalog).unwrap();
+        assert!(!store.relational_row_schema_checkpoint_required());
+        assert!(!store.relational_row_schema_checkpoint_can_wait());
+        let second = bound_row_root(&store, &path);
+        assert_eq!(table_pages(&second, "documents"), documents);
+        assert_eq!(table_pages(&second, "notes"), notes);
+        assert_ne!(table_pages(&second, "messages"), messages);
+        assert_eq!(second.table_root("messages").unwrap().row_count, 303);
+        assert_eq!(second.table_root("fresh").unwrap().row_count, 1);
+        assert_eq!(second.table_root("later").unwrap().row_count, 0);
+        drop(second);
+
+        // An index on a non-empty table does not wait.
+        commit(&mut store, &mut catalog, vec![index("notes")]);
+        assert!(store.relational_row_schema_checkpoint_required());
+        assert!(!store.relational_row_schema_checkpoint_can_wait());
+        store.checkpoint(&catalog).unwrap();
+
+        // A whole-snapshot replacement drops a waiting rewrite.
+        commit(
+            &mut store,
+            &mut catalog,
+            vec![RelationalWrite::CreateTable(named_schema("replaced"))],
+        );
+        assert!(store.relational_row_schema_checkpoint_can_wait());
+        store.invalidate_relational_row_page_recovery(store.commit_epoch, "test replacement");
+        assert!(store.relational_row_schema_checkpoint_required());
+        assert!(!store.relational_row_schema_checkpoint_can_wait());
+        store.checkpoint(&catalog).unwrap();
+        drop(store);
+
+        let mut catalog = Catalog::default();
+        let store = GraphStore::open_with_durability_and_replay_config(
+            &path,
+            &mut catalog,
+            DurabilityPolicy::default(),
+            WalReplayConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(bodies(&store, "documents").len(), 300);
+        let messages = bodies(&store, "messages");
+        assert_eq!(messages.len(), 303);
+        assert!([1_000, 1_001, 1_002].iter().all(|id| messages.contains(id)));
+        assert_eq!(bodies(&store, "fresh"), vec![1]);
+        assert!(bodies(&store, "later").is_empty());
+        for (table, indexes) in [("fresh", 1), ("later", 1), ("notes", 1)] {
+            assert_eq!(
+                store
+                    .relational_state()
+                    .table_schema(table)
+                    .unwrap()
+                    .indexes
+                    .len(),
+                indexes,
+                "{table}"
+            );
+        }
         drop(store);
         std::fs::remove_dir_all(path).unwrap();
     }

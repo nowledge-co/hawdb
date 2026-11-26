@@ -47,6 +47,13 @@ pub struct RelationalRowPageState {
     /// Incremental planning state of the pending schema checkpoint, valid
     /// while its view is at the current commit epoch.
     pub schema_rewrite: Option<RelationalRowSchemaRewrite>,
+    /// Set while every schema change of the pending schema checkpoint
+    /// rewrote only tables that were empty in its commit, and those tables
+    /// are still empty. Commits then leave
+    /// the checkpoint to the next ordinary one and advance `schema_rewrite`
+    /// instead, so it stays incremental; the WAL stays authoritative until it
+    /// publishes (#1942).
+    pub schema_checkpoint_can_wait: bool,
     pub monotonic_append_fast_path_enabled: bool,
     pub monotonic_append_metrics: Arc<RelationalMonotonicAppendMetrics>,
 }
@@ -163,6 +170,7 @@ impl RelationalRowPageState {
                 .schema_rewrite
                 .clone()
                 .filter(|rewrite| rewrite.view.identity().visible_commit_epoch == commit_epoch),
+            schema_checkpoint_can_wait: self.schema_checkpoint_can_wait,
             monotonic_append_fast_path_enabled: self.monotonic_append_fast_path_enabled,
             monotonic_append_metrics: Arc::clone(&self.monotonic_append_metrics),
         }
@@ -204,13 +212,29 @@ impl RelationalRowPageState {
         }
     }
 
+    /// The pending schema rewrite that commits advance instead of
+    /// checkpointing (#1942): present only while it can wait and its view is
+    /// at `commit_epoch`.
+    pub fn current_waiting_schema_rewrite(
+        &self,
+        commit_epoch: u64,
+    ) -> Option<&RelationalRowSchemaRewrite> {
+        self.schema_rewrite.as_ref().filter(|rewrite| {
+            self.schema_checkpoint_required
+                && self.schema_checkpoint_can_wait
+                && rewrite.view.identity().visible_commit_epoch == commit_epoch
+        })
+    }
+
     pub fn stage_live_publication(
         &self,
         current_epoch: u64,
         next_epoch: u64,
         capture: Option<RelationalRowChangeCapture>,
     ) -> Option<Result<Arc<RelationalRowPageReadView>, RelationalRowLiveUnavailable>> {
-        let view = self.current_read_view(current_epoch)?;
+        let Some(view) = self.current_read_view(current_epoch) else {
+            return self.stage_waiting_schema_rewrite(current_epoch, next_epoch, capture);
+        };
         if let Some(RelationalRowChangeCapture::RequiresCheckpoint { tables, unaffected }) =
             capture.as_ref()
         {
@@ -235,7 +259,10 @@ impl RelationalRowPageState {
                 error: RelationalRowPageLiveError::RequiresCheckpoint {
                     tables: tables.clone(),
                 },
-                schema_rewrite_view,
+                schema_rewrite: schema_rewrite_view.map(|view| RelationalRowSchemaRewrite {
+                    view,
+                    tables: tables.iter().cloned().collect(),
+                }),
             }));
         }
         Some(
@@ -245,9 +272,109 @@ impl RelationalRowPageState {
                     identity: view.identity(),
                     failed_commit_epoch: next_epoch,
                     error,
-                    schema_rewrite_view: None,
+                    schema_rewrite: None,
                 }),
         )
+    }
+
+    /// Advances a waiting schema rewrite by one commit, exactly as the live
+    /// view it replaces would advance: the same capture, limits and errors.
+    /// A further schema change adds its tables; a row change to a pending
+    /// table makes the commit require the checkpoint. A commit that does not
+    /// fit is rejected before WAL append, as with a live view (#1942).
+    fn stage_waiting_schema_rewrite(
+        &self,
+        current_epoch: u64,
+        next_epoch: u64,
+        capture: Option<RelationalRowChangeCapture>,
+    ) -> Option<Result<Arc<RelationalRowPageReadView>, RelationalRowLiveUnavailable>> {
+        let rewrite = self.current_waiting_schema_rewrite(current_epoch)?;
+        let identity = rewrite.view.identity();
+        let mut tables = rewrite.tables.clone();
+        // The error names the tables this commit's schema change rewrites,
+        // as for a live view; the rewrite carries every pending table.
+        let mut commit_tables = Vec::new();
+        let unavailable = |commit_tables: Vec<String>,
+                           error: Option<RelationalRowPageLiveError>,
+                           rewrite: Option<RelationalRowSchemaRewrite>| {
+            Some(Err(RelationalRowLiveUnavailable {
+                identity,
+                failed_commit_epoch: next_epoch,
+                error: error.unwrap_or(RelationalRowPageLiveError::RequiresCheckpoint {
+                    tables: commit_tables,
+                }),
+                schema_rewrite: rewrite,
+            }))
+        };
+        let changes = match capture {
+            None => Vec::new(),
+            Some(RelationalRowChangeCapture::Captured { changes, .. }) => changes,
+            Some(RelationalRowChangeCapture::RequiresCheckpoint {
+                tables: changed,
+                unaffected,
+            }) => {
+                tables.extend(changed.iter().cloned());
+                commit_tables = changed;
+                match unaffected {
+                    Some(unaffected) => unaffected.changes,
+                    // As for a live view's schema commit, changes that do
+                    // not fit leave a full rebuild to the checkpoint.
+                    None => return unavailable(commit_tables, None, None),
+                }
+            }
+            Some(RelationalRowChangeCapture::Invalidated { reason }) => {
+                return unavailable(
+                    commit_tables,
+                    Some(RelationalRowPageLiveError::Invalidated(reason)),
+                    None,
+                );
+            }
+        };
+        // A row change to a pending table ends the wait: the overlay cannot
+        // hold it, so it would be checkpoint debt no limit bounds. The
+        // table joins the commit's tables, which publication requires to be
+        // empty for the checkpoint to keep waiting.
+        let (pending, changes): (Vec<_>, Vec<_>) = changes
+            .into_iter()
+            .partition(|change| tables.contains(&change.table));
+        for change in pending {
+            if !commit_tables.contains(&change.table) {
+                commit_tables.push(change.table);
+            }
+        }
+        let Some(encoded_bytes) = changes.iter().try_fold(0usize, |total, change| {
+            total.checked_add(crate::relational::estimated_row_change_encoding_bytes(
+                change,
+            )?)
+        }) else {
+            return unavailable(
+                commit_tables,
+                Some(RelationalRowPageLiveError::Admission(
+                    "schema rewrite row change byte accounting overflow".to_string(),
+                )),
+                None,
+            );
+        };
+        let schema_change = !commit_tables.is_empty();
+        match rewrite.view.advance(
+            next_epoch,
+            Some(RelationalRowChangeCapture::Captured {
+                changes,
+                encoded_bytes,
+            }),
+            self.live_limits,
+        ) {
+            Ok(view) => unavailable(
+                commit_tables,
+                None,
+                Some(RelationalRowSchemaRewrite {
+                    view: Arc::new(view),
+                    tables,
+                }),
+            ),
+            Err(_) if schema_change => unavailable(commit_tables, None, None),
+            Err(error) => unavailable(commit_tables, Some(error), None),
+        }
     }
 }
 
@@ -256,9 +383,10 @@ pub struct RelationalRowLiveUnavailable {
     pub identity: RelationalRowPageReadViewIdentity,
     pub failed_commit_epoch: u64,
     pub error: RelationalRowPageLiveError,
-    /// For a schema change: the view advanced by the commit's changes to the
-    /// tables it does not rewrite, when they fit the live limits.
-    pub schema_rewrite_view: Option<Arc<RelationalRowPageReadView>>,
+    /// For a schema change, or a commit after one that can wait: the pending
+    /// rewrite advanced by the commit's changes to the tables it does not
+    /// rewrite, when they fit the live limits.
+    pub schema_rewrite: Option<RelationalRowSchemaRewrite>,
 }
 
 /// A pending schema checkpoint whose unaffected tables can be planned

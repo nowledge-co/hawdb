@@ -41,6 +41,9 @@ fn reject_rebinding_carried_artifact(family: &str) {
     db.query("MATCH (s:Memory {id: 1}), (t:Memory {id: 2}) CREATE (s)-[:LINK]->(t)")
         .unwrap();
     db.query("CREATE INDEX ON :Memory(title)").unwrap();
+    // Publish the graph first so the checkpoint below is relational-only;
+    // empty-table DDL no longer checkpoints in its commit (#1942).
+    db.checkpoint().unwrap();
     db.query_sql("CREATE TABLE binding_probe (id BIGINT PRIMARY KEY)")
         .unwrap();
     if matches!(family, "row-pages" | "overflow") {

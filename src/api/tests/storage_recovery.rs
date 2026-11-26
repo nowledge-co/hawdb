@@ -1944,6 +1944,8 @@ fn canonical_row_overflow_backup_reopen_and_reclaim_follow_physical_closure() {
     let mut db = Database::open(&path).unwrap();
     db.query_sql("CREATE TABLE public.documents (id BIGINT PRIMARY KEY, body TEXT NOT NULL)")
         .unwrap();
+    // DDL on an empty table no longer checkpoints in its commit (#1942).
+    db.checkpoint().unwrap();
     db.query_sql_with_params(
         "INSERT INTO public.documents (id, body) VALUES ($1, $2)",
         &[Value::Int(1), Value::String(body.clone())],

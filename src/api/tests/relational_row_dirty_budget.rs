@@ -165,6 +165,120 @@ fn schema_rebuild_charges_encoded_page_bytes() {
     exercise(&mut db, ROWS);
 }
 
+fn checkpoint_epoch(db: &Database) -> Option<u64> {
+    db.storage_reclamation_watermark().unwrap().checkpoint_epoch
+}
+
+fn can_wait(db: &Database) -> bool {
+    db.runtime
+        .get()
+        .unwrap()
+        .store
+        .relational_row_schema_checkpoint_can_wait()
+}
+
+/// DDL that only rewrites empty tables commits without a checkpoint until a
+/// row is written to such a table; DDL that rewrites existing rows still
+/// checkpoints in its commit (#1942).
+#[test]
+fn empty_table_ddl_waits_and_indexing_existing_rows_checkpoints() {
+    let path = unique_test_dir("row_budget_empty_ddl_waits");
+    let mut db = Database::open_with_config(&path, resident()).unwrap();
+    load(&mut db, "t0", ROWS);
+    db.checkpoint().unwrap();
+    let checkpoint = checkpoint_epoch(&db);
+
+    db.query_sql("CREATE TABLE t1 (id BIGINT PRIMARY KEY, body TEXT)")
+        .unwrap();
+    db.query_sql("CREATE INDEX t1_body ON t1 (body)").unwrap();
+    db.query_sql("ALTER TABLE t1 ADD COLUMN extra TEXT")
+        .unwrap();
+    assert!(required(&db) && can_wait(&db));
+    assert_eq!(
+        checkpoint_epoch(&db),
+        checkpoint,
+        "empty-table DDL checkpointed"
+    );
+    // Reads, and writes to other tables, keep it waiting.
+    db.query_sql("UPDATE t0 SET body = 'updated' WHERE id = 7")
+        .unwrap();
+    db.query_sql("INSERT INTO t0 (id, body) VALUES (-1, 'new')")
+        .unwrap();
+    db.query_sql("DELETE FROM t0 WHERE id = -1").unwrap();
+    assert_eq!(int(&mut db, "SELECT count(*) FROM t0"), ROWS);
+    assert_eq!(int(&mut db, "SELECT count(*) FROM t1"), 0);
+    assert!(can_wait(&db));
+    assert_eq!(checkpoint_epoch(&db), checkpoint);
+
+    // The first row in the new table ends the wait with one checkpoint.
+    db.query_sql("INSERT INTO t1 (id, body) VALUES (10, 'one'), (20, 'two')")
+        .unwrap();
+    assert!(!required(&db), "the schema checkpoint must complete");
+    let checkpoint = checkpoint_epoch(&db);
+    assert_ne!(checkpoint, None);
+    assert_eq!(
+        int(&mut db, "SELECT count(*) FROM t1 WHERE body = 'two'"),
+        1
+    );
+
+    // Creating a table and filling it in one commit rewrites rows.
+    let mut tx = db.begin_transaction().unwrap();
+    tx.query_sql("CREATE TABLE t2 (id BIGINT PRIMARY KEY)")
+        .unwrap();
+    tx.query_sql("INSERT INTO t2 (id) VALUES (1)").unwrap();
+    tx.commit().unwrap();
+    assert!(!required(&db), "the schema checkpoint must complete");
+    assert_ne!(checkpoint_epoch(&db), checkpoint);
+    let checkpoint = checkpoint_epoch(&db);
+
+    // An index on a non-empty table checkpoints in its commit.
+    db.query_sql("CREATE TABLE t3 (id BIGINT PRIMARY KEY)")
+        .unwrap();
+    assert!(can_wait(&db));
+    assert_eq!(checkpoint_epoch(&db), checkpoint);
+    db.query_sql("CREATE INDEX t0_body ON t0 (body)").unwrap();
+    assert!(!required(&db), "the schema checkpoint must complete");
+    assert_ne!(checkpoint_epoch(&db), checkpoint);
+    assert_eq!(
+        int(&mut db, "SELECT count(*) FROM t0 WHERE body = 'updated'"),
+        1
+    );
+    drop(db);
+
+    let mut db = Database::open_with_config(&path, resident()).unwrap();
+    assert!(!required(&db));
+    assert_eq!(
+        int(&mut db, "SELECT count(*) FROM t1 WHERE body = 'one'"),
+        1
+    );
+    assert_eq!(int(&mut db, "SELECT count(*) FROM t2"), 1);
+    assert_eq!(int(&mut db, "SELECT count(*) FROM t3"), 0);
+    assert_eq!(
+        int(&mut db, "SELECT count(*) FROM t0 WHERE body = 'updated'"),
+        1
+    );
+    exercise(&mut db, ROWS);
+}
+
+/// Persistent index views and out-of-core reopen wait for the schema
+/// checkpoint, so DDL with published index generations keeps it in the
+/// commit (#1942).
+#[test]
+fn empty_table_ddl_checkpoints_when_indexes_are_persistent() {
+    let path = unique_test_dir("row_budget_empty_ddl_shadow");
+    let mut db = Database::open_with_config(&path, resident_shadow()).unwrap();
+    load(&mut db, "t0", 600);
+    db.checkpoint().unwrap();
+    let checkpoint = checkpoint_epoch(&db);
+    db.query_sql("CREATE TABLE t1 (id BIGINT PRIMARY KEY)")
+        .unwrap();
+    assert!(!required(&db), "the schema checkpoint must complete");
+    assert_ne!(checkpoint_epoch(&db), checkpoint);
+    drop(db);
+    let mut db = Database::open_with_config(&path, out_of_core()).unwrap();
+    assert_eq!(int(&mut db, "SELECT count(*) FROM t1"), 0);
+}
+
 #[test]
 fn spread_update_checkpoint_charges_encoded_page_bytes() {
     let path = unique_test_dir("row_budget_spread_update");

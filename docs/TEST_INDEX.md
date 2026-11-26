@@ -5137,13 +5137,15 @@ No fixture, configuration, lane, profile, feature or timeout was removed.
 
 Root unit owner `api::tests::system_schema_registry`
 (`cargo test --locked -p hawdb --lib batched_system_schema`).
-`batched_system_schema_registries_publish_one_commit_and_one_checkpoint`
+`batched_system_schema_registries_publish_one_commit_and_no_checkpoint`
 applies six owners, each creating an empty table and an index on it, with
-`Database::apply_system_schema_registries`. It requires one commit epoch and
-one canonical row checkpoint, measured as the row-page generation advance of
-one explicit checkpoint, while two owners applied one at a time cost two. A
-current batch neither commits nor checkpoints, and indexed reads serve rows
-inserted after the DDL across a reopen.
+`Database::apply_system_schema_registries`. It requires one commit epoch and,
+since #1942 defers the schema checkpoint of empty tables, no canonical row
+checkpoint (an unchanged row-page generation); two owners applied one at a
+time cost none either, and a current batch neither commits nor checkpoints.
+The first row inserted into a new table advances the generation by exactly
+one step and later inserts by none; indexed reads serve the rows across a
+reopen.
 `batched_system_schema_registries_index_existing_rows_and_skip_current_owners`
 indexes an existing non-empty table in the same batch and applies only the
 pending owners of a partly current batch.
@@ -5154,11 +5156,53 @@ rejected before any write.
 process at each commit and checkpoint failpoint and requires every owner or
 none after reopen, usable recovered indexes and an idempotent reapply.
 `api::tests::power_loss::batched_system_schema_registries_are_whole_or_absent_across_power_loss`
-cuts the batch's schema checkpoint at the branch-head replacement under every
-publication fault plan, in `Materialized` and `OutOfCore` residency with both
-durability policies, and checks that rows committed after the batch survive
-whole or not at all. Fsync counts are measured with a local profiling harness,
+requires that the batch commit publishes no checkpoint, then cuts the
+checkpoint that the first rows in the new tables run, which carries the
+deferred schema, at the branch-head replacement under every publication fault
+plan, in `Materialized` and `OutOfCore` residency with both durability
+policies. Images before that checkpoint hold the batch only in the WAL (lost
+only when unsynchronized under `SyncOnCheckpoint`), and every image keeps the
+batch and the rows committed after it whole or absent. Fsync counts are measured with a local profiling harness,
 not in CI. No new lane, fixture, feature or timeout.
+
+## Deferred schema checkpoints for empty tables (#1942)
+
+A commit whose schema change rewrites only empty tables (new tables, and
+indexes or columns on empty tables) leaves its canonical row checkpoint to the
+next ordinary one, or to the first commit that writes a row to such a table,
+when rows are resident and relational indexes are materialized. Storage owner
+`//crates/storage:hawdb_storage_tests`:
+`store::relational_row_pages::tests::empty_table_schema_checkpoint_waits_and_stays_incremental_across_commits`
+keeps the checkpoint waiting across another table's inserts, a graph commit,
+a second new table and an index on it; the first row in a new table ends the
+wait. The checkpoint keeps the untouched tables' page descriptors, holds every
+insert made to the other table while it waited (a rewrite plan that drops them
+fails this test) and every deferred schema; an index on a non-empty table and
+a whole-snapshot replacement do not wait; a reopen recovers rows and indexes.
+Root unit owner `//:hawdb_unit_general_tests`:
+`api::tests::relational_row_dirty_budget::empty_table_ddl_waits_and_indexing_existing_rows_checkpoints`
+checks through SQL that `CREATE TABLE`, `CREATE INDEX` and `ADD COLUMN` on an
+empty table, and later writes to another table, leave the durable checkpoint
+epoch unchanged; that the first row in the new table, creating and filling a
+table in one transaction, and indexing a non-empty table each checkpoint in
+their commit; and that a reopen keeps every row.
+`empty_table_ddl_checkpoints_when_indexes_are_persistent` keeps the commit
+checkpoint with `Shadow` indexes and reopens out of core.
+`api::tests::system_schema_registry::deferred_system_schema_survives_a_process_crash_and_replay`
+kills a child process after three deferred registries and a row in another
+table (schema only in the WAL), and inside the checkpoint that the first rows
+in the new tables run (during publication and after its manifest); read-only
+replay serves every recovered row, writable reopen publishes the replayed
+schema and accepts new rows across a second reopen. Fixtures that relied on a
+DDL commit's own checkpoint (`relational_live_overlay::create_order_line`,
+`graph_bundle_integrity`, `operation_retry`, `concurrent_transactions`
+WAL group commit, two `branch_lifecycle` SQL branch tests,
+`storage_recovery` overflow backup and `object_reclamation_tests`) now
+checkpoint explicitly after their setup DDL. Replay
+with `cargo test --locked -p hawdb-storage --lib empty_table_schema_checkpoint`
+and `cargo test --locked -p hawdb --lib empty_table_ddl deferred_system_schema`.
+The fsync counts in the pull request come from a local release harness under
+`strace`, not CI. No new lane, fixture, feature or timeout.
 
 ## Pending system schema on read-only handles (#1950)
 

@@ -1323,6 +1323,22 @@ explicitly unavailable.
 Failure of the post-WAL barrier poisons the current handle and reports that the
 durable commit will be retried by writable reopen.
 
+A schema change may instead wait for the next ordinary checkpoint when every
+table it rewrites is empty in its commit (a new table, or an index or column on
+an empty table), relational rows are resident, and the relational index mode
+publishes no persistent index generation (#1942). Nothing but the WAL and
+resident rows then waits for the new root: no out-of-core row reader and no
+index view. The commit returns after WAL durability, exactly the state a
+process stop before the barrier leaves, so recovery is unchanged. Until a
+checkpoint publishes, each later commit advances the pending rewrite plan
+with the same capture, envelope, checkpoint debt and pre-WAL rejection as a
+live view, so the checkpoint stays incremental for the other tables. The
+first row written to a pending table, a later schema change that rewrites a
+non-empty table, a rewrite plan that falls behind the commit epoch, or a
+whole-snapshot replacement ends the wait: that commit runs the barrier as
+above. Rows of a pending table therefore never accumulate outside the live
+envelope.
+
 After the complete WAL prefix is consumed, a writable open synchronizes all
 runs, publishes the immutable delta-generation manifest, revalidates the
 selected row root and previous delta selector, and atomically replaces the

@@ -411,6 +411,8 @@ mod tests {
             database
                 .query_sql("CREATE TABLE documents (id BIGINT PRIMARY KEY, content TEXT)")
                 .unwrap();
+            // DDL on an empty table no longer checkpoints in its commit (#1942).
+            database.checkpoint().unwrap();
             let child_head = database.branch_head_path(child).unwrap();
             let before_write = std::fs::read(&child_head).unwrap();
             database
@@ -1119,6 +1121,8 @@ mod tests {
         writer
             .query_sql("CREATE TABLE readonly_probe (id BIGINT PRIMARY KEY)")
             .unwrap();
+        // DDL on an empty table no longer checkpoints in its commit (#1942).
+        writer.checkpoint().unwrap();
         writer
             .query_sql("INSERT INTO readonly_probe (id) VALUES (1)")
             .unwrap();

@@ -63,6 +63,9 @@ fn assert_carried_source_invalidates_snapshot(manifest_case: bool) {
     let suspension = db.runtime.suspend_automatic_checkpoint().unwrap().unwrap();
     db.query("CREATE (:Memory {id: 1, body: 'retained'})")
         .unwrap();
+    // Publish the graph first so the checkpoint below is relational-only;
+    // empty-table DDL no longer checkpoints in its commit (#1942).
+    db.checkpoint().unwrap();
     db.query_sql("CREATE TABLE integrity_probe (id BIGINT PRIMARY KEY)")
         .unwrap();
     db.checkpoint().unwrap();

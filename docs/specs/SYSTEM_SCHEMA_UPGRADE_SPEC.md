@@ -39,14 +39,17 @@ The protocol follows the useful local subset of TiDB bootstrap upgrades:
     this way.
 
 A commit that creates or alters a relational table requires a canonical row
-checkpoint before an out-of-core read may serve the changed tables, so it runs
-a synchronous checkpoint before returning. The row-page base and its live
-overlay bind a fixed table set with schema digests; a new or changed table,
-even an empty one, cannot be served from them. The WAL alone already makes the
-schema durable: crash recovery replays it and checkpoints before the writable
-handle returns. Committing N owners together therefore pays one checkpoint
-instead of N (#1942). One owner per call keeps paying one checkpoint per
-owner.
+checkpoint before an out-of-core read may serve the changed tables. The
+row-page base and its live overlay bind a fixed table set with schema digests;
+a new or changed table, even an empty one, cannot be served from them. The WAL
+alone already makes the schema durable: crash recovery replays it and
+checkpoints before the writable handle returns. When every table a commit
+rewrites is empty (new tables, and indexes on them), rows are resident and
+relational indexes are materialized, the checkpoint waits for the next
+ordinary one or for the first row written to those tables, so N such owners
+cost no checkpoint and their first use costs one (#1942). Otherwise the
+commit runs a synchronous checkpoint before returning, and committing N owners
+together pays one checkpoint instead of N.
 9. Ordinary SQL may read `hawdb_schema_migrations` for diagnostics but cannot
    create, alter, index, insert, update, or delete it. The `hawdb.engine` owner
    is reserved.
@@ -132,9 +135,9 @@ bounded check only when producing retained release evidence.
 Focused HawDB tests must prove:
 
 - fresh version 1 bootstrap and version 2 upgrade;
-- several owners publish one commit and one checkpoint, fail together, and
-  recover whole or absent after a crash or power loss at each publication
-  step;
+- several owners publish one commit and, for empty tables, no checkpoint,
+  fail together, and recover whole or absent after a crash or power loss at
+  each publication step, including the deferred checkpoint;
 - restart idempotency without an extra commit;
 - checksum and future-version rejection;
 - failed DDL does not publish a migration version;

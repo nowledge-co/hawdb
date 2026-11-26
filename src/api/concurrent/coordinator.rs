@@ -527,7 +527,8 @@ impl CommitSequencer {
             let Some(runtime) = database.runtime.peek() else {
                 break;
             };
-            if runtime.store.relational_row_schema_checkpoint_required()
+            if (runtime.store.relational_row_schema_checkpoint_required()
+                && !runtime.store.relational_row_schema_checkpoint_can_wait())
                 || runtime.store.wal_sync_group_progress().byte_count
                     >= self.group_commit.config.max_bytes().get()
             {

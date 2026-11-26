@@ -486,6 +486,9 @@ fn create_order_line(db: &mut Database) {
     .unwrap();
     db.query_sql("CREATE INDEX idx_order_line_order ON order_line (ol_w_id, ol_d_id, ol_o_id)")
         .unwrap();
+    // DDL on an empty table no longer checkpoints in its commit (#1942).
+    // Publish it here so the overlay these tests measure starts empty.
+    db.checkpoint().unwrap();
 }
 
 /// TPC-C ORDER_LINE-shaped row `line` (about 120 encoded bytes): ten lines
