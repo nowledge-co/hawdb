@@ -10,23 +10,22 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 thread_local! {
     static TRACK: Cell<bool> = const { Cell::new(false) };
+    static LIVE: Cell<usize> = const { Cell::new(0) };
 }
-static LIVE: AtomicUsize = AtomicUsize::new(0);
 
 fn allocated(bytes: usize) {
     if TRACK.try_with(Cell::get).unwrap_or(false) {
-        LIVE.fetch_add(bytes, Ordering::Relaxed);
+        let _ = LIVE.try_with(|live| live.set(live.get().saturating_add(bytes)));
     }
 }
 
 fn deallocated(bytes: usize) {
     if TRACK.try_with(Cell::get).unwrap_or(false) {
-        LIVE.fetch_sub(bytes, Ordering::Relaxed);
+        let _ = LIVE.try_with(|live| live.set(live.get().saturating_sub(bytes)));
     }
 }
 
@@ -74,19 +73,19 @@ struct Window;
 
 impl Window {
     fn new() -> Self {
-        LIVE.store(0, Ordering::Relaxed);
-        TRACK.set(true);
+        LIVE.with(|live| live.set(0));
+        TRACK.with(|track| track.set(true));
         Self
     }
 
     fn retained(&self) -> usize {
-        LIVE.load(Ordering::Relaxed)
+        LIVE.with(Cell::get)
     }
 }
 
 impl Drop for Window {
     fn drop(&mut self) {
-        TRACK.set(false);
+        TRACK.with(|track| track.set(false));
     }
 }
 
