@@ -39,3 +39,11 @@ harness = false
 [[bench]]
 name = "projection_label_source"
 harness = false
+
+[[bench]]
+name = "graph_checkpoint_carry"
+harness = false
+
+[[bench]]
+name = "wal_batch_encode"
+harness = false

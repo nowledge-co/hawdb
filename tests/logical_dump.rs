@@ -1722,7 +1722,7 @@ fn incompatible_storage_format_open_is_a_typed_refusal_naming_both_versions() {
     }
     let rewritten = logical_dump_support::rewrite_storage_version(
         &path,
-        "hawdb-storage-v2",
+        "hawdb-storage-v3",
         "hawdb-storage-v0",
     );
     assert_eq!(
@@ -1753,13 +1753,13 @@ fn incompatible_storage_format_open_is_a_typed_refusal_naming_both_versions() {
         HawDBError::UnsupportedStorageFormat(StorageFormatError::UnsupportedVersion {
             format: "storage manifest",
             found: 0,
-            supported: 2,
+            supported: 3,
         }),
         "{error}"
     );
-    assert!(error.to_string().contains("version 0") && error.to_string().contains("version 2"));
+    assert!(error.to_string().contains("version 0") && error.to_string().contains("version 3"));
     // The refusal changed nothing: restoring the version makes it readable.
-    logical_dump_support::rewrite_storage_version(&path, "hawdb-storage-v0", "hawdb-storage-v2");
+    logical_dump_support::rewrite_storage_version(&path, "hawdb-storage-v0", "hawdb-storage-v3");
     assert_eq!(open(&path).unwrap(), vec![vec![Value::Int(1)]]);
 }
 

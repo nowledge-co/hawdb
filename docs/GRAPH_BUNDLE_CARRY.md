@@ -2,6 +2,11 @@
 
 Issue: https://github.com/nowledge-co/hawdb/issues/1641.
 
+This describes uniform graph-bundle carry introduced by manifest v2. Manifest
+v3 additionally carries adjacency independently across node property updates;
+see [incremental graph checkpoints](INCREMENTAL_GRAPH_CHECKPOINT.md). The
+uniform carry and integrity contracts below remain in force.
+
 A checkpoint has a physical generation C and a logical source commit. Its
 canonical graph, property spill, adjacency and property projection form one
 immutable bundle G/E. All four retain their existing filenames, source epoch,

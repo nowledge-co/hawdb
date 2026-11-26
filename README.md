@@ -225,7 +225,20 @@ Typed Rust APIs are reserved for kernel boundaries: transactions, recovery, proj
 
 A database directory has one writer lease, held by one process. Opening the same path twice, or from another process, fails immediately. Threads in the owning process share the handle. Read transactions observe a published snapshot.
 
-The default durability policy syncs the WAL on every commit. `SyncOnCheckpoint` defers that flush, and group commit can batch it. Checkpoints then write an immutable generation, and `manifest.hawdb` is the only pointer to that generation. Recovery replays a committed prefix and drops a torn tail. The file format is HawDB's own: ordered immutable segments, a demand-paged descriptor tree, and copy-on-write pages, described in [`docs/STORAGE.md`](docs/STORAGE.md).
+The default `SyncOnEveryWrite` policy synchronizes the WAL before acknowledging each commit; group commit can share that barrier. The opt-in `SyncOnCheckpoint` policy flushes complete transaction WAL writes to the OS cache before returning, but defers storage synchronization until checkpoint/seal boundaries. Power loss may discard recent acknowledged transactions. Branch creation, deletion and head publication retain their durability barriers in both modes.
+
+Select OS-buffered writes through the embedded library's typed configuration:
+
+```rust
+use hawdb::{DurabilityPolicy, HawDBEmbeddedOpenOptions};
+
+let options = HawDBEmbeddedOpenOptions::new("data.hawdb")
+    .with_durability(DurabilityPolicy::SyncOnCheckpoint);
+```
+
+Direct `Database` users can select the same policy with `Database::open_with_durability` or `Database::open_with_durability_and_config`. Omitting the policy keeps synchronized commits. This does not retain acknowledged WAL writes in a user-space buffer.
+
+Checkpoints write an immutable generation, and `manifest.hawdb` is the only pointer to that generation. Recovery replays complete committed transactions under the selected recovery policy. The file format is HawDB's own: ordered immutable segments, a demand-paged descriptor tree, and copy-on-write pages, described in [`docs/STORAGE.md`](docs/STORAGE.md).
 
 Every read carries an explicit row budget and payload budget. Planning, execution, search builds, and background maintenance take admission permits from a local QoS scheduler. Background work — schema, indexes, projection catch-up, compaction — runs only when the host enables it and the scheduler admits it. Exceeding a budget fails the request.
 

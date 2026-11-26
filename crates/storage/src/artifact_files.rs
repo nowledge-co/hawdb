@@ -100,6 +100,11 @@ pub fn parse_canonical_segment_descriptor_generation_file(name: &str) -> Option<
         })
 }
 
+pub fn parse_adjacency_generation_file(name: &str) -> Option<u64> {
+    parse_generation_file(name, "adjacency.")
+        .or_else(|| parse_canonical_adjacency_descriptor_generation_file(name))
+}
+
 pub fn parse_canonical_adjacency_descriptor_generation_file(name: &str) -> Option<u64> {
     parse_hyphenated_generation_file(name, "adjacency-descriptors-", ".pages.hawdb")
         .or_else(|| parse_hyphenated_generation_file(name, "adjacency-descriptors-", ".root.hawdb"))

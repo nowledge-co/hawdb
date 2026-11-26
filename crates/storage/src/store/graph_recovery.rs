@@ -440,6 +440,7 @@ impl GraphStore {
         // exactly. It may advance once across a reopen. Commits lost by a
         // crash under SyncOnCheckpoint are not part of that history.
         self.graph_change_commit_epoch = self.commit_epoch;
+        self.adjacency_change_commit_epoch = self.commit_epoch;
         if let Some(start_epoch) = decoded.search_projection_change_log_start_epoch {
             self.search_projection_change_log_start_epoch = start_epoch;
         }
@@ -1042,6 +1043,7 @@ impl GraphStore {
             operation => std::slice::from_ref(operation),
         };
         let changes_graph = operation.changes_graph();
+        let changes_adjacency = operation.changes_adjacency();
         if let Some(work) = work {
             work.checkpoint().map_err(HawDBError::from_storage_error)?;
         }
@@ -1141,6 +1143,9 @@ impl GraphStore {
         self.commit_epoch = epoch;
         if changes_graph {
             self.graph_change_commit_epoch = epoch;
+        }
+        if changes_adjacency {
+            self.adjacency_change_commit_epoch = epoch;
         }
         self.advance_relational_row_recovery_epoch(epoch);
         Ok(())

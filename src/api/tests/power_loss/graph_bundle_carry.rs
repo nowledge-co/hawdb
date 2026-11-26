@@ -19,12 +19,22 @@ fn carried_graph_checkpoint_head_cuts_recover_complete_graph_and_rows() {
             let mut fixture = Fixture::new();
             let mut database = open(&fixture.root, durability);
             database
-                .query("CREATE (:Carry {id: 1, body: 'retained graph'})")
+                .query("CREATE (:Carry {id: 1, body: 'original graph'})")
                 .unwrap();
             database
                 .query_sql("CREATE TABLE carry_rows (id INTEGER PRIMARY KEY, body TEXT)")
                 .unwrap();
+            database.query("CREATE (:CarryTarget {id: 2})").unwrap();
+            database
+                .query("MATCH (s:Carry), (t:CarryTarget) CREATE (s)-[:LINK]->(t)")
+                .unwrap();
             database.checkpoint().unwrap();
+            database
+                .query("MATCH (n:Carry) SET n.body = 'retained graph'")
+                .unwrap();
+            database.checkpoint().unwrap();
+            let view = database.published_read_view().unwrap();
+            assert!(view.adjacency_generation().unwrap() < view.graph_generation().unwrap());
             let baseline_epoch = database.commit_epoch().unwrap();
             let baseline_checkpoint = database
                 .published_read_view()

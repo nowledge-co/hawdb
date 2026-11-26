@@ -2479,6 +2479,7 @@ impl GraphStore {
         // Consume the appended record's classification so it cannot outlive
         // this commit.
         let changes_graph = std::mem::take(&mut self.pending_commit_changes_graph);
+        let changes_adjacency = std::mem::take(&mut self.pending_commit_changes_adjacency);
         for op in ops {
             if matches!(op, WalOp::Relational { .. }) {
                 self.relational_state = staged_relational_state
@@ -2495,6 +2496,9 @@ impl GraphStore {
         self.commit_epoch = next_commit_epoch;
         if changes_graph {
             self.graph_change_commit_epoch = next_commit_epoch;
+        }
+        if changes_adjacency {
+            self.adjacency_change_commit_epoch = next_commit_epoch;
         }
         self.version_index = staged_versions;
         if collapsed_read_summaries {
@@ -2670,7 +2674,9 @@ impl GraphStore {
     pub(super) fn append_durable_wal_single(&mut self, op: WalOp) -> Result<()> {
         // Only a successful append leaves a classification for its commit.
         self.pending_commit_changes_graph = false;
+        self.pending_commit_changes_adjacency = false;
         let changes_graph = op.changes_graph();
+        let changes_adjacency = op.changes_adjacency();
         let rebuild =
             search_projection_capture::projection_wal_requires_rebuild(std::slice::from_ref(&op));
         let result = (|| {
@@ -2686,6 +2692,7 @@ impl GraphStore {
         self.poison_on_storage_error(&result);
         result?;
         self.pending_commit_changes_graph = changes_graph;
+        self.pending_commit_changes_adjacency = changes_adjacency;
         if rebuild {
             self.install_search_projection_change(
                 search_projection_capture::PreparedSearchProjectionChange::Gap(
@@ -2707,7 +2714,12 @@ impl GraphStore {
     ) -> Result<()> {
         // Only a successful append leaves a classification for its commit.
         self.pending_commit_changes_graph = false;
+        self.pending_commit_changes_adjacency = false;
         let changes_graph = ops.iter().any(WalOp::changes_graph);
+        let changes_adjacency = prepared.as_ref().map_or_else(
+            || ops.iter().any(WalOp::changes_adjacency),
+            crate::wal::binary::PreparedWalBatch::changes_adjacency,
+        );
         let rebuild = search_projection_capture::projection_wal_requires_rebuild(ops);
         let result = (|| {
             if self.durable.is_none() {
@@ -2726,6 +2738,7 @@ impl GraphStore {
         self.poison_on_storage_error(&result);
         result?;
         self.pending_commit_changes_graph = changes_graph;
+        self.pending_commit_changes_adjacency = changes_adjacency;
         if rebuild {
             self.install_search_projection_change(
                 search_projection_capture::PreparedSearchProjectionChange::Gap(

@@ -96,7 +96,7 @@
 
 use super::wire::{
     decode_fixed64, decode_len_body, decode_string_body, decode_tag, decode_varint_u64,
-    encode_fixed64_field, encode_len_field, encode_string_field, encode_varint_field,
+    encode_fixed64_field, encode_len_field, encode_string_field, encode_tag, encode_varint_field,
     encode_varint_u64, skip_field, zigzag_decode_i64, zigzag_encode_i64, WIRE_TYPE_FIXED64,
     WIRE_TYPE_LEN, WIRE_TYPE_VARINT,
 };
@@ -206,8 +206,12 @@ pub enum BinaryWalRecordDecode<E = WalEntry> {
 #[derive(Debug)]
 pub(crate) struct PreparedWalBatch {
     bytes: Vec<u8>,
-    operation_count: usize,
+    operation_count: u32,
+    changes_adjacency: bool,
 }
+
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(std::mem::size_of::<PreparedWalBatch>() == 32);
 
 impl PreparedWalBatch {
     pub(crate) fn prepare(ops: &[WalOp]) -> Result<Self> {
@@ -219,17 +223,27 @@ impl PreparedWalBatch {
         bytes.push(RECORD_KIND_BATCH);
         bytes.extend_from_slice(&0u64.to_le_bytes());
         bytes.extend_from_slice(&count.to_le_bytes());
+        let mut changes_adjacency = false;
+        let mut buffers = MessageEncodeBuffers::default();
         for op in ops {
-            encode_op_frame(op, &mut bytes)?;
+            encode_op_frame(op, &mut bytes, &mut buffers)?;
+            // Classify while each operation is already resident for encoding.
+            // A node-property batch otherwise needs another full scan at commit.
+            changes_adjacency = changes_adjacency || op.changes_adjacency();
         }
         Ok(Self {
             bytes,
-            operation_count: ops.len(),
+            operation_count: count,
+            changes_adjacency,
         })
     }
 
     pub(crate) fn operation_count(&self) -> usize {
-        self.operation_count
+        self.operation_count as usize
+    }
+
+    pub(crate) fn changes_adjacency(&self) -> bool {
+        self.changes_adjacency
     }
 
     pub(crate) fn bind(mut self, lsn: u64, commit_epoch: u64) -> Vec<u8> {
@@ -243,20 +257,21 @@ pub fn encode_binary_wal_record(entry: &WalEntry, commit_epoch: u64) -> Result<V
     validate_wal_op_values(std::slice::from_ref(&entry.op))?;
     let mut out = Vec::with_capacity(64);
     out.extend_from_slice(&entry.lsn.to_le_bytes());
+    let mut buffers = MessageEncodeBuffers::default();
     match &entry.op {
         WalOp::Batch(ops) => {
             out.push(RECORD_KIND_BATCH);
             out.extend_from_slice(&commit_epoch.to_le_bytes());
             out.extend_from_slice(&(ops.len() as u32).to_le_bytes());
             for op in ops {
-                encode_op_frame(op, &mut out)?;
+                encode_op_frame(op, &mut out, &mut buffers)?;
             }
         }
         op => {
             out.push(RECORD_KIND_SINGLE);
             out.extend_from_slice(&commit_epoch.to_le_bytes());
             out.extend_from_slice(&1u32.to_le_bytes());
-            encode_op_frame(op, &mut out)?;
+            encode_op_frame(op, &mut out, &mut buffers)?;
         }
     }
     Ok(out)
@@ -274,11 +289,56 @@ fn decode_binary_wal_record_inner(bytes: &[u8]) -> Result<BinaryWalRecordDecode>
     record_decode::decode_record(bytes, &OrdinaryOpDecoder)
 }
 
-fn encode_op_frame(op: &WalOp, out: &mut Vec<u8>) -> Result<()> {
-    let (op_code, body) = encode_op_body(op)?;
+// Bound cached scratch between operations or collection entries. Oversized
+// values must not retain their capacity solely for later siblings.
+const MAX_RETAINED_MESSAGE_BUFFER_BYTES: usize = 64 * 1024;
+
+#[derive(Default)]
+struct MessageEncodeBuffers {
+    body: Vec<u8>,
+    value: Vec<u8>,
+}
+
+impl MessageEncodeBuffers {
+    fn release_large_buffers(&mut self) {
+        for buffer in [&mut self.body, &mut self.value] {
+            release_large_message_buffer(buffer);
+        }
+    }
+}
+
+fn release_large_message_buffer(buffer: &mut Vec<u8>) {
+    if buffer.capacity() > MAX_RETAINED_MESSAGE_BUFFER_BYTES {
+        *buffer = Vec::new();
+    }
+}
+
+fn prepare_value_buffer(buffer: &mut Vec<u8>, value: &Value) {
+    // Match the former fresh-buffer lifetime before recursion. Retaining a
+    // preceding scalar's capacity at every ancestor would inflate deep values.
+    let recursive = match value {
+        Value::List(values) => !values.is_empty(),
+        Value::Map(values) => !values.is_empty(),
+        _ => false,
+    };
+    if recursive {
+        *buffer = Vec::new();
+    } else {
+        buffer.clear();
+    }
+}
+
+fn encode_op_frame(
+    op: &WalOp,
+    out: &mut Vec<u8>,
+    buffers: &mut MessageEncodeBuffers,
+) -> Result<()> {
+    buffers.body.clear();
+    let op_code = encode_op_body_into(op, &mut buffers.body, &mut buffers.value)?;
     encode_varint_u64(op_code, out);
-    encode_varint_u64(body.len() as u64, out);
-    out.extend_from_slice(&body);
+    encode_varint_u64(buffers.body.len() as u64, out);
+    out.extend_from_slice(&buffers.body);
+    buffers.release_large_buffers();
     Ok(())
 }
 
@@ -370,17 +430,14 @@ fn encode_value_message(value: &Value, out: &mut Vec<u8>) {
         | Value::LocalTime(_)
         | Value::LocalDateTime(_)
         | Value::DateTime(_)
-        | Value::Duration(_) => {
-            let mut payload = Vec::with_capacity(28);
-            let kind = hawdb_core::temporal::codec::encode_payload(value, &mut payload)
-                .expect("temporal values have a payload");
-            encode_len_field(temporal_value_field(kind), &payload, out);
-        }
+        | Value::Duration(_) => encode_temporal_value_message(value, out),
         Value::List(values) => {
+            let mut body = Vec::new();
             for value in values {
-                let mut body = Vec::new();
+                prepare_value_buffer(&mut body, value);
                 encode_value_message(value, &mut body);
                 encode_len_field(VALUE_FIELD_ELEMENT, &body, out);
+                release_large_message_buffer(&mut body);
             }
             // A list is identified by its elements; an empty list needs an
             // explicit marker so it does not decode as Null.
@@ -389,19 +446,30 @@ fn encode_value_message(value: &Value, out: &mut Vec<u8>) {
             }
         }
         Value::Map(values) => {
-            for (key, value) in values {
-                let mut body = Vec::new();
-                encode_string_field(ENTRY_FIELD_KEY, key, &mut body);
-                let mut value_body = Vec::new();
-                encode_value_message(value, &mut value_body);
-                encode_len_field(ENTRY_FIELD_VALUE, &value_body, &mut body);
-                encode_len_field(VALUE_FIELD_MAP_ENTRY, &body, out);
-            }
             if values.is_empty() {
                 encode_len_field(VALUE_FIELD_MAP_ENTRY, &[], out);
+            } else {
+                encode_properties_fields(VALUE_FIELD_MAP_ENTRY, values, out);
             }
         }
     }
+}
+
+// Keep fixed-width framing out of the recursive scalar/container dispatcher.
+#[inline(never)]
+fn encode_temporal_value_message(value: &Value, out: &mut Vec<u8>) {
+    let kind = hawdb_core::temporal::codec::TemporalValueKind::of(value)
+        .expect("temporal values have a kind");
+    let field = temporal_value_field(kind);
+    let payload_len = kind.payload_len();
+    // Temporal field tags and lengths each occupy one byte. Reserve the whole
+    // frame so an empty output does not grow between payload components.
+    debug_assert!(field < 16 && payload_len < 128);
+    out.reserve(2 + payload_len);
+    encode_tag(field, WIRE_TYPE_LEN, out);
+    encode_varint_u64(payload_len as u64, out);
+    hawdb_core::temporal::codec::encode_payload(value, out)
+        .expect("temporal values have a payload");
 }
 
 fn decode_value_message(bytes: &[u8], depth: usize) -> Result<Value> {
@@ -426,33 +494,41 @@ fn encode_properties_fields(
     properties: &BTreeMap<String, Value>,
     out: &mut Vec<u8>,
 ) {
+    let mut buffers = MessageEncodeBuffers::default();
     for (key, value) in properties {
-        let mut body = Vec::new();
-        encode_string_field(ENTRY_FIELD_KEY, key, &mut body);
-        let mut value_body = Vec::new();
-        encode_value_message(value, &mut value_body);
-        encode_len_field(ENTRY_FIELD_VALUE, &value_body, &mut body);
-        encode_len_field(field_id, &body, out);
+        prepare_value_buffer(&mut buffers.body, value);
+        prepare_value_buffer(&mut buffers.value, value);
+        encode_string_field(ENTRY_FIELD_KEY, key, &mut buffers.body);
+        encode_value_message(value, &mut buffers.value);
+        encode_len_field(ENTRY_FIELD_VALUE, &buffers.value, &mut buffers.body);
+        encode_len_field(field_id, &buffers.body, out);
+        buffers.release_large_buffers();
     }
 }
 
+#[cfg(test)]
 fn encode_op_body(op: &WalOp) -> Result<(u64, Vec<u8>)> {
-    let mut body = Vec::new();
+    let mut buffers = MessageEncodeBuffers::default();
+    let code = encode_op_body_into(op, &mut buffers.body, &mut buffers.value)?;
+    Ok((code, buffers.body))
+}
+
+fn encode_op_body_into(op: &WalOp, body: &mut Vec<u8>, value_body: &mut Vec<u8>) -> Result<u64> {
     let op_code = match op {
         WalOp::CreateNodeLabel { label } => {
-            encode_string_field(1, label, &mut body);
+            encode_string_field(1, label, body);
             OP_CREATE_NODE_LABEL
         }
         WalOp::CreateRelationshipType { rel_type } => {
-            encode_string_field(1, rel_type, &mut body);
+            encode_string_field(1, rel_type, body);
             OP_CREATE_RELATIONSHIP_TYPE
         }
         WalOp::CreateNodeTable { name } => {
-            encode_string_field(1, name, &mut body);
+            encode_string_field(1, name, body);
             OP_CREATE_NODE_TABLE
         }
         WalOp::CreateRelationshipTable { name } => {
-            encode_string_field(1, name, &mut body);
+            encode_string_field(1, name, body);
             OP_CREATE_RELATIONSHIP_TABLE
         }
         WalOp::CreateProperty {
@@ -463,32 +539,28 @@ fn encode_op_body(op: &WalOp) -> Result<(u64, Vec<u8>)> {
             nullable,
             default,
         } => {
-            encode_varint_field(1, table_kind_code(*table_kind), &mut body);
-            encode_string_field(2, table, &mut body);
-            encode_string_field(3, property, &mut body);
-            encode_varint_field(4, property_type_code(*value_type), &mut body);
-            encode_varint_field(5, u64::from(*nullable), &mut body);
+            encode_varint_field(1, table_kind_code(*table_kind), body);
+            encode_string_field(2, table, body);
+            encode_string_field(3, property, body);
+            encode_varint_field(4, property_type_code(*value_type), body);
+            encode_varint_field(5, u64::from(*nullable), body);
             match default {
                 None => OP_CREATE_PROPERTY,
                 Some(default) => {
                     match &default.value {
                         hawdb_core::PropertyDefault::CurrentTimestamp => {
-                            encode_varint_field(
-                                6,
-                                PROPERTY_DEFAULT_KIND_CURRENT_TIMESTAMP,
-                                &mut body,
-                            );
+                            encode_varint_field(6, PROPERTY_DEFAULT_KIND_CURRENT_TIMESTAMP, body);
                         }
                         hawdb_core::PropertyDefault::Value(value) => {
-                            encode_varint_field(6, PROPERTY_DEFAULT_KIND_CONSTANT, &mut body);
-                            let mut value_body = Vec::new();
-                            encode_value_message(value, &mut value_body);
-                            encode_len_field(7, &value_body, &mut body);
+                            encode_varint_field(6, PROPERTY_DEFAULT_KIND_CONSTANT, body);
+                            value_body.clear();
+                            encode_value_message(value, value_body);
+                            encode_len_field(7, value_body, body);
                         }
                     }
                     let mut backfill_body = Vec::new();
                     encode_value_message(&default.backfill_value, &mut backfill_body);
-                    encode_len_field(8, &backfill_body, &mut body);
+                    encode_len_field(8, &backfill_body, body);
                     OP_CREATE_PROPERTY_WITH_DEFAULT
                 }
             }
@@ -498,9 +570,9 @@ fn encode_op_body(op: &WalOp) -> Result<(u64, Vec<u8>)> {
             table,
             state,
         } => {
-            encode_varint_field(1, table_kind_code(*table_kind), &mut body);
-            encode_string_field(2, table, &mut body);
-            encode_varint_field(3, schema_object_state_code(*state), &mut body);
+            encode_varint_field(1, table_kind_code(*table_kind), body);
+            encode_string_field(2, table, body);
+            encode_varint_field(3, schema_object_state_code(*state), body);
             OP_ALTER_TABLE_STATE
         }
         WalOp::AlterPropertyState {
@@ -509,15 +581,15 @@ fn encode_op_body(op: &WalOp) -> Result<(u64, Vec<u8>)> {
             property,
             state,
         } => {
-            encode_varint_field(1, table_kind_code(*table_kind), &mut body);
-            encode_string_field(2, table, &mut body);
-            encode_string_field(3, property, &mut body);
-            encode_varint_field(4, schema_object_state_code(*state), &mut body);
+            encode_varint_field(1, table_kind_code(*table_kind), body);
+            encode_string_field(2, table, body);
+            encode_string_field(3, property, body);
+            encode_varint_field(4, schema_object_state_code(*state), body);
             OP_ALTER_PROPERTY_STATE
         }
         WalOp::GcTableDescriptor { table_kind, table } => {
-            encode_varint_field(1, table_kind_code(*table_kind), &mut body);
-            encode_string_field(2, table, &mut body);
+            encode_varint_field(1, table_kind_code(*table_kind), body);
+            encode_string_field(2, table, body);
             OP_GC_TABLE_DESCRIPTOR
         }
         WalOp::GcPropertyDescriptor {
@@ -525,51 +597,51 @@ fn encode_op_body(op: &WalOp) -> Result<(u64, Vec<u8>)> {
             table,
             property,
         } => {
-            encode_varint_field(1, table_kind_code(*table_kind), &mut body);
-            encode_string_field(2, table, &mut body);
-            encode_string_field(3, property, &mut body);
+            encode_varint_field(1, table_kind_code(*table_kind), body);
+            encode_string_field(2, table, body);
+            encode_string_field(3, property, body);
             OP_GC_PROPERTY_DESCRIPTOR
         }
         WalOp::CreateIndex { label, property } => {
-            encode_string_field(1, label, &mut body);
-            encode_string_field(2, property, &mut body);
+            encode_string_field(1, label, body);
+            encode_string_field(2, property, body);
             OP_CREATE_INDEX
         }
         WalOp::CreateCompositeIndex { label, properties } => {
-            encode_string_field(1, label, &mut body);
+            encode_string_field(1, label, body);
             for property in properties {
-                encode_string_field(2, property, &mut body);
+                encode_string_field(2, property, body);
             }
             OP_CREATE_COMPOSITE_INDEX
         }
         WalOp::CreateRangeIndex { label, property } => {
-            encode_string_field(1, label, &mut body);
-            encode_string_field(2, property, &mut body);
+            encode_string_field(1, label, body);
+            encode_string_field(2, property, body);
             OP_CREATE_RANGE_INDEX
         }
         WalOp::CreateFullTextIndex { label, property } => {
-            encode_string_field(1, label, &mut body);
-            encode_string_field(2, property, &mut body);
+            encode_string_field(1, label, body);
+            encode_string_field(2, property, body);
             OP_CREATE_FULL_TEXT_INDEX
         }
         WalOp::CreateUniqueConstraint { label, property } => {
-            encode_string_field(1, label, &mut body);
-            encode_string_field(2, property, &mut body);
+            encode_string_field(1, label, body);
+            encode_string_field(2, property, body);
             OP_CREATE_UNIQUE_CONSTRAINT
         }
         WalOp::CreateNodePropertyExistsConstraint { label, property } => {
-            encode_string_field(1, label, &mut body);
-            encode_string_field(2, property, &mut body);
+            encode_string_field(1, label, body);
+            encode_string_field(2, property, body);
             OP_CREATE_NODE_PROPERTY_EXISTS_CONSTRAINT
         }
         WalOp::CreateRelationshipUniqueConstraint { rel_type, property } => {
-            encode_string_field(1, rel_type, &mut body);
-            encode_string_field(2, property, &mut body);
+            encode_string_field(1, rel_type, body);
+            encode_string_field(2, property, body);
             OP_CREATE_RELATIONSHIP_UNIQUE_CONSTRAINT
         }
         WalOp::CreateRelationshipPropertyExistsConstraint { rel_type, property } => {
-            encode_string_field(1, rel_type, &mut body);
-            encode_string_field(2, property, &mut body);
+            encode_string_field(1, rel_type, body);
+            encode_string_field(2, property, body);
             OP_CREATE_RELATIONSHIP_PROPERTY_EXISTS_CONSTRAINT
         }
         WalOp::CreateNode {
@@ -577,9 +649,9 @@ fn encode_op_body(op: &WalOp) -> Result<(u64, Vec<u8>)> {
             label,
             properties,
         } => {
-            encode_varint_field(1, id.0, &mut body);
-            encode_string_field(2, label, &mut body);
-            encode_properties_fields(3, properties, &mut body);
+            encode_varint_field(1, id.0, body);
+            encode_string_field(2, label, body);
+            encode_properties_fields(3, properties, body);
             OP_CREATE_NODE
         }
         WalOp::CreateRelationship {
@@ -589,11 +661,11 @@ fn encode_op_body(op: &WalOp) -> Result<(u64, Vec<u8>)> {
             rel_type,
             properties,
         } => {
-            encode_varint_field(1, id.0, &mut body);
-            encode_varint_field(2, source.0, &mut body);
-            encode_varint_field(3, target.0, &mut body);
-            encode_string_field(4, rel_type, &mut body);
-            encode_properties_fields(5, properties, &mut body);
+            encode_varint_field(1, id.0, body);
+            encode_varint_field(2, source.0, body);
+            encode_varint_field(3, target.0, body);
+            encode_string_field(4, rel_type, body);
+            encode_properties_fields(5, properties, body);
             OP_CREATE_RELATIONSHIP
         }
         WalOp::SetNodeProperty {
@@ -601,11 +673,11 @@ fn encode_op_body(op: &WalOp) -> Result<(u64, Vec<u8>)> {
             property,
             value,
         } => {
-            encode_varint_field(1, id.0, &mut body);
-            encode_string_field(2, property, &mut body);
-            let mut value_body = Vec::new();
-            encode_value_message(value, &mut value_body);
-            encode_len_field(3, &value_body, &mut body);
+            encode_varint_field(1, id.0, body);
+            encode_string_field(2, property, body);
+            value_body.clear();
+            encode_value_message(value, value_body);
+            encode_len_field(3, value_body, body);
             OP_SET_NODE_PROPERTY
         }
         WalOp::SetRelationshipProperty {
@@ -613,19 +685,19 @@ fn encode_op_body(op: &WalOp) -> Result<(u64, Vec<u8>)> {
             property,
             value,
         } => {
-            encode_varint_field(1, id.0, &mut body);
-            encode_string_field(2, property, &mut body);
-            let mut value_body = Vec::new();
-            encode_value_message(value, &mut value_body);
-            encode_len_field(3, &value_body, &mut body);
+            encode_varint_field(1, id.0, body);
+            encode_string_field(2, property, body);
+            value_body.clear();
+            encode_value_message(value, value_body);
+            encode_len_field(3, value_body, body);
             OP_SET_RELATIONSHIP_PROPERTY
         }
         WalOp::DeleteNode { id } => {
-            encode_varint_field(1, id.0, &mut body);
+            encode_varint_field(1, id.0, body);
             OP_DELETE_NODE
         }
         WalOp::DeleteRelationship { id } => {
-            encode_varint_field(1, id.0, &mut body);
+            encode_varint_field(1, id.0, body);
             OP_DELETE_RELATIONSHIP
         }
         WalOp::ProjectGraph {
@@ -634,36 +706,36 @@ fn encode_op_body(op: &WalOp) -> Result<(u64, Vec<u8>)> {
             rel_types,
             relationship_predicates,
         } => {
-            encode_string_field(1, name, &mut body);
+            encode_string_field(1, name, body);
             for label in node_labels {
-                encode_string_field(2, label, &mut body);
+                encode_string_field(2, label, body);
             }
             for rel_type in rel_types {
-                encode_string_field(3, rel_type, &mut body);
+                encode_string_field(3, rel_type, body);
             }
             encode_string_field(
                 4,
                 &crate::projection::encode_projected_relationship_predicates(
                     relationship_predicates,
                 ),
-                &mut body,
+                body,
             );
             OP_PROJECT_GRAPH
         }
         WalOp::MarkInitialImportSource { source_fingerprint } => {
-            encode_string_field(1, source_fingerprint, &mut body);
+            encode_string_field(1, source_fingerprint, body);
             OP_MARK_INITIAL_IMPORT_SOURCE
         }
         WalOp::Relational { record } => {
-            encode_len_field(1, record, &mut body);
+            encode_len_field(1, record, body);
             OP_RELATIONAL
         }
         WalOp::RelationalSnapshot { record } => {
-            encode_len_field(1, record, &mut body);
+            encode_len_field(1, record, body);
             OP_RELATIONAL_SNAPSHOT
         }
         WalOp::Append { record } => {
-            encode_len_field(1, record, &mut body);
+            encode_len_field(1, record, body);
             OP_APPEND
         }
         WalOp::Batch(_) => {
@@ -672,7 +744,7 @@ fn encode_op_body(op: &WalOp) -> Result<(u64, Vec<u8>)> {
             ));
         }
     };
-    Ok((op_code, body))
+    Ok(op_code)
 }
 
 struct OpFields<'a> {
@@ -981,6 +1053,110 @@ mod tests {
             Value::DateTime(temporal::parse_datetime("2026-10-30T12:00:00-00:30:15").unwrap()),
             Value::duration(temporal::parse_duration("-P1Y2M3DT4H5M6.000000007S").unwrap()),
         ]
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn temporal_value_encoding_reuses_output_capacity() {
+        for value in temporal_values() {
+            let mut payload = Vec::with_capacity(28);
+            let kind = hawdb_core::temporal::codec::encode_payload(&value, &mut payload).unwrap();
+            assert_eq!(payload.len(), kind.payload_len());
+            let mut expected = vec![0xa5; 13];
+            encode_len_field(temporal_value_field(kind), &payload, &mut expected);
+            let mut actual = Vec::with_capacity(expected.len());
+            actual.extend_from_slice(&expected[..13]);
+            let observation = crate::test_allocator::AllocationObservation::start_all();
+            encode_value_message(&value, &mut actual);
+            let allocations = observation.finish();
+            assert_eq!(allocations, 0, "encoding {value:?}");
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn temporal_value_encoding_allocates_empty_output_once() {
+        for value in temporal_values() {
+            let mut payload = Vec::with_capacity(28);
+            let kind = hawdb_core::temporal::codec::encode_payload(&value, &mut payload).unwrap();
+            let mut expected = Vec::new();
+            encode_len_field(temporal_value_field(kind), &payload, &mut expected);
+            let mut actual = Vec::new();
+            let observation = crate::test_allocator::AllocationObservation::start_all();
+            encode_value_message(&value, &mut actual);
+            let allocations = observation.finish_stats();
+            assert_eq!(allocations.allocations, 1, "encoding {value:?}");
+            assert_eq!(allocations.allocated_bytes, expected.len().max(8));
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn temporal_batch_encoding_allocations_do_not_scale_per_value() {
+        for count in [1, 4096] {
+            for value in temporal_values() {
+                let properties = (0..count)
+                    .map(|id| (format!("{id:04}"), value.clone()))
+                    .collect::<BTreeMap<_, _>>();
+                for ops in [
+                    vec![
+                        WalOp::SetNodeProperty {
+                            id: NodeId(1),
+                            property: "created_at".into(),
+                            value: value.clone(),
+                        };
+                        count
+                    ],
+                    vec![WalOp::SetNodeProperty {
+                        id: NodeId(1),
+                        property: "dates".into(),
+                        value: Value::List(vec![value.clone(); count]),
+                    }],
+                    vec![WalOp::SetNodeProperty {
+                        id: NodeId(1),
+                        property: "dates".into(),
+                        value: Value::Map(properties.clone()),
+                    }],
+                    vec![WalOp::CreateNode {
+                        id: NodeId(1),
+                        label: "Note".into(),
+                        properties,
+                    }],
+                ] {
+                    let observation = crate::test_allocator::AllocationObservation::start_all();
+                    let prepared = PreparedWalBatch::prepare(&ops).unwrap();
+                    let allocations = observation.finish();
+                    assert!(
+                        allocations < 64,
+                        "{count} values allocated {allocations} times"
+                    );
+                    let entry = WalEntry {
+                        lsn: 7,
+                        op: WalOp::Batch(ops),
+                    };
+                    let expected = checkpoint::encode_binary_wal_record_with_work_context(
+                        &entry,
+                        11,
+                        &crate::background::CheckpointWorkContext::default(),
+                    )
+                    .unwrap();
+                    let ordinary = encode_binary_wal_record(&entry, 11).unwrap();
+                    assert_eq!(ordinary, &*expected);
+                    assert_eq!(prepared.bind(7, 11), ordinary);
+                    let BinaryWalRecordDecode::Entry {
+                        entry: decoded,
+                        commit_epoch,
+                    } = decode_binary_wal_record(&ordinary).unwrap()
+                    else {
+                        panic!("temporal batch rejected")
+                    };
+                    assert_eq!(commit_epoch, 11);
+                    assert_eq!(decoded.encode(), entry.encode());
+                }
+            }
+        }
     }
 
     #[test]
@@ -1410,6 +1586,10 @@ mod tests {
             for (lsn, epoch) in [(1, 2), (u64::MAX, u64::MAX)] {
                 let prepared = PreparedWalBatch::prepare(&ops[..len]).unwrap();
                 assert_eq!(prepared.operation_count(), len);
+                assert_eq!(
+                    prepared.changes_adjacency(),
+                    ops[..len].iter().any(WalOp::changes_adjacency)
+                );
                 let ordinary = encode_binary_wal_record(
                     &WalEntry {
                         lsn,
@@ -1420,6 +1600,247 @@ mod tests {
                 .unwrap();
                 assert_eq!(prepared.bind(lsn, epoch), ordinary);
             }
+        }
+    }
+
+    #[test]
+    fn reused_operation_buffers_match_independent_codec_after_large_and_small_values() {
+        let large = WalOp::SetNodeProperty {
+            id: NodeId(u64::MAX),
+            property: "body".into(),
+            value: Value::Binary(vec![7; 2 * MAX_RETAINED_MESSAGE_BUFFER_BYTES]),
+        };
+        let mut buffers = MessageEncodeBuffers::default();
+        encode_op_frame(&large, &mut Vec::new(), &mut buffers).unwrap();
+        assert_eq!(buffers.body.capacity(), 0);
+        assert_eq!(buffers.value.capacity(), 0);
+        let mut ops = vec![large];
+        ops.extend(
+            sample_ops()
+                .into_iter()
+                .filter(|op| !matches!(op, WalOp::Batch(_))),
+        );
+        ops.extend([
+            WalOp::SetNodeProperty {
+                id: NodeId(1),
+                property: String::new(),
+                value: Value::Null,
+            },
+            WalOp::SetRelationshipProperty {
+                id: RelId(2),
+                property: "empty".into(),
+                value: Value::String(String::new()),
+            },
+        ]);
+        let expected = checkpoint::encode_binary_wal_record_with_work_context(
+            &WalEntry {
+                lsn: 17,
+                op: WalOp::Batch(ops.clone()),
+            },
+            19,
+            &crate::background::CheckpointWorkContext::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            PreparedWalBatch::prepare(&ops).unwrap().bind(17, 19),
+            &*expected
+        );
+        assert_eq!(
+            encode_binary_wal_record(
+                &WalEntry {
+                    lsn: 17,
+                    op: WalOp::Batch(ops)
+                },
+                19
+            )
+            .unwrap(),
+            &*expected
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn scalar_batch_encoding_allocations_do_not_scale_per_operation() {
+        for count in [128, 4096] {
+            let ops = vec![
+                WalOp::SetNodeProperty {
+                    id: NodeId(1),
+                    property: "value".into(),
+                    value: Value::Int(3),
+                };
+                count
+            ];
+            let observation = crate::test_allocator::AllocationObservation::start_all();
+            let prepared = PreparedWalBatch::prepare(&ops).unwrap();
+            let allocations = observation.finish();
+            assert!(
+                allocations < 64,
+                "{count} operations allocated {allocations} times"
+            );
+            assert_eq!(prepared.operation_count(), count);
+        }
+    }
+
+    // Frozen pre-reuse container encoding is the allocation control. Scalar
+    // encoding is unchanged; checkpoint encoding independently checks wire bytes.
+    fn allocating_container_control(value: &Value, out: &mut Vec<u8>) {
+        match value {
+            Value::List(values) => {
+                for value in values {
+                    let mut body = Vec::new();
+                    allocating_container_control(value, &mut body);
+                    encode_len_field(VALUE_FIELD_ELEMENT, &body, out);
+                }
+                if values.is_empty() {
+                    encode_len_field(VALUE_FIELD_ELEMENT, &[], out);
+                }
+            }
+            Value::Map(values) => {
+                for (key, value) in values {
+                    let mut body = Vec::new();
+                    encode_string_field(ENTRY_FIELD_KEY, key, &mut body);
+                    let mut value_body = Vec::new();
+                    allocating_container_control(value, &mut value_body);
+                    encode_len_field(ENTRY_FIELD_VALUE, &value_body, &mut body);
+                    encode_len_field(VALUE_FIELD_MAP_ENTRY, &body, out);
+                }
+                if values.is_empty() {
+                    encode_len_field(VALUE_FIELD_MAP_ENTRY, &[], out);
+                }
+            }
+            _ => encode_value_message(value, out),
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn flat_collection_encoding_allocations_do_not_scale_per_element() {
+        let count = 4096;
+        for value in [
+            Value::List(vec![Value::Int(7); count]),
+            Value::List(vec![Value::List(Vec::new()); count]),
+            Value::List(vec![Value::Map(BTreeMap::new()); count]),
+            Value::Map(
+                (0..count)
+                    .map(|id| (format!("{id:04}"), Value::Int(7)))
+                    .collect(),
+            ),
+        ] {
+            let mut expected = Vec::new();
+            let control = crate::test_allocator::AllocationObservation::start_all();
+            allocating_container_control(&value, &mut expected);
+            let before = control.finish_stats();
+            let mut actual = Vec::new();
+            let observation = crate::test_allocator::AllocationObservation::start_all();
+            encode_value_message(&value, &mut actual);
+            let after = observation.finish_stats();
+            assert_eq!(actual, expected);
+            assert!(before.allocations >= count, "control: {before:?}");
+            assert!(after.allocations < 64, "optimized: {after:?}");
+            assert!(
+                after.allocated_bytes <= before.allocated_bytes,
+                "allocation traffic increased: {before:?} -> {after:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn reused_collection_buffers_preserve_recursive_values_and_length_boundaries() {
+        for length in [
+            0,
+            127,
+            128,
+            16_383,
+            16_384,
+            MAX_RETAINED_MESSAGE_BUFFER_BYTES + 1,
+        ] {
+            let mut value = Value::List(vec![
+                Value::Binary(vec![7; length]),
+                Value::Map(BTreeMap::from([
+                    ("a".into(), Value::Binary(vec![8; length])),
+                    ("b".into(), Value::List(vec![Value::Null, Value::Int(-7)])),
+                    ("c".into(), Value::String(String::new())),
+                ])),
+                Value::List(Vec::new()),
+                Value::Map(BTreeMap::new()),
+            ]);
+            for _ in 0..3 {
+                value = Value::Map(BTreeMap::from([
+                    ("a".into(), Value::Binary(vec![9; 1024])),
+                    ("b".into(), value),
+                    ("c".into(), Value::Int(0)),
+                ]));
+            }
+            let mut expected = Vec::new();
+            allocating_container_control(&value, &mut expected);
+            let mut actual = Vec::new();
+            encode_value_message(&value, &mut actual);
+            assert_eq!(actual, expected);
+            assert_eq!(decode_value_message(&actual, 1).unwrap(), value);
+            let entry = WalEntry {
+                lsn: 7,
+                op: WalOp::SetNodeProperty {
+                    id: NodeId(1),
+                    property: "nested".into(),
+                    value,
+                },
+            };
+            let independent = checkpoint::encode_binary_wal_record_with_work_context(
+                &entry,
+                11,
+                &crate::background::CheckpointWorkContext::default(),
+            )
+            .unwrap();
+            assert_eq!(encode_binary_wal_record(&entry, 11).unwrap(), &*independent);
+        }
+    }
+
+    #[test]
+    fn collection_scratch_does_not_retain_scalar_capacity_across_recursion() {
+        for value in [
+            Value::List(vec![Value::Null]),
+            Value::Map(BTreeMap::from([("key".into(), Value::Null)])),
+        ] {
+            let mut buffer = Vec::with_capacity(MAX_RETAINED_MESSAGE_BUFFER_BYTES);
+            buffer.push(7);
+            prepare_value_buffer(&mut buffer, &value);
+            assert_eq!(buffer.capacity(), 0);
+        }
+    }
+
+    #[test]
+    fn prepared_adjacency_impact_retains_node_only_and_relationship_controls() {
+        let node = WalOp::SetNodeProperty {
+            id: NodeId(1),
+            property: "value".into(),
+            value: Value::Int(2),
+        };
+        let relationship = WalOp::SetRelationshipProperty {
+            id: RelId(1),
+            property: "weight".into(),
+            value: Value::Int(3),
+        };
+        let marker = WalOp::MarkInitialImportSource {
+            source_fingerprint: "fixture".into(),
+        };
+        for (ops, expected) in [
+            (Vec::new(), false),
+            (vec![node.clone(); 128], false),
+            (vec![node.clone(), marker], false),
+            (vec![relationship.clone(), node.clone()], true),
+            (vec![node, relationship], true),
+        ] {
+            let prepared = PreparedWalBatch::prepare(&ops).unwrap();
+            assert_eq!(prepared.changes_adjacency(), expected);
+            let ordinary = encode_binary_wal_record(
+                &WalEntry {
+                    lsn: 3,
+                    op: WalOp::Batch(ops),
+                },
+                4,
+            )
+            .unwrap();
+            assert_eq!(prepared.bind(3, 4), ordinary);
         }
     }
 

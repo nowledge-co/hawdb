@@ -217,7 +217,7 @@ fn published_v2_requires_explicit_graph_values_even_without_carry() {
 }
 
 #[test]
-fn v2_graph_binding_round_trip_and_old_reader_refusal() {
+fn versioned_graph_binding_round_trip_and_old_reader_refusal() {
     let mut carried = published();
     carried.graph_artifact_generation = Some(3);
     carried.graph_artifact_source_commit_epoch = Some(20);
@@ -229,7 +229,7 @@ fn v2_graph_binding_round_trip_and_old_reader_refusal() {
     adjacency.source_commit_epoch = 20;
     carried.validate().unwrap();
     let encoded = carried.encode();
-    assert_eq!(encoded.lines().nth(1), Some("version\thawdb-storage-v2"));
+    assert_eq!(encoded.lines().nth(1), Some("version\thawdb-storage-v3"));
     // The old v1 validator rejects this version before any v2-only field.
     assert!(matches!(
         validate_storage_version(MANIFEST_STORAGE_VERSION),
@@ -270,13 +270,13 @@ fn v2_graph_binding_round_trip_and_old_reader_refusal() {
     replace(&mut legacy_with_new_fields, "version", STORAGE_VERSION);
     rejected(&frame(&legacy_with_new_fields));
     let mut future = fields(&encoded);
-    replace(&mut future, "version", "hawdb-storage-v3");
+    replace(&mut future, "version", "hawdb-storage-v4");
     assert!(matches!(
         DurableManifest::decode(&frame(&future)),
         Err(HawDBError::UnsupportedStorageFormat(
             hawdb_core::StorageFormatError::UnsupportedVersion {
-                found: 3,
-                supported: 2,
+                found: 4,
+                supported: 3,
                 ..
             }
         ))
@@ -461,7 +461,7 @@ fn compatibility_defaults_and_checksum_guards_remain_exact() {
         HawDBError::UnsupportedStorageFormat(hawdb_core::StorageFormatError::UnsupportedVersion {
             format: "storage manifest",
             found: 0,
-            supported: 2,
+            supported: 3,
         })
     );
     let mut malformed = fields(PUBLISHED);
@@ -606,4 +606,36 @@ impl Generator {
         self.0 ^= self.0 << 17;
         self.0 % bound
     }
+}
+
+#[test]
+fn independent_adjacency_origin_keeps_checkpoint_replay_boundary() {
+    let mut manifest = published();
+    manifest.graph_artifact_generation = Some(7);
+    manifest.graph_artifact_source_commit_epoch = Some(42);
+    let adjacency = manifest
+        .canonical_adjacency_generation_artifacts
+        .as_mut()
+        .unwrap();
+    adjacency.generation = 3;
+    adjacency.source_commit_epoch = 20;
+    let decoded = DurableManifest::decode(&manifest.encode()).unwrap();
+    assert_eq!(
+        decoded.canonical_adjacency_generation_artifacts,
+        manifest.canonical_adjacency_generation_artifacts
+    );
+    assert_eq!(decoded.checkpoint_commit_epoch, 42);
+    assert_eq!(decoded.wal_replay_start_lsn, manifest.wal_replay_start_lsn);
+    for version in [STORAGE_VERSION, "hawdb-storage-v2"] {
+        let mut legacy = fields(&manifest.encode());
+        replace(&mut legacy, "version", version);
+        rejected(&frame(&legacy));
+    }
+    // An older uniform v2 bundle remains readable; it cannot express mixed origins.
+    let uniform = published()
+        .encode()
+        .replace(MANIFEST_STORAGE_VERSION, "hawdb-storage-v2");
+    let body = uniform.rsplit_once("checksum\t").unwrap().0;
+    let uniform = format!("{body}checksum\t{}\n", checksum_bytes(body.as_bytes()));
+    DurableManifest::decode(&uniform).unwrap();
 }

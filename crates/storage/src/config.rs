@@ -14,7 +14,15 @@
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum DurabilityPolicy {
+    /// Flush complete transaction WAL records to the operating system before
+    /// acknowledging writes, without synchronizing each commit to storage.
+    /// Power loss may discard recent acknowledged transactions. Successful
+    /// checkpoint/seal boundaries synchronize covered writes; branch namespace
+    /// and head publication retain their required durability barriers.
+    /// Starting a new relaxed WAL interval may synchronize recovery metadata.
     SyncOnCheckpoint,
+    /// Synchronize transaction recovery dependencies before acknowledging a
+    /// commit. Grouped commits wait for their shared durability barrier.
     #[default]
     SyncOnEveryWrite,
 }

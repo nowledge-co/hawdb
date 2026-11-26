@@ -568,6 +568,16 @@ pub enum WalOp {
 }
 
 impl WalOp {
+    /// Whether adjacency must be rebuilt after committing this operation.
+    /// Relationship properties count because adjacency entries may inline them.
+    pub fn changes_adjacency(&self) -> bool {
+        match self {
+            Self::Batch(operations) => operations.iter().any(Self::changes_adjacency),
+            Self::SetNodeProperty { .. } => false,
+            _ => self.changes_graph(),
+        }
+    }
+
     /// Whether committing this operation changes graph data or graph schema.
     ///
     /// Node and relationship writes, graph DDL (labels, relationship types,

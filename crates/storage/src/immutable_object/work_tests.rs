@@ -126,6 +126,155 @@ fn sealed_publication_shares_inode_and_managed_writes_detach() {
 }
 
 #[test]
+#[cfg(unix)]
+fn direct_sealed_publication_needs_no_staging_entry_but_keeps_final_barrier() {
+    for staging in [true, false] {
+        let root = test_root("direct-sealed-barrier");
+        let (_project, path, payload, reference) = sealed_source(&root);
+        let mut store = ImmutableObjectStore::open(&root).unwrap();
+        let destination = store.prepare_kind_directory(reference).unwrap();
+        let blocked = if staging {
+            root.join(OBJECTS_DIRECTORY).join(STAGING_DIRECTORY)
+        } else {
+            destination.parent().unwrap().to_path_buf()
+        };
+        let failure = crate::durability::fail_sync_directory_for(&blocked);
+        let result = store.publish_sealed_file_with_work(reference, &path, BlockWork::default());
+        drop(failure);
+        if staging {
+            assert_eq!(result.unwrap(), PublishOutcome::Published);
+        } else {
+            assert!(matches!(
+                result,
+                Err(ImmutableObjectError::PublicationUncertain { .. })
+            ));
+            assert!(matches!(
+                store.publish_sealed_file_with_work(reference, &path, BlockWork::default()),
+                Err(ImmutableObjectError::PublisherPoisoned)
+            ));
+            let mut recovered = ImmutableObjectStore::open(&root).unwrap();
+            assert_eq!(
+                recovered
+                    .publish_sealed_file_with_work(reference, &path, BlockWork::default())
+                    .unwrap(),
+                PublishOutcome::Reused
+            );
+        }
+        assert_eq!(fs::read(&destination).unwrap(), payload);
+        assert_eq!(fs::read(&path).unwrap(), payload);
+        assert_eq!(staging_entries(&root), 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn direct_sealed_publication_refuses_replaced_source_and_retains_foreign_link() {
+    let root = test_root("direct-sealed-replacement");
+    let (_project, path, payload, reference) = sealed_source(&root);
+    let mut store = ImmutableObjectStore::open(&root).unwrap();
+    let destination = store.prepare_kind_directory(reference).unwrap();
+    let original_identity =
+        crate::native_file_identity::of_metadata(&std::fs::metadata(&path).unwrap());
+    let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+    let retained = path.with_extension("retained");
+    let source = path.clone();
+    let saved = retained.clone();
+    let replacement = payload.clone();
+    sealed::BEFORE_DIRECT_LINK.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move || {
+            std::fs::rename(&source, &saved).unwrap();
+            std::fs::write(&source, replacement).unwrap();
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&source)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(modified))
+                .unwrap();
+        }));
+    });
+    assert!(matches!(
+        store.publish_sealed_file_with_work(reference, &path, BlockWork::default()),
+        Err(ImmutableObjectError::PublicationUncertain { .. })
+    ));
+    assert_ne!(
+        crate::native_file_identity::of_metadata(&std::fs::metadata(&destination).unwrap()),
+        original_identity
+    );
+    assert_eq!(fs::read(&destination).unwrap(), payload);
+    assert_eq!(fs::read(&path).unwrap(), payload);
+    assert_eq!(fs::read(&retained).unwrap(), payload);
+    assert_eq!(staging_entries(&root), 0);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn direct_sealed_publication_power_loss_keeps_complete_payload_at_name_barrier() {
+    use crate::file_descriptors::ProjectFileDescriptors;
+    use crate::power_loss::{
+        image::{CrashPlan, ImageLimits},
+        IoEvent, ObservationBoundary, ObservationPoint, PowerLossModel,
+    };
+    for boundary in [ObservationBoundary::Before, ObservationBoundary::After] {
+        let root = test_root("direct-sealed-power-loss");
+        let project = ProjectFileDescriptors::acquire_with_capacity_limit(&root, 32, true).unwrap();
+        let model = PowerLossModel::attach(&project, ImageLimits::default()).unwrap();
+        let path = root.join("producer");
+        let payload = b"complete sealed checkpoint payload";
+        let mut file = File::create(&path).unwrap();
+        file.write_all(payload).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        crate::durability::sync_directory(&root).unwrap();
+        let reference = ObjectReference::for_bytes(ObjectKind::CheckpointArtifact, 1, payload);
+        let mut store = ImmutableObjectStore::open(&root).unwrap();
+        let destination = store.prepare_kind_directory(reference).unwrap();
+        model
+            .observe(ObservationPoint {
+                event: IoEvent::DirectorySync,
+                relative_path: PathBuf::from("objects/checkpoint-artifact"),
+                boundary,
+                skip_matches: 0,
+                include_descendants: false,
+                keep_last: false,
+            })
+            .unwrap();
+        store
+            .publish_sealed_file_with_work(reference, &path, BlockWork::default())
+            .unwrap();
+        let cut = model.take_observation().unwrap().unwrap();
+        let relative = destination.strip_prefix(&root).unwrap();
+        let lost = cut.crash(&CrashPlan::default()).unwrap();
+        if boundary == ObservationBoundary::Before {
+            assert!(lost.bytes(relative).is_none());
+        } else {
+            assert_eq!(lost.bytes(relative).unwrap(), payload);
+        }
+        assert_eq!(
+            cut.crash(&cut.persist_all_plan())
+                .unwrap()
+                .bytes(relative)
+                .unwrap(),
+            payload
+        );
+        assert_eq!(
+            model
+                .capture()
+                .unwrap()
+                .crash(&CrashPlan::default())
+                .unwrap()
+                .bytes(relative)
+                .unwrap(),
+            payload
+        );
+        drop(model);
+        drop(project);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
 fn public_file_publication_keeps_caller_writes_independent() {
     let root = test_root("public-copy");
     let (path, payload, reference) = source(&root);

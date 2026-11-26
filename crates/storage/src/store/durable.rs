@@ -83,6 +83,9 @@ fn stable_identity_error(error: StableIdentityMappingError) -> HawDBError {
 #[derive(Debug, Clone)]
 pub(super) struct DurableStore {
     pub(super) previous_graph_generation: Option<u64>,
+    pub(super) previous_adjacency_generation: Option<u64>,
+    graph_artifact_generation: u64,
+    pub(super) graph_artifact_source_commit_epoch: u64,
     pub(super) checkpoint_graph_catalog: Option<super::Catalog>,
     project_files: crate::file_descriptors::ProjectFileDescriptors,
     _directory_lease: Arc<DatabaseDirectoryLease>,
@@ -269,6 +272,8 @@ pub(super) struct CanonicalAdjacencyCheckpointArtifacts {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct CheckpointManifestArtifacts {
+    pub(super) graph_generation: u64,
+    pub(super) graph_source_commit_epoch: u64,
     pub(super) checkpoint: DurableArtifactMetadata,
     pub(super) relational_checkpoint: Option<DurableArtifactMetadata>,
     pub(super) canonical_manifest: DurableArtifactMetadata,
@@ -618,6 +623,11 @@ impl DurableStore {
             relational_checkpoint_encoded_checksum: None,
             relational_checkpoint_encoded_sha256: None,
             previous_graph_generation: None,
+            previous_adjacency_generation: None,
+            graph_artifact_generation: manifest
+                .graph_generation()
+                .unwrap_or(manifest.checkpoint_epoch),
+            graph_artifact_source_commit_epoch: manifest.graph_source_commit_epoch(),
             checkpoint_graph_catalog: None,
             canonical_manifest_encoded_len: manifest.canonical_manifest_encoded_len,
             canonical_manifest_encoded_checksum: manifest.canonical_manifest_encoded_checksum,

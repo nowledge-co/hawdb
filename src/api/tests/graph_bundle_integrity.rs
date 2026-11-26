@@ -59,12 +59,26 @@ fn reject_rebinding_carried_artifact(family: &str) {
             .canonical_relationship_count,
         1
     );
+    if family == "adjacency-descriptors" {
+        db.query("MATCH (n:Memory {id: 1}) SET n.title = 'updated'")
+            .unwrap();
+        db.checkpoint().unwrap();
+        db.query("MATCH (n:Memory {id: 1}) SET n.title = 'updated-again'")
+            .unwrap();
+        db.checkpoint().unwrap();
+    }
     let view = db.published_read_view().unwrap();
     let graph = view.graph_generation().unwrap().0;
-    assert!(graph < view.physical_generation().unwrap().0);
+    if family == "adjacency-descriptors" {
+        assert!(view.adjacency_generation().unwrap().0 < graph);
+    } else {
+        assert!(graph < view.physical_generation().unwrap().0);
+    }
     let name = match family {
         "adjacency-descriptors" => {
-            hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_page_file(graph)
+            hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_page_file(
+                view.adjacency_generation().unwrap().0,
+            )
         }
         "canonical-manifest" => {
             hawdb_storage::artifact_files::canonical_manifest_generation_file(graph)

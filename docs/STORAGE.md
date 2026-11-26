@@ -148,22 +148,28 @@ follows the same rule: an intact version of that family outside the reader's
 supported revisions returns `StorageFormatError::UnsupportedVersion { format:
 "storage manifest", found: N, supported }`; any other text is malformed.
 
-The outer manifest writer now emits `hawdb-storage-v2`, with the version line
-before the new graph binding fields. This reader accepts v1 and v2; a v1
-reader explicitly refuses v2. Checkpoint and graph payload codecs remain v1.
+The outer manifest writer now emits `hawdb-storage-v3`, with the version line
+before graph binding fields. This reader accepts v1, v2 and v3; older readers
+explicitly refuse v3. Checkpoint and graph payload codecs remain v1.
 `GraphStore::storage_version()` and `Database::storage_version()` report the
-outer writer revision (v2), rather than a common revision for every payload.
-The engine-wide persistent format version advances from 6 to 7 because an
+outer writer revision (v3), rather than a common revision for every payload.
+The engine-wide persistent format version advances from 7 to 8 because an
 older binary cannot open newly written manifests. Logical dumps remain the
 portable transfer mechanism; no automatic database recreation occurs.
+
+V3 permits adjacency to retain its independent, authenticated physical origin
+across node property updates. The canonical/spill/property bundle may be newer.
+Checkpoint coverage and the WAL replay boundary remain common to all families.
+See [incremental graph checkpoints](INCREMENTAL_GRAPH_CHECKPOINT.md) for the
+eligibility, reader pinning, reclamation and maintenance contracts.
 
 V2 separates checkpoint generation C and its logical commit from graph bundle
 generation G and source commit E. A relational-only checkpoint can carry all
 four graph families at their original G/E, with their original hashes and
 descriptor bindings, while writing the new catalog/relational checkpoint at C.
 Graph WAL changes, direct graph Catalog changes, missing admitted artifacts or
-non-default graph build configurations force a new bundle. No graph family is
-independently mixed with another generation. Current, previous, candidate and
+non-default graph build configurations force a new uniform bundle in v2.
+V3 permits the explicitly bound adjacency exception described above. Current, previous, candidate and
 reader graph roots protect G during reclamation without retaining unrelated
 old relational checkpoint files. See [graph bundle carry](GRAPH_BUNDLE_CARRY.md)
 for invariants, recovery boundaries and qualification limits.
@@ -206,15 +212,21 @@ the outer manifest `hawdb-storage-v2` described above. No release shipped
 version 6: HawDB 0.37 is version 5, and 0.38.0 is the first release with
 version 7.
 
+Version 8 ([#1960](https://github.com/nowledge-co/hawdb/issues/1960)) writes
+the outer manifest `hawdb-storage-v3` described above. It is the first format
+change since 0.38.0; releases that support only v2 refuse a v3 manifest.
+
 #### The first checkpoint by 0.38 or later is one-way
 
 HawDB 0.38 and later open a 0.37 database in place. Opening it, and commits
 that only append to the WAL, leave the v1 manifest in place; in measurements
-0.37 could still reopen the database. The first checkpoint publishes a v2
-manifest. From then on 0.37 and earlier refuse the database with
-`UnsupportedVersion { format: "storage manifest", found: 2, supported: 1 }`.
-They change nothing, and the newer release still opens it, but there is no way
-back in place.
+0.37 could still reopen the database. The first checkpoint by 0.38 through
+0.40 publishes a v2 manifest; from then on 0.37 and earlier refuse the database
+with `UnsupportedVersion { format: "storage manifest", found: 2, supported:
+1 }`. A release with persistent format 8 publishes a v3 manifest at its first
+checkpoint; releases that support only v2 refuse it with `found: 3, supported:
+2`, and 0.37 and earlier with `found: 3, supported: 1`. They change nothing,
+and the newer release still opens it, but there is no way back in place.
 
 An explicit `checkpoint()` is only one way this happens. None of the following
 needs a call from the host to checkpoint, and the first needs no write:
@@ -237,8 +249,9 @@ dump with the old release. A read-only open publishes no checkpoint.
 
 `DatabaseConfig::legacy_relational_checkpoint_file` does **not** keep a
 downgrade path. It writes the full-row file next to the row-page roots, but the
-checkpoint that writes it still publishes a v2 manifest, which 0.37 refuses
-before it reads either. No released reader needs the file, and each checkpoint
+checkpoint that writes it still publishes the current manifest
+(`hawdb-storage-v3` with persistent format 8), which older readers refuse
+before they read either. No released reader needs the file, and each checkpoint
 rewrites the complete relational state to produce it. To carry data back to an
 older release, export a logical dump with the newer release and import it with
 the older one. An import there is subject to that release's own limits: for

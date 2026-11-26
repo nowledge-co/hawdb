@@ -294,8 +294,8 @@ pub fn quarantine_directory(path: &Path, plan: &DerivedArtifactRepairPlan) -> Pa
 
 pub(super) fn validate_quarantine(path: &Path, record: &DerivedRepairAuditRecord) -> Result<()> {
     let quarantine = quarantine_directory(path, &record.plan);
-    let graph_generation = quarantined_graph_generation(&quarantine, &record.plan)?;
-    validate_quarantined_file_names(record, graph_generation)?;
+    let manifest = quarantined_manifest(&quarantine, &record.plan)?;
+    validate_quarantined_file_names(record, manifest)?;
     for expected in &record.quarantined_files {
         let actual = file_checksum(&quarantine.join(&expected.name))?;
         if actual.0 != expected.len
@@ -373,7 +373,7 @@ pub(super) fn validate_quarantine(path: &Path, record: &DerivedRepairAuditRecord
 
 fn validate_quarantined_file_names(
     record: &DerivedRepairAuditRecord,
-    graph_generation: u64,
+    manifest: DurableManifest,
 ) -> Result<()> {
     let mut allowed = vec![MANIFEST_FILE.to_string()];
     let required = if record.plan.branch.is_some() {
@@ -390,7 +390,7 @@ fn validate_quarantined_file_names(
         vec![MANIFEST_FILE]
     };
     for target in &record.plan.targets {
-        allowed.extend(target_files(*target, graph_generation));
+        allowed.extend(target_files(*target, target_generation(manifest, *target)?));
     }
     allowed.sort();
     allowed.dedup();
@@ -572,8 +572,8 @@ fn load_audit_record(path: &Path) -> Result<DerivedRepairAuditRecord> {
         .ok_or_else(|| HawDBError::Storage("repair audit has no parent directory".into()))?
         .join(DERIVED_QUARANTINE_DIRECTORY)
         .join(&record.plan.plan_id);
-    let graph_generation = quarantined_graph_generation(&quarantine, &record.plan)?;
-    validate_quarantined_file_names(&record, graph_generation)?;
+    let manifest = quarantined_manifest(&quarantine, &record.plan)?;
+    validate_quarantined_file_names(&record, manifest)?;
     Ok(record)
 }
 
@@ -615,11 +615,7 @@ fn repair_source_files(
     let mut files = match &plan.branch {
         Some(source) => {
             let published = super::published_branch(path, source)?;
-            let graph_generation = DurableManifest::load(&published.manifest_path)?
-                .graph_generation()
-                .ok_or_else(|| {
-                    HawDBError::Storage("repair source has no graph generation".into())
-                })?;
+            let manifest = DurableManifest::load(&published.manifest_path)?;
             let mut files = vec![
                 (MANIFEST_FILE.to_string(), published.manifest_path),
                 (BRANCH_HEAD_FILE.to_string(), path.join(BRANCH_HEAD_FILE)),
@@ -629,10 +625,12 @@ fn repair_source_files(
                 ),
                 (BRANCH_PRIVATE_WAL_FILE.to_string(), published.wal_path),
             ];
+            let mut target_names = Vec::new();
+            for target in &plan.targets {
+                target_names.extend(target_files(*target, target_generation(manifest, *target)?));
+            }
             for binding in published.root.checkpoint_bindings {
-                if plan.targets.iter().any(|target| {
-                    target_files(*target, graph_generation).contains(&binding.relative_path)
-                }) {
+                if target_names.contains(&binding.relative_path) {
                     files.push((
                         binding.relative_path,
                         published.objects.object_path(binding.reference),
@@ -642,14 +640,10 @@ fn repair_source_files(
             files
         }
         None => {
-            let graph_generation = DurableManifest::load(&path.join(MANIFEST_FILE))?
-                .graph_generation()
-                .ok_or_else(|| {
-                    HawDBError::Storage("repair source has no graph generation".into())
-                })?;
+            let manifest = DurableManifest::load(&path.join(MANIFEST_FILE))?;
             let mut names = vec![MANIFEST_FILE.to_string()];
             for target in &plan.targets {
-                names.extend(target_files(*target, graph_generation));
+                names.extend(target_files(*target, target_generation(manifest, *target)?));
             }
             names
                 .into_iter()
@@ -665,13 +659,13 @@ fn repair_source_files(
     Ok(files)
 }
 
-/// The audit already binds the complete source manifest. Recover the graph
-/// identity from that immutable evidence, even after the current selector has
+/// The audit already binds the complete source manifest. Recover both family
+/// identities from that immutable evidence, even after the current selector has
 /// advanced to the repaired generation; no extra audit protocol field is needed.
-fn quarantined_graph_generation(
+fn quarantined_manifest(
     quarantine: &Path,
     plan: &DerivedArtifactRepairPlan,
-) -> Result<u64> {
+) -> Result<DurableManifest> {
     let path = quarantine.join(MANIFEST_FILE);
     let actual = file_checksum(&path)?;
     if actual.0 != plan.manifest_len
@@ -683,9 +677,7 @@ fn quarantined_graph_generation(
                 .into(),
         ));
     }
-    DurableManifest::load(&path)?
-        .graph_generation()
-        .ok_or_else(|| HawDBError::Storage("repair quarantine has no graph generation".into()))
+    DurableManifest::load(&path)
 }
 
 fn file_name(path: &Path) -> Result<String> {
@@ -693,4 +685,14 @@ fn file_name(path: &Path) -> Result<String> {
         .and_then(|name| name.to_str())
         .map(str::to_string)
         .ok_or_else(|| HawDBError::Storage("derived repair path has no file name".to_string()))
+}
+
+fn target_generation(manifest: DurableManifest, kind: DerivedArtifactKind) -> Result<u64> {
+    match kind {
+        DerivedArtifactKind::CanonicalAdjacency => manifest
+            .canonical_adjacency_generation_artifacts
+            .map(|binding| binding.generation),
+        DerivedArtifactKind::PersistentPropertyProjection => manifest.graph_generation(),
+    }
+    .ok_or_else(|| HawDBError::Storage("repair target has no physical generation".into()))
 }

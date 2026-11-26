@@ -653,6 +653,7 @@ impl GraphStore {
         next.inherit_live_checkpoint_ownership(self);
         if let (Some(next_durable), Some(previous)) = (&mut next.durable, &self.durable) {
             next_durable.previous_graph_generation = Some(previous.graph_generation());
+            next_durable.previous_adjacency_generation = Some(previous.adjacency_generation());
         }
         if let Some(durable) = &mut next.durable {
             durable.wal_uncheckpointed_since = if replayed == 0 {

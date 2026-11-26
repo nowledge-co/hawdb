@@ -5286,3 +5286,187 @@ with `cargo test --locked -p hawdb-storage --lib -- graph_bundle durable_manifes
 `cargo test --locked -p hawdb --all-features --lib -- read_transaction_retains_carried_graph carried_graph_repair graph_bundle_carry`,
 and the model/evidence/mutant commands in `docs/tla/README.md`. These bounded
 fixtures do not qualify physical devices, Windows namespace behavior or LDBC/TPC-C throughput.
+
+
+### Independent adjacency checkpoint origin
+
+Issue: https://github.com/nowledge-co/hawdb/issues/1960.
+[Design and boundaries](INCREMENTAL_GRAPH_CHECKPOINT.md).
+The existing `//crates/storage:hawdb_storage_tests` owner includes the
+`store::graph_checkpoint::graph_bundle_tests` independent-adjacency cases:
+Materialized/OutOfCore repeated node-property updates, exact carried bytes,
+reopen/backup/restore/scrub, relationship-property invalidation, reader-owned
+adjacency retention independent of canonical files, release/reclamation and
+captured candidate relationship suffix replay, one-epoch mixed node-property
+and relational transaction replay, and Catalog/nondefault configuration refusal.
+Manifest codec guards cover v3
+independent origins, legacy uniform origins, future-version refusal and the
+common checkpoint replay boundary. The existing general root integrity family
+`api::tests::graph_bundle_integrity` now damages a descriptor carried across
+node-property checkpoints with A<G, requiring unchanged head, poisoned owner
+and invalidated captured reader. The existing general root read-transaction owner additionally pins an A<G
+snapshot across four relationship-property rebuilds, compares actual Cypher
+traversal rows with its original values, and verifies family-specific retention
+and release. Existing interrupted derived-repair fixtures
+quarantine and resume A<G sources on both sides of head publication. The existing
+power-loss carry fixture starts from populated A<G roots and retains the full
+lost/torn/reordered plan inventory under both durability policies. Existing test lanes, profiles, timeouts and
+feature matrices are unchanged. Replay through the owning targets, or the
+storage Cargo `graph_bundle_tests` / `durable_manifest::tests` filters.
+
+Manual benchmark (not CI):
+`cargo bench --locked -p hawdb-storage --bench graph_checkpoint_carry -- <new-root> <nodes> <edges> <rounds> <carry|rebuild>`.
+Two untimed warmups precede measured synchronized OutOfCore checkpoints. JSONL
+includes checkpoint duration and newly written graph/adjacency bytes. Node-only
+updates are paired with a relationship-property rebuild control; record
+verification, scrub and reopen run outside timing. Report compilation separately
+from execution and retain raw output. No first-build or remote CI speed claim
+follows from this local manual benchmark.
+
+The companion embedded API measurement includes immutable sealed-root closure
+validation and publication:
+`cargo run --locked --release --example graph_checkpoint_carry_bench -- <new-root> <nodes> <edges> <rounds> <carry|rebuild>`.
+It disables background maintenance through typed runtime configuration to keep
+checkpoint work inside explicit calls, and records synchronized mutation time
+separately. It uses identical workload and warmup conventions through fixture
+Cypher and the public `Database::checkpoint` API. Timed work excludes queries
+and record assertions; output labels the API explicitly. Keep these results
+separate from the low-level GraphStore measurement. Both default to
+SyncOnEveryWrite and verify records, scrub and reopen outside timing.
+The embedded example accepts `sync-every-write` or `sync-on-checkpoint` after
+the required arguments, independently of pacing and profiling options. The
+latter uses the existing typed durability policy: complete transaction WAL
+writes reach the OS cache before acknowledgment, without per-commit sync.
+Power loss may discard recent acknowledged writes; checkpoint/seal and branch
+publication retain their durability barriers. Ready and result rows identify
+the selected policy, which is also used for reopen. Compare modes on the same
+binary and report mutation and checkpoint tails separately; these are different
+durability guarantees, not an equivalent-durability performance improvement.
+Use `checkpoint-every=N` (positive integer, default 1) to compare repeated
+writes between barriers. Both warmups and the final measured write checkpoint;
+otherwise checkpoints follow the measured-write interval. Rows explicitly mark
+`checkpoint_performed`; skipped checkpoints have zero duration and new bytes
+and must be excluded from checkpoint percentiles. Include every mutation in
+write percentiles, including the first write after each checkpoint. Reopen also
+verifies every final updated property value. Keep interval and policy identical
+when comparing source revisions, and report both when comparing modes.
+
+The same embedded example supports optional `step-node` / `step-relationship`
+stdin pacing for immediate A/B and B/A operation pairs. Workers announce
+`hawdb-checkpoint-pair-v1`, manifest version and background-maintenance state,
+wait for `step` before each mutation/checkpoint, and wait for `finish` before
+scrub/reopen. Initialize both fixtures before timing and allow only one active
+worker. Record order and per-pair durations; keep full-run and paired evidence
+separate. This remains manual-only and introduces no CI execution lane.
+
+For manual Unix diagnosis, append `cpu-profile` after the step mode. Resource
+snapshots outside both wall timers report process-wide user/system CPU, faults,
+context switches and block counters. The existing typed telemetry sink supplies
+cumulative WAL append/flush durations and bytes. Subtract before/after counters
+per phase; process CPU includes all threads, and wall time minus CPU is not an
+I/O-only measurement. Telemetry and sampling overhead make these diagnostic
+runs distinct from ordinary acceptance measurements. Default runs install no
+sink and retain their timing boundaries; durability and checkpoint-interval
+fields are present independently of profiling.
+
+The existing storage WAL binary unit owner also checks pre-encoded adjacency
+impact for empty, node-only, mixed and relationship-property batches, together
+with exact ordinary/prepared WAL byte parity. Its cached classification must
+not change success-only publication or replay invalidation. The manual paired
+benchmark remains the foreground-performance acceptance owner; a removed
+operation scan alone does not establish an end-to-end improvement.
+
+The storage immutable-root unit owner also covers object-store custody across
+prepared handoff: already completed staging/kind ancestry barriers are retained,
+while final object-directory synchronization and full content verification still
+run. Directory fault injection distinguishes reuse from retargeting the public
+object-store path; restored-stamp corruption must fail before changing the head.
+Each refusal reopens the old head and replays the complete acknowledged writes.
+This remains in the existing storage unit lane; no new timing CI is introduced.
+
+Unix sealed-producer publication also has direct-link coverage in the same
+immutable-object storage unit owner: source bytes are fully hashed and synced,
+the installed link must match a held source inode, and the final object name
+barrier cannot be skipped. No intermediate staging name is created. Unsupported
+links retain copying and managed COW, while other platforms retain staging.
+Source replacement with identical bytes/restored mtime refuses publication and
+retains foreign link evidence. A focused PowerLossModel observation before and
+after the target directory barrier checks lost names versus complete persisted
+payloads; existing root lost/torn/reordered cases remain integration owners.
+
+The same storage unit owner includes `read_view::generation_identity_tests`:
+compact physical-origin representation must distinguish an absent checkpoint
+from generation zero and retain independent canonical/adjacency pins. A 64-bit
+compile-time size ceiling keeps the extra origin within the original 56-byte
+published identity. Public optional getters and diagnostic Debug formatting
+retain their previous semantics.
+
+Source-bound measurements, complete raw operation pairs, foreground controls,
+exploratory whole-run data and the remaining packed-identity acceptance gate
+are recorded in [PR #1961 evidence](benchmarks/pr1961/README.md). Its reference
+controller/analysis scripts remain manual developer artifacts; they add no CI
+job, scheduled campaign or production dependency.
+
+The [checkpoint synchronization investigation](benchmarks/pr1961/SYNC_INVESTIGATION.md)
+also owns manual v3/v3 handoff/publication comparisons and bounded macOS arm64
+per-call tracing. These are diagnostic artifacts outside CI. Traced timings and
+the rejected immediate-write logger never replace ordinary performance gates;
+complete raw pairs, compressed trace logs and ABI probe provenance are retained.
+
+### WAL batch encoding buffers
+
+The ordinary `//crates/storage:hawdb_storage_tests` owner covers record-local
+operation/value buffer reuse, independent checkpoint-codec byte equality after
+large-to-small payload transitions, and bounded native scalar-batch allocation
+counts. Existing all-operation/value wire fixtures, invalid nesting, replay and
+power-loss tests remain active. Scratch buffers above 64 KiB are released after
+each frame; no process/thread cache or persisted format is added.
+
+`cargo bench --locked -p hawdb-storage --bench wal_batch_encode -- <workload> <items> <rounds>`
+builds the manual step-controlled encoding-only diagnostic. After readiness,
+write one `step` per round plus two warmups to stdin, then `finish` after both
+paired workers have completed timing. Workloads are `node`, `relationship`,
+`large-small`, `list`, `map`, `temporal`, `temporal-list`, `temporal-map` and
+`temporal-properties`. Collection workloads encode one operation with the
+requested item count; other workloads encode that many operations. Readiness
+reports both counts. The finish barrier prevents final-process cleanup from
+overlapping the peer's last timed encoding. Its borrowed input setup,
+wire roundtrip and complete byte checks remain outside its encode timer. This
+is not synchronized commit throughput, query latency or tail acceptance. Keep
+it outside CI; strict workspace all-target Clippy still checks its source.
+
+[WAL encoding evidence](benchmarks/pr1961/WAL_ENCODING.md) retains the manual
+encoding-only pair controller, shared-host ordinary query pairs and separately
+instrumented 24/120-pair CPU/WAL/call diagnostics. These add no CI execution
+lane. Keep the measured byte checks, large-first payload control, source hashes,
+all unfavorable samples and compiler-idle acceptance blocker explicit.
+
+### Recursive WAL collection buffers
+
+The same `//crates/storage:hawdb_storage_tests` owner covers List/Map/property
+entry scratch reuse. A frozen allocating container control checks complete wire
+bytes and native allocation traffic: 4096 scalar elements or empty child containers must require at least
+4096 control allocation requests, fewer than 64 optimized requests, and no
+increase in total requested bytes. Counts are thread-local allocator requests,
+not elapsed time, live memory or process RSS, and remain useful on a busy host.
+
+Portable regressions cover empty containers, length-prefix transitions at
+127/128 and 16383/16384, oversized payloads followed by recursive/small values,
+independent checkpoint-codec equality and decode roundtrips. Scratch capacities
+above 64 KiB are released after each element/entry; before encoding a nonempty recursive
+child, preceding scalar capacity is released even below that cap. Empty child
+containers keep the nonrecursive reuse path. No new CI
+lane, persistent format or benchmark run is added. Compiler-idle full-query
+performance acceptance remains separate from these allocation contracts.
+
+The same unit owner covers direct fixed-width temporal payload encoding for all
+five temporal kinds, including negative durations and offset/calendar edges.
+A preallocated output with an existing prefix must encode without allocating
+and preserve the former framed bytes; an empty output must allocate once for
+the complete frame without intermediate payload growth. One- and 4096-value scalar batches,
+Lists, Maps and node property records must use fewer than 64 allocations and
+match the independent checkpoint encoder, prepared/ordinary bytes and decode
+roundtrips. These bounds include output growth; they do not measure live memory.
+The temporal payload codec, length prefix, default durability and recovery
+boundaries remain unchanged. Manual `temporal*` workloads measure elapsed
+encoding separately from the ordinary embedded query/checkpoint comparison.

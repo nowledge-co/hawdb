@@ -10,6 +10,8 @@ use hawdb_core::RuntimeIoWavePermit;
 
 #[cfg(test)]
 thread_local! {
+    #[cfg(unix)]
+    pub(super) static BEFORE_DIRECT_LINK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
     pub(super) static NEXT_LINK_ERROR: std::cell::Cell<Option<io::ErrorKind>> = const { std::cell::Cell::new(None) };
 }
 
@@ -62,11 +64,10 @@ impl ImmutableObjectStore {
             )
         } else if map_io("inspect sealed checkpoint binding", handles.binding(source))?.is_some() {
             (self.publish_file_with_work(reference, source, work)?, true)
-        } else if let Some((staging, stamp)) = self.stage_sealed_file(reference, source, work)? {
-            (
-                self.install_staged(reference, None, Some(stamp), &staging, &destination, work)?,
-                true,
-            )
+        } else if let Some(result) =
+            self.publish_fresh_sealed_file(reference, source, &destination, work)?
+        {
+            (result, true)
         } else {
             // Sharing is unavailable, but the copied object has been verified.
             // Keep the independent producer inode and bind managed reads/COW.
@@ -110,12 +111,116 @@ impl ImmutableObjectStore {
         Ok(result)
     }
 
-    fn stage_sealed_file(
-        &self,
+    fn publish_fresh_sealed_file(
+        &mut self,
         reference: ObjectReference,
         source: &Path,
+        destination: &Path,
         work: BlockWork<'_>,
-    ) -> Result<Option<(StagedFile, published::WrittenStamp)>, ImmutableObjectError> {
+    ) -> Result<Option<PublishOutcome>, ImmutableObjectError> {
+        #[cfg(unix)]
+        {
+            self.publish_direct_sealed_file(reference, source, destination, work)
+        }
+        #[cfg(not(unix))]
+        {
+            let Some((staging, stamp)) = self.stage_sealed_file(reference, source, work)? else {
+                return Ok(None);
+            };
+            self.install_staged(reference, None, Some(stamp), &staging, destination, work)
+                .map(Some)
+        }
+    }
+
+    #[cfg(unix)]
+    fn publish_direct_sealed_file(
+        &mut self,
+        reference: ObjectReference,
+        source: &Path,
+        destination: &Path,
+        work: BlockWork<'_>,
+    ) -> Result<Option<PublishOutcome>, ImmutableObjectError> {
+        use std::os::unix::fs::MetadataExt;
+
+        let Some((mut input, before)) = Self::open_sealed_source(source)? else {
+            return Ok(None);
+        };
+        // Cross-device copies remain the existing single streaming pass.
+        // Do not hash a source first when a native link cannot be attempted.
+        let source_device = map_io("inspect sealed source device", input.metadata())?.dev();
+        let destination_device = map_io(
+            "inspect sealed destination device",
+            fs::metadata(destination.parent().expect("object kind directory")),
+        )?
+        .dev();
+        if source_device != destination_device {
+            return Ok(None);
+        }
+        Self::verify_sealed_source(&mut input, reference, before, work)?;
+        #[cfg(test)]
+        BEFORE_DIRECT_LINK.with(|hook| {
+            if let Some(hook) = hook.borrow_mut().take() {
+                hook();
+            }
+        });
+        match link_source(source, destination) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                return self
+                    .validate_existing(reference, None, destination, work)
+                    .map(Some);
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::CrossesDevices | io::ErrorKind::Unsupported
+                ) =>
+            {
+                return Ok(None);
+            }
+            Err(source) => {
+                self.poisoned = true;
+                return Err(ImmutableObjectError::PublicationUncertain { source });
+            }
+        }
+        // The held source prevents inode reuse. Never acknowledge a link to a
+        // replacement source, even if its bytes, length and timestamps match.
+        // On uncertainty retain the final entry as evidence; do not unlink a
+        // possibly foreign birth by its saved pathname.
+        let unchanged = (|| -> io::Result<bool> {
+            let linked = fs::symlink_metadata(destination)?;
+            let held = input.metadata()?;
+            Ok(linked.is_file()
+                && crate::native_file_identity::of_metadata(&linked)
+                    == crate::native_file_identity::of_metadata(&held)
+                && input.with_native(published::WrittenStamp::of_native)? == before)
+        })();
+        let validation = unchanged.and_then(|unchanged| {
+            if unchanged {
+                Ok(())
+            } else {
+                Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "sealed publication source binding changed",
+                ))
+            }
+        });
+        // Match the staged path's descriptor lifetime: the verified link now
+        // owns the inode, so the final directory flush needs no source FD.
+        drop(input);
+        if let Err(source) =
+            validation.and_then(|()| sync_publication_directories(destination, None))
+        {
+            self.poisoned = true;
+            return Err(ImmutableObjectError::PublicationUncertain { source });
+        }
+        published::record(reference, before);
+        Ok(Some(PublishOutcome::Published))
+    }
+
+    fn open_sealed_source(
+        source: &Path,
+    ) -> Result<Option<(File, published::WrittenStamp)>, ImmutableObjectError> {
         let metadata = map_io(
             "inspect sealed checkpoint source",
             fs::symlink_metadata(source),
@@ -125,7 +230,7 @@ impl ImmutableObjectStore {
         }
         // Windows FlushFileBuffers requires write access. This is a counted
         // native handle to a fresh, unbound, exclusively owned producer file.
-        let mut input = match OpenOptions::new().read(true).write(true).open(source) {
+        let input = match OpenOptions::new().read(true).write(true).open(source) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::PermissionDenied => return Ok(None),
             Err(source) => {
@@ -144,6 +249,55 @@ impl ImmutableObjectStore {
                     source,
                 })
             }
+        };
+        Ok(Some((input, before)))
+    }
+
+    fn verify_sealed_source(
+        input: &mut File,
+        reference: ObjectReference,
+        before: published::WrittenStamp,
+        work: BlockWork<'_>,
+    ) -> Result<(), ImmutableObjectError> {
+        let mut identity = ObjectReferenceWriter::new(
+            reference.kind,
+            reference.format_version,
+            reference.byte_length,
+        )?;
+        let mut buffer = vec![0; STREAM_BUFFER_BYTES];
+        loop {
+            let length = work.block(block_work_error, || {
+                let length = map_io("read immutable object source", input.read(&mut buffer))?;
+                identity
+                    .write_all(&buffer[..length])
+                    .map_err(|_| ImmutableObjectError::ReferenceMismatch)?;
+                Ok(length)
+            })?;
+            if length == 0 {
+                break;
+            }
+        }
+        if identity.finish()? != reference
+            || map_io(
+                "recheck sealed checkpoint source",
+                input.with_native(published::WrittenStamp::of_native),
+            )? != before
+        {
+            return Err(ImmutableObjectError::ReferenceMismatch);
+        }
+        map_io("sync sealed checkpoint source", input.sync_all())?;
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    fn stage_sealed_file(
+        &self,
+        reference: ObjectReference,
+        source: &Path,
+        work: BlockWork<'_>,
+    ) -> Result<Option<(StagedFile, published::WrittenStamp)>, ImmutableObjectError> {
+        let Some((mut input, before)) = Self::open_sealed_source(source)? else {
+            return Ok(None);
         };
         let sequence = STAGING_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let path = self
@@ -184,33 +338,7 @@ impl ImmutableObjectStore {
         if linked_stamp != before {
             return Err(ImmutableObjectError::ReferenceMismatch);
         }
-        let mut identity = ObjectReferenceWriter::new(
-            reference.kind,
-            reference.format_version,
-            reference.byte_length,
-        )?;
-        let mut buffer = vec![0; STREAM_BUFFER_BYTES];
-        loop {
-            let length = work.block(block_work_error, || {
-                let length = map_io("read immutable object source", input.read(&mut buffer))?;
-                identity
-                    .write_all(&buffer[..length])
-                    .map_err(|_| ImmutableObjectError::ReferenceMismatch)?;
-                Ok(length)
-            })?;
-            if length == 0 {
-                break;
-            }
-        }
-        if identity.finish()? != reference
-            || map_io(
-                "recheck sealed checkpoint source",
-                input.with_native(published::WrittenStamp::of_native),
-            )? != before
-        {
-            return Err(ImmutableObjectError::ReferenceMismatch);
-        }
-        map_io("sync sealed checkpoint source", input.sync_all())?;
+        Self::verify_sealed_source(&mut input, reference, before, work)?;
         drop(input);
         Ok(Some((staging, before)))
     }

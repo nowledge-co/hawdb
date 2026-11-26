@@ -201,6 +201,11 @@ impl HawDBEmbeddedOpenOptions {
         self
     }
 
+    /// Select commit durability explicitly. The default is
+    /// [`DurabilityPolicy::SyncOnEveryWrite`]. Use
+    /// [`DurabilityPolicy::SyncOnCheckpoint`] for OS-buffered WAL writes without
+    /// per-commit synchronization, accepting loss of recent acknowledged writes
+    /// after power failure. Checkpoint and branch publication barriers remain.
     pub fn with_durability(mut self, durability: DurabilityPolicy) -> Self {
         self.durability = durability;
         self

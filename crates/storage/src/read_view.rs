@@ -394,20 +394,24 @@ impl<T> AdmittedVec<T> {
 /// The logical commit epoch controls visibility. The physical generation only
 /// identifies the checkpoint base beneath that logical snapshot; later commits
 /// may be represented by an immutable delta without changing the base.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct PublishedReadView {
     visible_commit_epoch: u64,
     checkpoint_commit_epoch: Option<u64>,
     physical_generation: Option<ManifestGeneration>,
-    graph_generation: Option<ManifestGeneration>,
+    // Both origins exist exactly when the physical checkpoint exists. Store
+    // their values without repeating its presence bit in every reader pin.
+    graph_generation: u64,
+    adjacency_generation: u64,
 }
 
-/// Checkpoint and graph bases retained by live readers. Keeping the families
-/// separate avoids retaining unrelated old relational files with a graph base.
+/// Checkpoint, canonical graph and adjacency bases retained by live readers.
+/// Separate families avoid retaining unrelated files at an adjacency origin.
 #[derive(Debug, Clone, Default)]
 pub struct PhysicalGenerationPins {
     checkpoints: std::collections::BTreeSet<u64>,
     graphs: std::collections::BTreeSet<u64>,
+    adjacencies: std::collections::BTreeSet<u64>,
     branch_wals: std::collections::BTreeSet<u64>,
 }
 
@@ -417,6 +421,10 @@ impl PhysicalGenerationPins {
     }
     pub(crate) fn graph_generations(&self) -> &std::collections::BTreeSet<u64> {
         &self.graphs
+    }
+
+    pub(crate) fn adjacency_generations(&self) -> &std::collections::BTreeSet<u64> {
+        &self.adjacencies
     }
 
     pub(crate) fn retains_branch_wal(&self, generation: u64) -> bool {
@@ -438,7 +446,9 @@ impl PhysicalGenerationPins {
             pins.checkpoints
                 .extend(view.physical_generation.map(|generation| generation.0));
             pins.graphs
-                .extend(view.graph_generation.map(|generation| generation.0));
+                .extend(view.graph_generation().map(|generation| generation.0));
+            pins.adjacencies
+                .extend(view.adjacency_generation().map(|generation| generation.0));
         }
         pins
     }
@@ -464,22 +474,44 @@ impl PublishedReadView {
             visible_commit_epoch,
             checkpoint_commit_epoch,
             physical_generation,
-            graph_generation: physical_generation,
+            graph_generation: physical_generation.map_or(0, |generation| generation.0),
+            adjacency_generation: physical_generation.map_or(0, |generation| generation.0),
         }
     }
 
     #[doc(hidden)]
     pub fn with_graph_generation(mut self, generation: Option<ManifestGeneration>) -> Self {
         debug_assert_eq!(self.physical_generation.is_some(), generation.is_some());
-        self.graph_generation = generation;
+        self.graph_generation = generation.map_or(0, |generation| generation.0);
+        self.adjacency_generation = self.graph_generation;
         self
+    }
+
+    #[doc(hidden)]
+    pub fn with_adjacency_generation(mut self, generation: Option<ManifestGeneration>) -> Self {
+        debug_assert_eq!(self.physical_generation.is_some(), generation.is_some());
+        self.adjacency_generation = generation.map_or(0, |generation| generation.0);
+        self
+    }
+
+    /// Adjacency origin retained independently from the canonical graph bundle.
+    pub const fn adjacency_generation(self) -> Option<ManifestGeneration> {
+        match self.physical_generation {
+            Some(_) => Some(ManifestGeneration(self.adjacency_generation)),
+            None => None,
+        }
     }
 
     /// All physical bases that must remain alive for this read.
     pub fn physical_generations(self) -> impl Iterator<Item = ManifestGeneration> {
-        [self.physical_generation, self.graph_generation]
-            .into_iter()
-            .flatten()
+        [
+            self.physical_generation,
+            self.graph_generation(),
+            self.adjacency_generation()
+                .filter(|generation| Some(*generation) != self.graph_generation()),
+        ]
+        .into_iter()
+        .flatten()
     }
 
     pub const fn visible_commit_epoch(self) -> u64 {
@@ -497,7 +529,10 @@ impl PublishedReadView {
     /// Graph bundle retained by this view, which may precede the checkpoint
     /// generation when a checkpoint carries unchanged graph artifacts.
     pub const fn graph_generation(self) -> Option<ManifestGeneration> {
-        self.graph_generation
+        match self.physical_generation {
+            Some(_) => Some(ManifestGeneration(self.graph_generation)),
+            None => None,
+        }
     }
 
     pub const fn physical_base_is_current(self) -> bool {
@@ -512,5 +547,72 @@ impl PublishedReadView {
             self.checkpoint_commit_epoch,
             Some(checkpoint_commit_epoch) if checkpoint_commit_epoch < self.visible_commit_epoch
         )
+    }
+}
+
+// The extra family must not grow the original pin on 64-bit targets.
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(std::mem::size_of::<PublishedReadView>() <= 56);
+
+impl std::fmt::Debug for PublishedReadView {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PublishedReadView")
+            .field("visible_commit_epoch", &self.visible_commit_epoch)
+            .field("checkpoint_commit_epoch", &self.checkpoint_commit_epoch)
+            .field("physical_generation", &self.physical_generation)
+            .field("graph_generation", &self.graph_generation())
+            .field("adjacency_generation", &self.adjacency_generation())
+            .finish()
+    }
+}
+
+#[cfg(test)]
+mod generation_identity_tests {
+    use super::*;
+
+    #[test]
+    fn compact_origins_preserve_absent_zero_and_independent_generations() {
+        let absent = PublishedReadView::new(0, None, None);
+        assert_eq!(absent.graph_generation(), None);
+        assert_eq!(absent.adjacency_generation(), None);
+        assert_eq!(absent.physical_generations().count(), 0);
+        let zero = PublishedReadView::new(0, Some(0), Some(ManifestGeneration(0)));
+        assert_eq!(zero.graph_generation(), Some(ManifestGeneration(0)));
+        assert_eq!(zero.adjacency_generation(), Some(ManifestGeneration(0)));
+        let mixed = PublishedReadView::new(9, Some(8), Some(ManifestGeneration(7)))
+            .with_graph_generation(Some(ManifestGeneration(5)))
+            .with_adjacency_generation(Some(ManifestGeneration(2)));
+        assert_eq!(
+            mixed
+                .physical_generations()
+                .map(|generation| generation.0)
+                .collect::<Vec<_>>(),
+            vec![7, 5, 2]
+        );
+        assert_eq!(format!("{mixed:?}"), concat!(
+            "PublishedReadView { visible_commit_epoch: 9, checkpoint_commit_epoch: Some(8), ",
+            "physical_generation: Some(ManifestGeneration(7)), graph_generation: Some(ManifestGeneration(5)), ",
+            "adjacency_generation: Some(ManifestGeneration(2)) }",
+        ));
+        let pins = PhysicalGenerationPins::from_views([absent, zero, mixed]);
+        assert_eq!(
+            pins.checkpoint_generations()
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![0, 7]
+        );
+        assert_eq!(
+            pins.graph_generations().iter().copied().collect::<Vec<_>>(),
+            vec![0, 5]
+        );
+        assert_eq!(
+            pins.adjacency_generations()
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![0, 2]
+        );
     }
 }
