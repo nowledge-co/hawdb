@@ -157,7 +157,22 @@ pub(crate) fn group_output_binding(
 #[cfg(test)]
 thread_local! {
     static LEGACY_MAP_KEYS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static AFTER_KEY_EVALUATED: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
 }
+
+#[cfg(test)]
+fn run_after_key_test_hook() {
+    AFTER_KEY_EVALUATED.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+fn run_after_key_test_hook() {}
 
 /// Groups by materialized entity maps, as before #1615, on this thread while
 /// `f` runs. The differential tests compare it with identity grouping.
@@ -273,13 +288,16 @@ impl KeyMemory {
                 .saturating_mul(std::mem::size_of::<GroupKeyValue>()),
         )?;
         let mut values = Vec::with_capacity(items.len());
-        // One cancellation/deadline check per row is enough; repeating it per
-        // key adds an `Instant::now` for every ORDER BY/GROUP BY expression.
+        // Cheap entity keys stay on the fast path. Any expression evaluation
+        // can consume the list work budget without observing cancellation, so
+        // re-check before entering it and before copying a variable payload.
         for item in items {
             if let Some(entity) = entity_group_key(&item.expression, binding) {
                 values.push(entity);
+                run_after_key_test_hook();
                 continue;
             }
+            runtime_checkpoint(task_context)?;
             let value = evaluate_projection_in_graph(
                 &item.expression,
                 catalog,
@@ -287,9 +305,13 @@ impl KeyMemory {
                 Some(&self.evaluation),
                 graph,
             )?;
+            if value.requires_materialization_checkpoint() {
+                runtime_checkpoint(task_context)?;
+            }
             values.push(GroupKeyValue::Value(
                 value.into_owned_accounted(&mut allocation)?,
             ));
+            run_after_key_test_hook();
         }
         runtime_checkpoint(task_context)?;
         Ok(PreparedKey { values, allocation })
@@ -309,8 +331,9 @@ impl KeyMemory {
                 .saturating_mul(std::mem::size_of::<(Value, SortDirection)>()),
         )?;
         let mut values = Vec::with_capacity(items.len());
-        // One cancellation/deadline check per row is enough; repeating it per
-        // sort key adds an `Instant::now` for every ORDER BY expression.
+        // Property/id/column keys are bounded lookups. Expression evaluation
+        // may consume the list work budget without observing cancellation, so
+        // check before it and before materializing a variable payload.
         for item in items {
             let value = match &item.key {
                 SortKey::Property { variable, property } => {
@@ -323,20 +346,27 @@ impl KeyMemory {
                 }
                 // Planning projects pattern expressions in ORDER BY keys to
                 // columns first, so a sort key never reads the graph.
-                SortKey::Expression(expression) => evaluate_projection_in_graph(
-                    expression,
-                    catalog,
-                    binding,
-                    Some(&self.evaluation),
-                    None,
-                )?,
+                SortKey::Expression(expression) => {
+                    runtime_checkpoint(task_context)?;
+                    evaluate_projection_in_graph(
+                        expression,
+                        catalog,
+                        binding,
+                        Some(&self.evaluation),
+                        None,
+                    )?
+                }
                 SortKey::Column(name) => binding
                     .values
                     .get(name)
                     .map(ProjectedValue::borrowed)
                     .unwrap_or_else(|| ProjectedValue::scalar(Value::Null)),
             };
+            if value.requires_materialization_checkpoint() {
+                runtime_checkpoint(task_context)?;
+            }
             values.push((value.into_owned_accounted(&mut allocation)?, item.direction));
+            run_after_key_test_hook();
         }
         runtime_checkpoint(task_context)?;
         Ok(PreparedKey { values, allocation })
@@ -434,6 +464,114 @@ mod tests {
             );
             assert_eq!(ledger.snapshot().used_bytes, 0);
         }
+    }
+
+    fn with_after_key_hook<T>(hook: impl FnOnce() + 'static, f: impl FnOnce() -> T) -> T {
+        struct Clear;
+        impl Drop for Clear {
+            fn drop(&mut self) {
+                AFTER_KEY_EVALUATED.with(|slot| {
+                    slot.borrow_mut().take();
+                });
+            }
+        }
+        AFTER_KEY_EVALUATED.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(hook));
+        });
+        let _clear = Clear;
+        f()
+    }
+
+    fn cancellation_after_first_key() -> (RuntimeTaskContext, Value) {
+        let cancellation = hawdb_core::RuntimeCancellationToken::new();
+        let context = RuntimeTaskContext::without_deadline(cancellation.clone());
+        (context, Value::Int(1))
+    }
+
+    #[test]
+    fn sort_observes_cancellation_between_keys_before_a_later_expression() {
+        let budget = NonZeroUsize::new(1 << 20).unwrap();
+        let ledger = QueryMemoryLedger::new(budget);
+        let retained = ledger.account(QueryMemoryClass::BlockingState, "retained", budget);
+        let memory = KeyMemory::new(&retained, budget, "test", "evaluation", "keys");
+        let (context, first) = cancellation_after_first_key();
+        let cancellation = context.cancellation().clone();
+        let binding = Binding::scalar("first", first);
+        let items = [
+            SortItem {
+                key: SortKey::Column("first".into()),
+                direction: SortDirection::Asc,
+            },
+            SortItem {
+                key: SortKey::Expression(ProjectionExpression::JsonValue {
+                    expression: Box::new(ProjectionExpression::Literal(Value::String(
+                        "{invalid".into(),
+                    ))),
+                    path: "$.source".into(),
+                    null_on_non_scalar: false,
+                }),
+                direction: SortDirection::Asc,
+            },
+        ];
+        let error = with_after_key_hook(
+            move || {
+                cancellation.cancel();
+            },
+            || memory.sort(&items, &Catalog::default(), &binding, Some(&context)),
+        )
+        .err()
+        .expect("cancellation between keys must stop the later expression");
+        assert!(matches!(
+            error,
+            hawdb_core::HawDBError::RuntimeTaskStopped(_)
+        ));
+    }
+
+    #[test]
+    fn identity_grouping_observes_cancellation_between_keys_before_a_later_expression() {
+        let budget = NonZeroUsize::new(1 << 20).unwrap();
+        let ledger = QueryMemoryLedger::new(budget);
+        let retained = ledger.account(QueryMemoryClass::BlockingState, "retained", budget);
+        let memory = KeyMemory::new(&retained, budget, "test", "evaluation", "keys");
+        let (context, first) = cancellation_after_first_key();
+        let cancellation = context.cancellation().clone();
+        let binding = Binding::scalar("first", first);
+        let items = [
+            Projection {
+                expression: ProjectionExpression::Column("first".into()),
+                name: "first".into(),
+            },
+            Projection {
+                expression: ProjectionExpression::JsonValue {
+                    expression: Box::new(ProjectionExpression::Literal(Value::String(
+                        "{invalid".into(),
+                    ))),
+                    path: "$.source".into(),
+                    null_on_non_scalar: false,
+                },
+                name: "second".into(),
+            },
+        ];
+        let error = with_after_key_hook(
+            move || {
+                cancellation.cancel();
+            },
+            || {
+                memory.group_by_identity(
+                    &items,
+                    &Catalog::default(),
+                    &binding,
+                    Some(&context),
+                    None,
+                )
+            },
+        )
+        .err()
+        .expect("cancellation between keys must stop the later expression");
+        assert!(matches!(
+            error,
+            hawdb_core::HawDBError::RuntimeTaskStopped(_)
+        ));
     }
 
     #[test]
