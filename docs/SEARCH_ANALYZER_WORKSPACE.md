@@ -170,6 +170,11 @@ cargo clippy -p hawdb-search --all-targets -- -D warnings
 bazel test //crates/search:all //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests //:hawdb_linux_ci_fuzz_smoke_test
 ```
 
+The Jieba-dependent allocation oracle and its capacity assertion are native-only.
+Browser WASM omits Jieba and covers the fallback with
+`cjk_tokenizer::tests::browser_fallback_keeps_han_ngrams_without_jieba`, compiled
+by `cargo check -p hawdb-search --no-default-features --target wasm32-unknown-unknown --lib --tests`.
+
 HawDB-owned normalized strings, identifier deduplication and resident frequencies
 now retain their own admission; see [the token ownership contract](SEARCH_TOKEN_OWNERSHIP.md).
 Spill/merge ownership, outer publication and delta hydration are integrated through

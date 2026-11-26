@@ -139,7 +139,7 @@ fn idle_writer_and_prepared_token_release_wave_and_single_slot_partitions_comple
                 },
                 RuntimeTaskContext::new(
                     hawdb_core::RuntimeCancellationToken::new(),
-                    Some(std::time::Instant::now() + Duration::from_secs(20)),
+                    Some(hawdb_core::time::Instant::now() + Duration::from_secs(20)),
                 ),
             )
             .unwrap();
@@ -271,7 +271,7 @@ fn input_build_and_publish_wait_before_native_changes_and_cancel_cleanly() {
         );
         let task = permit.bind_task_context(RuntimeTaskContext::new(
             hawdb_core::RuntimeCancellationToken::new(),
-            Some(std::time::Instant::now() + Duration::from_secs(20)),
+            Some(hawdb_core::time::Instant::now() + Duration::from_secs(20)),
         ));
         let mut memory = BuildMemory::new(&task).unwrap();
         memory.host_admission = Some(permit.clone());
@@ -383,7 +383,7 @@ fn streamed_input_yields_output_wave_to_a_governed_reader_at_depth_one() {
         let permit = Arc::new(governor.try_admit(request).unwrap());
         let task = permit.bind_task_context(RuntimeTaskContext::new(
             hawdb_core::RuntimeCancellationToken::new(),
-            Some(std::time::Instant::now() + Duration::from_secs(20)),
+            Some(hawdb_core::time::Instant::now() + Duration::from_secs(20)),
         ));
         let mut memory = BuildMemory::new(&task).unwrap();
         memory.host_admission = Some(permit.clone());

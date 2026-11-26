@@ -47,7 +47,7 @@ fn mutation_target_and_unordered_output_wait_and_cancel_before_native_effects() 
         );
         let task = permit.bind_task_context(RuntimeTaskContext::new(
             hawdb_core::RuntimeCancellationToken::new(),
-            Some(std::time::Instant::now() + Duration::from_secs(20)),
+            Some(hawdb_core::time::Instant::now() + Duration::from_secs(20)),
         ));
         let mut memory = BuildMemory::new(&task).unwrap();
         memory.host_admission = Some(permit.clone());
@@ -162,7 +162,7 @@ fn unordered_drop_discards_pending_flush_and_retains_cleanup_debt() {
         Default::default(),
         RuntimeTaskContext::new(
             hawdb_core::RuntimeCancellationToken::new(),
-            Some(std::time::Instant::now() + Duration::from_secs(20)),
+            Some(hawdb_core::time::Instant::now() + Duration::from_secs(20)),
         ),
     )
     .unwrap();
@@ -232,7 +232,7 @@ fn owned_streamed_and_unordered_updates_complete_with_one_slot_and_release_idle_
         let permit = Arc::new(governor.try_admit(request).unwrap());
         let task = permit.bind_task_context(RuntimeTaskContext::new(
             hawdb_core::RuntimeCancellationToken::new(),
-            Some(std::time::Instant::now() + Duration::from_secs(30)),
+            Some(hawdb_core::time::Instant::now() + Duration::from_secs(30)),
         ));
         let mut memory = BuildMemory::new(&task).unwrap();
         memory.host_admission = Some(permit.clone());

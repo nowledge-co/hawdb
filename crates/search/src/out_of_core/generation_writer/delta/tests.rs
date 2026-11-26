@@ -684,7 +684,7 @@ fn delta_context_input_denial_and_deadline_create_no_stage() {
         let mut input = delta();
         input.upserts[0].body.reserve_exact(4 * 1024 * 1024);
         let task = if deadline {
-            RuntimeTaskContext::new(Default::default(), Some(std::time::Instant::now()))
+            RuntimeTaskContext::new(Default::default(), Some(hawdb_core::time::Instant::now()))
         } else {
             RuntimeTaskContext::default()
                 .with_memory_reservation(RuntimeMemoryReservation::new(2 * 1024 * 1024, 0))

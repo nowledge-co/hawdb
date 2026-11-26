@@ -24,6 +24,12 @@ target. A host may inject a WASM-compatible `GlobalAlloc` implementation with
 [the allocator contract](ALLOCATORS.md) for target-gated host configuration and
 the portable host-allocator regression.
 
+The browser target excludes the native Jieba analyzer and its bundled 2.1 MB
+dictionary. Han n-gram tokens remain available, but Jieba word segmentation is
+not; the analyzer format identity differs so a WASM-built projection cannot be
+mistaken for a native one. Native builds, including Mem's default-features
+disabled configuration, keep the full native analyzer.
+
 The development example in `examples/wasm_playground.rs` supplies a thin
 wasm-bindgen query bridge (#734). `examples/wasm-playground/` supplies the page
 and a single **Dedicated Web Worker** (#735). It runs on the user's device,

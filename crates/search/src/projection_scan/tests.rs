@@ -129,7 +129,7 @@ fn resident_scan_terminal_cancellation_refuses_success_after_last_callback() {
     assert_eq!(calls, 1);
     let expired = RuntimeTaskContext::new(
         RuntimeCancellationToken::new(),
-        Some(std::time::Instant::now()),
+        Some(hawdb_core::time::Instant::now()),
     );
     assert!(index
         .visit_projection_documents(budget(), &expired, &mut |_| panic!("expired scan callback"))
