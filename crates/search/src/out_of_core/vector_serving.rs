@@ -291,7 +291,9 @@ thread_local! {
 ///
 /// The distances fit the second layered representation of the candidate
 /// envelope, which is not materialized before `BoundedLayeredProjectionHits`
-/// is finished.
+/// is finished. The `8 * limit` bytes here are therefore covered by the
+/// `candidate_working_bytes` reservation; this vector is dropped before the
+/// second representation is materialized.
 #[cfg(feature = "vector-search")]
 struct NearestDistances {
     limit: usize,
@@ -946,6 +948,16 @@ impl SearchOutOfCoreReader {
         // needed before a bound can help, and an unlimited result has none.
         let mut result_distances = retained_limit
             .filter(|limit| *limit != 0 && self.segments.len() > 1)
+            // A pure RaBitQ generation never contributes a distance. Mixed
+            // generations still pass the bound to their DiskANN layers.
+            .filter(|_| {
+                self.segments.iter().any(|artifact| {
+                    artifact
+                        .rabitq_projection
+                        .as_ref()
+                        .is_some_and(|projection| projection.is_diskann())
+                })
+            })
             .map(NearestDistances::new);
         let mut vector_document_count = 0usize;
         let mut generated_candidate_count = 0usize;
@@ -1132,10 +1144,10 @@ impl SearchOutOfCoreReader {
             if let Some(distances) = &mut result_distances
                 && projection.is_diskann()
             {
-                distances.extend(hits.iter().map(|hit| match projection.metric() {
-                    hawdb_core::VectorDistance::Cosine => 1.0 - hit.score,
-                    hawdb_core::VectorDistance::Euclidean => (-hit.score).sqrt(),
-                }));
+                distances.extend(
+                    hits.iter()
+                        .map(|hit| projection.distance_from_score(hit.score)),
+                );
             }
         }
 

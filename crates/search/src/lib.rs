@@ -1114,6 +1114,9 @@ impl<'a> VectorSearchExecutionOptions<'a> {
     /// `max_vector_candidates`). The window never goes below the limit or rank
     /// window. A window below the default 128 does less work but can lower
     /// recall, because fewer approximate candidates reach the exact rerank.
+    /// In a segmented DiskANN store the shared result bound follows the
+    /// retained page (`offset + limit`) or `rank_window`, not this window, so
+    /// ranks above that page can be less complete than with a full traversal.
     /// Out of core, a window above the reader's `max_vector_candidates` is
     /// refused; resident search stays bounded by its working memory.
     pub fn with_candidate_window(mut self, window: NonZeroUsize) -> Self {
