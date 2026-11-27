@@ -1074,6 +1074,7 @@ impl GraphStore {
                             value: NodeSetValue::Value(value.clone()),
                         }];
                         self.apply_set_node_properties_mutation(
+                            catalog,
                             &mut ops,
                             &mut rows,
                             &mut pending_nodes,
@@ -1097,6 +1098,7 @@ impl GraphStore {
                             value: NodeSetValue::AddInt { amount },
                         }];
                         self.apply_set_node_properties_mutation(
+                            catalog,
                             &mut ops,
                             &mut rows,
                             &mut pending_nodes,
@@ -1124,7 +1126,8 @@ impl GraphStore {
                             selected.clear();
                             break;
                         }
-                        let mut ids = self.matching_node_ids_bounded(
+                        let mut ids = self.matching_node_ids_bounded_indexed(
+                            Some(&*catalog),
                             label,
                             node.filter.as_ref(),
                             limits.max_affected_rows.get(),
@@ -1155,6 +1158,7 @@ impl GraphStore {
                                 })
                                 .collect::<Vec<_>>();
                             self.apply_set_node_properties_mutation(
+                                catalog,
                                 &mut ops,
                                 &mut rows,
                                 &mut pending_nodes,
@@ -1244,6 +1248,7 @@ impl GraphStore {
                     let label_id = optional_label_id(&working_catalog, &label);
                     if label.is_empty() || label_id.is_some() {
                         self.apply_set_node_properties_mutation(
+                            catalog,
                             &mut ops,
                             &mut rows,
                             &mut pending_nodes,
@@ -1319,7 +1324,8 @@ impl GraphStore {
                 } => {
                     let label_id = optional_label_id(&working_catalog, &label);
                     if label.is_empty() || label_id.is_some() {
-                        let committed_ids = self.matching_node_ids_bounded(
+                        let committed_ids = self.matching_node_ids_bounded_indexed(
+                            Some(&*catalog),
                             label_id,
                             filter.as_ref(),
                             remaining_mutation_affected_rows(rows.len(), limits)?,
@@ -1390,7 +1396,8 @@ impl GraphStore {
                         // `None`: an unconstrained source matches every relationship.
                         let source_ids = (source_label_id.is_some() || filter.is_some())
                             .then(|| {
-                                self.matching_node_ids_with_pending_bounded(
+                                self.matching_node_ids_with_pending_bounded_indexed(
+                                    Some(&*catalog),
                                     source_label_id,
                                     filter.as_ref(),
                                     &pending_nodes,
@@ -1406,7 +1413,8 @@ impl GraphStore {
                         let target_ids = target_filter
                             .as_ref()
                             .map(|filter| {
-                                self.matching_node_ids_with_pending_bounded(
+                                self.matching_node_ids_with_pending_bounded_indexed(
+                                    Some(&*catalog),
                                     target_label_id,
                                     Some(filter),
                                     &pending_nodes,
@@ -1565,14 +1573,16 @@ impl GraphStore {
                     }
                     let rel_type_id = working_catalog.get_or_create_rel_type(&request.rel_type);
                     let remaining_rows = remaining_mutation_affected_rows(rows.len(), limits)?;
-                    let sources = self.matching_node_ids_with_pending_bounded(
+                    let sources = self.matching_node_ids_with_pending_bounded_indexed(
+                        Some(&*catalog),
                         source_label_id,
                         request.source_filter.as_ref(),
                         &pending_nodes,
                         remaining_rows,
                         "max_mutation_affected_rows",
                     )?;
-                    let targets = self.matching_node_ids_with_pending_bounded(
+                    let targets = self.matching_node_ids_with_pending_bounded_indexed(
+                        Some(&*catalog),
                         target_label_id,
                         request.target_filter.as_ref(),
                         &pending_nodes,
@@ -1627,14 +1637,16 @@ impl GraphStore {
                     }
                     let rel_type_id = working_catalog.get_or_create_rel_type(&request.rel_type);
                     let remaining_rows = remaining_mutation_affected_rows(rows.len(), limits)?;
-                    let sources = self.matching_node_ids_with_pending_bounded(
+                    let sources = self.matching_node_ids_with_pending_bounded_indexed(
+                        Some(&*catalog),
                         source_label_id,
                         request.source_filter.as_ref(),
                         &pending_nodes,
                         remaining_rows,
                         "max_mutation_affected_rows",
                     )?;
-                    let targets = self.matching_node_ids_with_pending_bounded(
+                    let targets = self.matching_node_ids_with_pending_bounded_indexed(
+                        Some(&*catalog),
                         target_label_id,
                         request.target_filter.as_ref(),
                         &pending_nodes,
@@ -1793,7 +1805,8 @@ impl GraphStore {
                     .map(|relationship| relationship.source)
                     .collect::<BTreeSet<_>>();
                     let target_ids = self
-                        .matching_node_ids_with_pending_bounded(
+                        .matching_node_ids_with_pending_bounded_indexed(
+                            Some(&*catalog),
                             new_target_label_id,
                             request.new_target_filter.as_ref(),
                             &pending_nodes,
@@ -1923,7 +1936,8 @@ impl GraphStore {
                     .map(|relationship| relationship.target)
                     .collect::<BTreeSet<_>>();
                     let source_ids = self
-                        .matching_node_ids_with_pending_bounded(
+                        .matching_node_ids_with_pending_bounded_indexed(
+                            Some(&*catalog),
                             new_source_label_id,
                             request.new_source_filter.as_ref(),
                             &pending_nodes,
@@ -2635,6 +2649,7 @@ impl GraphStore {
     #[allow(clippy::too_many_arguments)]
     fn apply_set_node_properties_mutation(
         &self,
+        indexed_catalog: &Catalog,
         ops: &mut Vec<WalOp>,
         rows: &mut Vec<BTreeMap<String, Value>>,
         pending_nodes: &mut PendingNodes,
@@ -2644,7 +2659,8 @@ impl GraphStore {
         limits: MutationLimits,
     ) -> Result<()> {
         let remaining_rows = remaining_mutation_affected_rows(rows.len(), limits)?;
-        let committed_ids = self.matching_node_ids_bounded(
+        let committed_ids = self.matching_node_ids_bounded_indexed(
+            Some(indexed_catalog),
             label_id,
             filter,
             remaining_rows,

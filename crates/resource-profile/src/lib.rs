@@ -516,6 +516,10 @@ fn graph_index_reads_json(reads: GraphIndexReadMetricsSnapshot) -> serde_json::V
             "forward_adjacency": graph_index_class_read_json(reads, Class::ForwardAdjacency),
             "reverse_adjacency": graph_index_class_read_json(reads, Class::ReverseAdjacency),
         },
+        "mutation_targets": {
+            "index_seeks": reads.mutation_target_index_seeks,
+            "label_scans": reads.mutation_target_label_scans,
+        },
         "property": {
             "blocks_considered": reads.property_blocks_considered,
             "blocks_pruned": reads.property_blocks_pruned,
