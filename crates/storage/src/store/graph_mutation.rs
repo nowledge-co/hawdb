@@ -1705,10 +1705,21 @@ impl GraphStore {
         };
         self.graph_index_read_metrics
             .record_mutation_target_index_seek();
+        // The cap is checked before each new distinct match, as the label scan
+        // does, so a high-fanout key under a small limit stops at the first
+        // excess match instead of collecting (and, out of core, hydrating)
+        // the whole posting list.
         let mut ids = BTreeSet::new();
-        for value in values {
+        let mut exceeded = false;
+        'values: for value in values {
             for node in self.seek_nodes_by_property(label_id, property, value) {
-                if matches(node) {
+                self.graph_index_read_metrics
+                    .record_mutation_target_index_candidate();
+                if matches(node) && !ids.contains(&node.id) {
+                    if ids.len() == max_ids {
+                        exceeded = true;
+                        break 'values;
+                    }
                     ids.insert(node.id);
                 }
             }
@@ -1721,6 +1732,8 @@ impl GraphStore {
                         {
                             return Ok(CanonicalScanControl::Continue);
                         }
+                        self.graph_index_read_metrics
+                            .record_mutation_target_index_candidate();
                         let node = reader.get_node(node_id)?.ok_or_else(|| {
                             PersistentPropertyProjectionError::Corrupt(format!(
                                 "property projection references missing canonical node {}",
@@ -1728,6 +1741,10 @@ impl GraphStore {
                             ))
                         })?;
                         if matches(&node) {
+                            if ids.len() == max_ids {
+                                exceeded = true;
+                                return Ok(CanonicalScanControl::Stop);
+                            }
                             ids.insert(node_id);
                         }
                         Ok(CanonicalScanControl::Continue)
@@ -1735,12 +1752,15 @@ impl GraphStore {
                     .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
                 self.graph_index_read_metrics
                     .record_property(PersistentGraphIndexClass::NodeEquality, report);
+                if exceeded {
+                    break 'values;
+                }
             }
-            if ids.len() > max_ids {
-                return Err(HawDBError::Execution(format!(
-                    "mutation would exceed {limit_name} {max_ids}"
-                )));
-            }
+        }
+        if exceeded {
+            return Err(HawDBError::Execution(format!(
+                "mutation would exceed {limit_name} {max_ids}"
+            )));
         }
         Ok(Some(ids.into_iter().collect()))
     }

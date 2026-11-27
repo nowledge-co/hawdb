@@ -304,3 +304,119 @@ fn index_created_in_the_same_transaction_finds_committed_nodes() {
         let _ = std::fs::remove_dir_all(&path);
     }
 }
+
+const HOT: usize = 64;
+
+/// A database whose `:M(id)` key `hot` is shared by `HOT` nodes, checkpointed
+/// so an out-of-core reopen leaves them in the canonical base.
+fn populate_hot(path: &std::path::Path, indexed: bool) {
+    let mut db = Database::open(path).unwrap();
+    if indexed {
+        db.query("CREATE INDEX ON :M(id)").unwrap();
+    }
+    for _ in 0..HOT {
+        db.query("CREATE (:M {id: 'hot', v: 0})").unwrap();
+    }
+    db.query("CREATE (:M {id: 'cold', v: 0})").unwrap();
+    db.checkpoint().unwrap();
+}
+
+fn open_limited(
+    path: &std::path::Path,
+    residency: StorageResidencyMode,
+    max_affected_rows: usize,
+) -> Database {
+    let mut config = DatabaseConfig {
+        storage_residency_mode: residency,
+        automatic_checkpoint_max_age: std::time::Duration::from_secs(3600),
+        ..DatabaseConfig::default()
+    };
+    config.mutation_limits.max_affected_rows =
+        std::num::NonZeroUsize::new(max_affected_rows).unwrap();
+    Database::open_with_config(path, config).unwrap()
+}
+
+fn index_candidates(db: &Database) -> u64 {
+    db.storage_residency_report()
+        .unwrap()
+        .graph_index_reads
+        .mutation_target_index_candidates
+}
+
+/// The affected-row cap bounds the seek like it bounds the scan: a
+/// high-fanout key under a small limit stops at the first excess match
+/// instead of collecting (and, out of core, hydrating) the posting list.
+#[test]
+fn indexed_seek_stops_at_the_first_match_over_the_row_limit() {
+    for residency in [
+        StorageResidencyMode::OutOfCore,
+        StorageResidencyMode::Materialized,
+    ] {
+        let indexed_path = unique_test_dir("mutation_index_seek_limit");
+        let scanned_path = unique_test_dir("mutation_index_seek_limit_scan");
+        populate_hot(&indexed_path, true);
+        populate_hot(&scanned_path, false);
+        for limit in [1, 2, HOT - 1] {
+            let context = format!("{residency:?} limit={limit}");
+            let mut indexed = open_limited(&indexed_path, residency, limit);
+            let mut scanned = open_limited(&scanned_path, residency, limit);
+            for transactional in [false, true] {
+                let statement = "MATCH (m:M {id: 'hot'}) SET m.v = 1";
+                let (_, seeks) = mutation_targets(&indexed);
+                let before = index_candidates(&indexed);
+                let error = if transactional {
+                    let mut transaction = indexed.begin_transaction().unwrap();
+                    transaction.query(statement).unwrap_err()
+                } else {
+                    indexed.query(statement).unwrap_err()
+                };
+                let examined = index_candidates(&indexed) - before;
+                assert_eq!(mutation_targets(&indexed).1, seeks + 1, "{context}");
+                assert!(
+                    examined <= limit as u64 + 1,
+                    "{context} transactional={transactional}: seek examined \
+                     {examined} candidates for limit {limit}"
+                );
+                let scan_error = scanned.query(statement).unwrap_err();
+                assert_eq!(error.to_string(), scan_error.to_string(), "{context}");
+                assert!(
+                    error
+                        .to_string()
+                        .contains(&format!("max_mutation_affected_rows {limit}")),
+                    "{context}: {error}"
+                );
+            }
+            // The refused writes left every node unchanged.
+            let rows = indexed
+                .query("MATCH (m:M) WHERE m.v <> 0 RETURN count(m) AS changed")
+                .unwrap();
+            assert_eq!(
+                rows.rows.into_rows()[0]
+                    .values()
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                vec![Value::Int(0)],
+                "{context}"
+            );
+        }
+        // A limit equal to the number of matches is not exceeded.
+        let mut indexed = open_limited(&indexed_path, residency, HOT);
+        indexed
+            .query("MATCH (m:M {id: 'hot'}) SET m.v = 1")
+            .unwrap();
+        let rows = indexed
+            .query("MATCH (m:M {v: 1}) RETURN count(m) AS changed")
+            .unwrap();
+        assert_eq!(
+            rows.rows.into_rows()[0]
+                .values()
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec![Value::Int(HOT as i64)],
+            "{residency:?}"
+        );
+        drop(indexed);
+        let _ = std::fs::remove_dir_all(&indexed_path);
+        let _ = std::fs::remove_dir_all(&scanned_path);
+    }
+}

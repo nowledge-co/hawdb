@@ -93,6 +93,9 @@ pub struct GraphIndexReadMetricsSnapshot {
     /// Mutations that resolved their target nodes by scanning a label (or all
     /// nodes) because no usable index covered their filter.
     pub mutation_target_label_scans: u64,
+    /// Index hits a mutation-target seek examined (resident records and
+    /// hydrated out-of-core records), whether or not they matched.
+    pub mutation_target_index_candidates: u64,
 }
 
 impl GraphIndexReadMetricsSnapshot {
@@ -229,6 +232,9 @@ impl GraphIndexReadMetricsSnapshot {
             mutation_target_label_scans: self
                 .mutation_target_label_scans
                 .saturating_sub(before.mutation_target_label_scans),
+            mutation_target_index_candidates: self
+                .mutation_target_index_candidates
+                .saturating_sub(before.mutation_target_index_candidates),
         }
     }
 }
@@ -266,6 +272,7 @@ pub struct GraphIndexReadMetrics {
     adjacency_dense_blocks_read: AtomicU64,
     mutation_target_index_seeks: AtomicU64,
     mutation_target_label_scans: AtomicU64,
+    mutation_target_index_candidates: AtomicU64,
 }
 
 impl GraphIndexReadMetrics {
@@ -276,6 +283,11 @@ impl GraphIndexReadMetrics {
 
     pub fn record_mutation_target_label_scan(&self) {
         self.mutation_target_label_scans
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_mutation_target_index_candidate(&self) {
+        self.mutation_target_index_candidates
             .fetch_add(1, Ordering::Relaxed);
     }
 
@@ -461,6 +473,9 @@ impl GraphIndexReadMetrics {
             adjacency_dense_blocks_read: self.adjacency_dense_blocks_read.load(Ordering::Relaxed),
             mutation_target_index_seeks: self.mutation_target_index_seeks.load(Ordering::Relaxed),
             mutation_target_label_scans: self.mutation_target_label_scans.load(Ordering::Relaxed),
+            mutation_target_index_candidates: self
+                .mutation_target_index_candidates
+                .load(Ordering::Relaxed),
         }
     }
 }
