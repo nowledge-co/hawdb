@@ -2765,7 +2765,7 @@ impl GraphStore {
         Ok(())
     }
 
-    fn wal_admission_signals(&self, ops: &[WalOp]) -> Result<StoragePressureSignals> {
+    pub(super) fn wal_admission_signals(&self, ops: &[WalOp]) -> Result<StoragePressureSignals> {
         // DurableStore owns the persisted reader watermark and generation files, so it
         // fills those signals immediately before admission without duplicating a directory scan.
         let mut signals = self.storage_pressure_signals(None, None);

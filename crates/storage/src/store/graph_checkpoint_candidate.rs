@@ -406,6 +406,7 @@ impl GraphStore {
     }
 
     fn inherit_live_checkpoint_ownership(&mut self, source: &mut Self) {
+        self.logical_record_byte_walks = Arc::clone(&source.logical_record_byte_walks);
         self.checkpoint_capture_started = source.checkpoint_capture_started;
         self.version_index = source.version_index.clone();
         self.version_snapshot_pins = source.version_snapshot_pins.clone();

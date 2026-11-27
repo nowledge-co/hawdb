@@ -1115,6 +1115,8 @@ pub struct GraphStore {
     read_dependency_readers: Arc<AtomicUsize>,
     read_dependency_validation_failures: Arc<read_dependencies::ValidationFailureCounters>,
     read_summary_collapses: Arc<AtomicU64>,
+    /// Full logical-record byte walks; shared by snapshots (#2032).
+    logical_record_byte_walks: Arc<AtomicU64>,
     nodes: crate::cow::CowNodeMap,
     relationships: crate::cow::CowRelMap,
     basic_statistics: BasicStatisticsState,
@@ -2153,6 +2155,7 @@ impl GraphStore {
             read_dependency_readers: Arc::new(AtomicUsize::new(0)),
             read_dependency_validation_failures: Arc::new(Default::default()),
             read_summary_collapses: Arc::new(AtomicU64::new(0)),
+            logical_record_byte_walks: Arc::new(AtomicU64::new(0)),
             nodes: crate::cow::CowNodeMap::default(),
             relationships: crate::cow::CowRelMap::default(),
             basic_statistics: BasicStatisticsState::default(),
@@ -2691,6 +2694,7 @@ impl GraphStore {
                 &self.read_dependency_validation_failures,
             ),
             read_summary_collapses: Arc::clone(&self.read_summary_collapses),
+            logical_record_byte_walks: Arc::clone(&self.logical_record_byte_walks),
             nodes: self.nodes.clone(),
             relationships: self.relationships.clone(),
             basic_statistics: self.basic_statistics.clone(),
@@ -4895,6 +4899,7 @@ mod tests {
 
     include!("store/tests/graph_store_cases_1.rs");
     include!("store/tests/graph_store_cases_2.rs");
+    include!("store/tests/logical_record_bytes.rs");
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
