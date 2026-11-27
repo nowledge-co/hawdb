@@ -1,5 +1,11 @@
 # Test ownership and known slow paths
 
+New or changed test-family entries live in one file per family under
+[`docs/test-index/`](test-index/README.md) so concurrent changes do not edit the
+same lines here; `scripts/check-test-index.py` (run by `prek`) checks their
+`Owner:`, `Lane:` and `Replay:` fields. This file keeps lanes, shared owners and
+slow-path evidence.
+
 Windows retained FFI missing-summary failures (#1404) retain the original
 failed gate and trigger two bounded direct-process diagnostic replays of the
 already built binary, with default and single-thread test execution. Each
@@ -206,63 +212,6 @@ unrelated request. They have manual ownership: replay with
 Replay the Search family with `--test_arg=candidate_evidence::consumption::`.
 No lane, profile, timeout or performance gate changes. See the
 [checked consumption contract](specs/CHECKED_CANDIDATE_EXHAUSTION.md).
-
-Resident optimizer-statistics refresh policy ([#2017](https://github.com/nowledge-co/hawdb/issues/2017))
-is owned by `api::tests::statistics_refresh_policy` in the existing
-`//:hawdb_unit_general_tests` owner. Eight finite fixtures assert per-caller
-full-recompute counters from `Database::optimizer_statistics_maintenance_report`:
-crossing 999 -> 1,001 committed nodes recomputes once at commit and never again
-at planning; non-durable growth from 500 to 50,500 nodes refreshes at commit
-with exact label counts; 256 indexed `SET`s in one explicit transaction add no
-planning or commit recompute and count as dirty only at commit; a durable
-resident store leaves an over-threshold commit to the background statistics
-task, which resets lag; stale and forced-refresh statistics return identical
-rows. Under the default `LocalQosPolicy` the background refresh runs for a
-50,000-record durable resident store and a 3,000-record out-of-core store
-(charge clamped to one per-task slot), reporting write-guard hold time; an
-inadmissible refresh memory budget is skipped without waiting, counted in
-`background_refresh_skipped`, and a later pass refreshes. Replay with `cargo test --locked -p hawdb --lib statistics_refresh_policy`
-or the owning Bazel target with `--test_arg=statistics_refresh_policy`. No new
-lane, profile or timeout.
-Maintained logical record bytes ([#2032](https://github.com/nowledge-co/hawdb/issues/2032))
-are owned by `api::tests::logical_record_bytes` in the existing
-`//:hawdb_unit_general_tests` owner and by
-`store::tests::checkpoint_temporary_space_admission_matches_full_walk_estimate`
-in `//crates/storage:hawdb_storage_tests`. A 50,000-node resident store runs 256
-indexed autocommit `SET`s with zero full record walks (the reference walk counts
-each call); the maintained estimate equals the full walk after mixed node and
-relationship creates, updates, property removals and deletes with large
-strings, after a rolled-back transaction, and after drop-without-checkpoint
-reopen, in materialized and out-of-core modes. The storage case pins identical
-free-space-reserve decisions at the walked threshold and an end-to-end WAL
-refusal/admission. Replay with `cargo test --locked -p hawdb --lib
-logical_record_bytes` and `cargo test --locked -p hawdb-storage --lib
-checkpoint_temporary_space_admission_matches_full_walk_estimate`. No new lane,
-profile or timeout.
-Read-only opens make zero filesystem mutations under the database root
-([#2029](https://github.com/nowledge-co/hawdb/issues/2029)), owned by
-`api::tests::read_only_zero_writes` in the existing `//:hawdb_unit_general_tests`
-owner. A recursive snapshot (paths, sizes, mtimes) must be identical after a
-`read_only` open, Cypher reads, `information_schema.tables` and `COUNT(*)`, a
-refused write and a second open, for a checkpointed branch project and one with
-an unreplayed WAL tail, in materialized and out-of-core modes, and through
-`EmbeddedGraph` in `GraphMode::ShadowReadOnly`. The WAL tail replays in memory
-for graph and relational reads (relational rows advance the checkpoint view as
-in-memory live batches); `RecoveryMode::AutoRepairTornTail` refuses with
-`HawDBError::ReadOnly`. On Unix a `chmod -R a-w` copy, with and without a WAL
-tail, serves the same reads (skipped for euid 0). Full-text, vector and hybrid
-`search_candidates` plus `text_search`/`vector_search` Cypher through an
-`EmbeddedStore` with a persistent search projection stay snapshot-identical
-(also on a write-protected copy). A `test-support` switch
-(`DiscardReadOnlyRowReplay`) drops the in-memory row view: relational scans,
-counts, point and secondary-index reads then refuse with `ReadOnly`, never
-checkpoint-only rows, while graph reads still see the tail. A branch no writer
-admitted (no artifact directory, sealed WAL intervals in its root) and a branch
-whose artifact directory was removed are served from the immutable objects:
-checkpoint artifacts are bound in memory without installing aliases and sealed
-WAL intervals replay in place, creating nothing. Replay with
-`cargo test --locked -p hawdb --lib read_only_zero_writes`. No new lane, profile
-or timeout.
 
 Mem query-shaped compatibility (`nowledge-co/mem#9338`) is owned by
 `api::tests::mem_query_contract` in `//:hawdb_unit_general_tests` (the existing
@@ -5630,35 +5579,3 @@ roundtrips. These bounds include output growth; they do not measure live memory.
 The temporal payload codec, length prefix, default durability and recovery
 boundaries remain unchanged. Manual `temporal*` workloads measure elapsed
 encoding separately from the ordinary embedded query/checkpoint comparison.
-
-Write-path target lookup through property indexes (#2016) is owned by
-`api::tests::mutation_index_seek` in `//:hawdb_unit_general_tests` (the
-existing required native general lane). It runs node and relationship writes
-(same-run create, re-key and delete, extra conjuncts, `IN`, duplicate and
-integer keys, relationship create/MERGE, re-target and re-source, node MERGE,
-`DETACH DELETE`) against an indexed and an unindexed database in both residency
-modes, with and without checkpoint, autocommit and transactional, and requires
-byte-identical graphs before and after reopen. It also checks that an index
-created without reopening, or staged in the same transaction, still finds
-committed nodes, and that the affected-row cap stops a high-fanout indexed key
-at the first excess match (at most limit + 1 examined index hits, same error as
-the scan). Replay with `cargo test --locked -p hawdb --lib --
-api::tests::mutation_index_seek::`. No lane, profile or persistent format
-changes.
-
-Registry migrations with Cypher graph schema DDL (#2014) are owned by
-`api::tests::system_schema_cypher` in `//:hawdb_unit_general_tests` (the
-existing required native general lane) and by
-`system_schema::tests::sql_only_migration_checksum_is_unchanged_and_cypher_is_bound`
-in the `hawdb-relational` unit tests. They cover a `CREATE INDEX ON :Memory(id)`
-migration that backfills existing nodes (resident and out of core), is recorded once, is not re-applied on
-reopen and is used by lookups and SET; two owners whose Cypher unique
-constraint fails publish neither owner, table nor index; data-writing, read and
-`CHECKPOINT` Cypher is refused before any write; a changed applied Cypher
-statement is checksum drift; an existing identical index is reused and an
-existing range index is kept next to the new equality index; on an out-of-core
-database the first SET after the migration seeks the index without reopening
-and MERGE does not scan the label; and an SQL-only checksum equals the value
-computed on main before the change. Replay with `cargo test --locked -p hawdb --lib --
-api::tests::system_schema_cypher::` and `cargo test --locked -p hawdb-relational
---lib system_schema`. No lane, profile or persistent format changes.

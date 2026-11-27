@@ -24,6 +24,15 @@ always_run = true
 priority = 2
 
 [[repos.hooks]]
+id = "test-index-entries"
+name = "Per-family test index entries are well-formed (docs/test-index/)"
+entry = "python3 scripts/check-test-index.py"
+language = "system"
+pass_filenames = false
+always_run = true
+priority = 3
+
+[[repos.hooks]]
 id = "typed-task-stops"
 name = "Stopped runtime tasks stay typed (#1850)"
 entry = "python3 scripts/check-typed-task-stops.py"
