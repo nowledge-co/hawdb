@@ -91,6 +91,7 @@ mod hidden_row_id;
 mod identity_group_keys;
 #[cfg(feature = "test-support")]
 pub(super) mod immutable_retirement_reads;
+mod index_twin_differential;
 mod induced_edge_reads;
 mod joint_ndv_statistics;
 mod knowledge_community_entity_visibility;
@@ -140,6 +141,7 @@ mod label_lifecycle;
 mod list_functions;
 mod list_literals;
 mod load_csv;
+mod materialized_index_merge;
 mod materialized_views;
 mod meeting_join;
 mod mem_query_contract;

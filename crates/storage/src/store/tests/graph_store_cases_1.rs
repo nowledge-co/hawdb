@@ -7459,3 +7459,122 @@ fn writable_open_reclaims_abandoned_future_checkpoint_generation() {
     drop(recovered);
     std::fs::remove_dir_all(path).unwrap();
 }
+
+/// Range, composite and full-text index reads on an out-of-core store return
+/// canonical nodes moved into the delta by a write to an unindexed property
+/// (#2019, #2040).
+#[test]
+fn out_of_core_index_reads_find_materialized_base_nodes() {
+    let path = unique_test_dir("index_reads_materialized_base_nodes");
+    let replay_config = WalReplayConfig {
+        residency_mode: StorageResidencyMode::OutOfCore,
+        ..WalReplayConfig::default()
+    };
+    let composite_properties = vec!["key".to_string(), "rank".to_string()];
+    let mut catalog = Catalog::default();
+    let mut store = GraphStore::open_with_durability_and_replay_config(
+        &path,
+        &mut catalog,
+        DurabilityPolicy::default(),
+        replay_config,
+    )
+    .unwrap();
+    store
+        .create_range_property_index(&mut catalog, "Memory", "rank")
+        .unwrap();
+    store
+        .create_full_text_property_index(&mut catalog, "Memory", "content")
+        .unwrap();
+    store
+        .create_composite_property_index(&mut catalog, "Memory", &composite_properties)
+        .unwrap();
+    let mut ids = Vec::new();
+    for (key, rank, content) in [
+        ("first", 10, "alpha beta"),
+        ("second", 20, "beta gamma"),
+        ("third", 30, "delta"),
+    ] {
+        ids.push(
+            store
+                .create_node(
+                    &mut catalog,
+                    "Memory",
+                    properties([
+                        ("key", Value::String(key.to_string())),
+                        ("rank", Value::Int(rank)),
+                        ("content", Value::String(content.to_string())),
+                    ]),
+                )
+                .unwrap(),
+        );
+    }
+    store.checkpoint(&catalog).unwrap();
+    assert!(store.is_out_of_core());
+    let label_id = catalog.label_id("Memory").unwrap();
+    // Moves every canonical node into the delta without touching an index key.
+    store
+        .set_node_property(&mut catalog, "Memory", None, "other", Value::Int(1))
+        .unwrap();
+
+    let mut range_ids = Vec::new();
+    store
+        .visit_nodes_by_property_range_owned(
+            label_id,
+            "rank",
+            Some(&(Value::Int(15), true)),
+            Some(&(Value::Int(25), true)),
+            |node| {
+                range_ids.push(node.id);
+                GraphScanControl::Continue
+            },
+        )
+        .unwrap();
+    assert_eq!(range_ids, vec![ids[1]], "range");
+
+    let mut composite_range_ids = Vec::new();
+    store
+        .visit_nodes_by_composite_range_owned(
+            label_id,
+            &hawdb_core::access::CompositeRangeSeek {
+                index_properties: composite_properties.clone(),
+                equality_prefix: vec![("key".to_string(), Value::String("second".to_string()))],
+                range_property: "rank".to_string(),
+                lower: Some((Value::Int(0), true)),
+                upper: None,
+            },
+            |node| {
+                composite_range_ids.push(node.id);
+                GraphScanControl::Continue
+            },
+        )
+        .unwrap();
+    assert_eq!(composite_range_ids, vec![ids[1]], "composite range");
+
+    let mut composite_ids = Vec::new();
+    store
+        .visit_nodes_by_composite_property_owned(
+            label_id,
+            &[
+                ("key".to_string(), Value::String("second".to_string())),
+                ("rank".to_string(), Value::Int(20)),
+            ],
+            |node| {
+                composite_ids.push(node.id);
+                GraphScanControl::Continue
+            },
+        )
+        .unwrap();
+    assert_eq!(composite_ids, vec![ids[1]], "composite equality");
+
+    let mut full_text_ids = Vec::new();
+    store
+        .visit_nodes_by_full_text_property_owned(label_id, "content", "beta", |node| {
+            full_text_ids.push(node.id);
+            GraphScanControl::Continue
+        })
+        .unwrap();
+    full_text_ids.sort();
+    assert_eq!(full_text_ids, vec![ids[0], ids[1]], "full text");
+    drop(store);
+    std::fs::remove_dir_all(path).unwrap();
+}
