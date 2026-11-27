@@ -1,5 +1,17 @@
 # Test ownership and known slow paths
 
+Windows retained FFI missing-summary failures (#1404) retain the original
+failed gate and trigger two bounded direct-process diagnostic replays of the
+already built binary, with default and single-thread test execution. Each
+replay records raw stdout/stderr and a native decimal/hex exit code, timeout
+or launch error under `retained-ffi-diagnostic`; it never qualifies the shard.
+The existing Windows native Clippy job runs
+`scripts/run-windows-native-bazel.test.sh`, including an incomplete zero-exit
+negative control and `diagnose-retained-ffi.test.py` controls for Windows crash
+codes, timeouts and launch failures. Local replay uses the same shell command.
+These diagnostics do not establish the root cause or repair the intermittent
+termination; ordinary selection, concurrency and completion guards are unchanged.
+
 Checkpoint crash temporaries ([#1974](https://github.com/nowledge-co/hawdb/issues/1974))
 are covered by `artifact_files::checkpoint_cleanup_tests` in the existing
 `//crates/storage:hawdb_storage_tests` crates presubmit. These cases preserve
