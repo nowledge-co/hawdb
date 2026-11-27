@@ -205,6 +205,8 @@ fn aging_promotes_a_waiting_task_one_level_per_interval() {
         }
 
         fn fail(&mut self, _: TaskError) {}
+
+        fn publish(&mut self) {}
     }
 
     let now = Instant::now();
@@ -313,4 +315,181 @@ fn shutdown_refuses_new_tasks() {
         scheduler.spawn_background(TaskKey::new(2), Priority::Low, || {}),
         Err(SchedulerError::Shutdown)
     ));
+}
+
+struct ShutdownAwareTask {
+    started: mpsc::Sender<()>,
+    observed: Arc<Mutex<Option<TaskError>>>,
+}
+
+impl Task for ShutdownAwareTask {
+    type Output = ();
+
+    fn run(&mut self, context: &TaskContext) -> TaskProgress<()> {
+        self.started.send(()).unwrap();
+        loop {
+            match context.checkpoint() {
+                Ok(()) => std::thread::yield_now(),
+                Err(error) => {
+                    *lock(&self.observed) = Some(error);
+                    return TaskProgress::Done(());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn shutdown_interrupts_a_cooperative_dispatch() {
+    let scheduler = Scheduler::new(config(1, 1, 8)).unwrap();
+    let (started_tx, started_rx) = mpsc::channel();
+    let observed = Arc::new(Mutex::new(None));
+    let handle = scheduler
+        .spawn_task(
+            TaskKey::new(1),
+            Priority::High,
+            ShutdownAwareTask {
+                started: started_tx,
+                observed: Arc::clone(&observed),
+            },
+        )
+        .unwrap();
+    started_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("task must enter its dispatch");
+    scheduler.shutdown();
+    assert_eq!(*lock(&observed), Some(TaskError::Shutdown));
+    assert!(matches!(handle.join(), Err(TaskError::Shutdown)));
+}
+
+struct GateYieldTask {
+    gate: Arc<Gate>,
+    started: mpsc::Sender<()>,
+    yielded: bool,
+}
+
+impl Task for GateYieldTask {
+    type Output = ();
+
+    fn run(&mut self, _: &TaskContext) -> TaskProgress<()> {
+        if self.yielded {
+            TaskProgress::Done(())
+        } else {
+            self.started.send(()).unwrap();
+            self.gate.wait();
+            self.yielded = true;
+            TaskProgress::Yield
+        }
+    }
+}
+
+#[test]
+fn continuation_is_admitted_when_the_new_task_queue_is_full() {
+    let scheduler = Scheduler::new(config(1, 1, 1)).unwrap();
+    let gate = Arc::new(Gate::new());
+    let (started_tx, started_rx) = mpsc::channel();
+    let first = scheduler
+        .spawn_task(
+            TaskKey::new(1),
+            Priority::High,
+            GateYieldTask {
+                gate: Arc::clone(&gate),
+                started: started_tx,
+                yielded: false,
+            },
+        )
+        .unwrap();
+    started_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("first task must enter its dispatch");
+    let second = scheduler
+        .spawn(TaskKey::new(2), Priority::Normal, || {})
+        .unwrap();
+    gate.open();
+    first.join().unwrap();
+    second.join().unwrap();
+    scheduler.shutdown();
+}
+
+struct SlowTask;
+
+impl Task for SlowTask {
+    type Output = ();
+
+    fn run(&mut self, _: &TaskContext) -> TaskProgress<()> {
+        // Exceed the one-nanosecond quantum deterministically; the test is
+        // about feedback publication, not about racing the clock.
+        std::thread::sleep(Duration::from_millis(1));
+        TaskProgress::Done(())
+    }
+}
+
+#[test]
+fn feedback_is_published_before_join_returns() {
+    let scheduler = Scheduler::new(SchedulerConfig {
+        business_workers: 1,
+        background_workers: 1,
+        queue_capacity: 64,
+        quantum: Duration::from_nanos(1),
+        aging_interval: Duration::from_millis(50),
+    })
+    .unwrap();
+    for index in 0..32u64 {
+        let key = TaskKey::new(index);
+        scheduler
+            .spawn_task(key, Priority::High, SlowTask)
+            .unwrap()
+            .join()
+            .unwrap();
+        let level = Arc::new(Mutex::new(None));
+        scheduler
+            .spawn_task(
+                key,
+                Priority::High,
+                RecordLevel {
+                    level: Arc::clone(&level),
+                },
+            )
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(*lock(&level), Some(1), "iteration {index}");
+    }
+    scheduler.shutdown();
+}
+
+struct PanicOnDropTask;
+
+impl Task for PanicOnDropTask {
+    type Output = ();
+
+    fn run(&mut self, _: &TaskContext) -> TaskProgress<()> {
+        TaskProgress::Done(())
+    }
+}
+
+impl Drop for PanicOnDropTask {
+    fn drop(&mut self) {
+        panic!("intentional task teardown panic");
+    }
+}
+
+#[test]
+fn task_teardown_panic_does_not_retire_the_worker() {
+    let scheduler = Scheduler::new(config(1, 1, 8)).unwrap();
+    scheduler
+        .spawn_task(TaskKey::new(1), Priority::High, PanicOnDropTask)
+        .unwrap()
+        .join()
+        .unwrap();
+    let second = scheduler
+        .spawn(TaskKey::new(2), Priority::Normal, || 7)
+        .unwrap();
+    let result = second
+        .receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("the worker must survive task teardown")
+        .expect("the second task must complete");
+    assert_eq!(result, 7);
+    scheduler.shutdown();
 }

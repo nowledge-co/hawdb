@@ -100,6 +100,7 @@ pub struct TaskContext {
     priority: Priority,
     level: usize,
     cancelled: Arc<AtomicBool>,
+    shutting_down: Arc<AtomicBool>,
 }
 
 impl TaskContext {
@@ -125,9 +126,20 @@ impl TaskContext {
         self.cancelled.load(Ordering::Acquire)
     }
 
+    /// True once the owning pool has started shutting down. A task that
+    /// returns a result after this point is reported as
+    /// [`TaskError::Shutdown`] by the scheduler.
+    pub fn is_shutting_down(&self) -> bool {
+        self.shutting_down.load(Ordering::Acquire)
+    }
+
+    /// Cooperatively stop at the next boundary. A handle cancellation wins
+    /// over a pool shutdown when both are set.
     pub fn checkpoint(&self) -> Result<(), TaskError> {
         if self.is_cancelled() {
             Err(TaskError::Cancelled)
+        } else if self.is_shutting_down() {
+            Err(TaskError::Shutdown)
         } else {
             Ok(())
         }
@@ -264,6 +276,8 @@ impl<T> TaskHandle<T> {
 pub struct SchedulerConfig {
     pub business_workers: usize,
     pub background_workers: usize,
+    /// Bound on newly submitted queued tasks per pool. A running task's
+    /// cooperative continuation may use one additional slot per worker.
     pub queue_capacity: usize,
     pub quantum: Duration,
     pub aging_interval: Duration,
@@ -321,12 +335,14 @@ impl Scheduler {
         let business = Arc::new(Pool::new(
             TaskClass::Business,
             config.queue_capacity,
+            config.business_workers,
             config.quantum,
             config.aging_interval,
         ));
         let background = Arc::new(Pool::new(
             TaskClass::Background,
             config.queue_capacity,
+            config.background_workers,
             config.quantum,
             config.aging_interval,
         ));
@@ -441,6 +457,7 @@ impl Drop for Scheduler {
 trait ErasedTask: Send {
     fn run(&mut self, context: &TaskContext) -> ErasedProgress;
     fn fail(&mut self, error: TaskError);
+    fn publish(&mut self);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -452,6 +469,7 @@ enum ErasedProgress {
 struct TypedTask<T: Task> {
     task: T,
     sender: Sender<Result<T::Output, TaskError>>,
+    completion: Option<Result<T::Output, TaskError>>,
 }
 
 impl<T: Task> ErasedTask for TypedTask<T> {
@@ -459,12 +477,12 @@ impl<T: Task> ErasedTask for TypedTask<T> {
         let result = catch_unwind(AssertUnwindSafe(|| self.task.run(context)));
         match result {
             Ok(TaskProgress::Done(output)) => {
-                let _ = self.sender.send(Ok(output));
+                self.completion = Some(Ok(output));
                 ErasedProgress::Done
             }
             Ok(TaskProgress::Yield) => ErasedProgress::Yield,
             Err(_) => {
-                let _ = self.sender.send(Err(TaskError::Panicked));
+                self.completion = Some(Err(TaskError::Panicked));
                 ErasedProgress::Done
             }
         }
@@ -472,6 +490,12 @@ impl<T: Task> ErasedTask for TypedTask<T> {
 
     fn fail(&mut self, error: TaskError) {
         let _ = self.sender.send(Err(error));
+    }
+
+    fn publish(&mut self) {
+        if let Some(result) = self.completion.take() {
+            let _ = self.sender.send(result);
+        }
     }
 }
 
@@ -504,28 +528,31 @@ impl PoolState {
 struct Pool {
     class: TaskClass,
     queue_capacity: usize,
+    worker_count: usize,
     quantum: Duration,
     aging_interval: Duration,
     state: Mutex<PoolState>,
     available: Condvar,
-    stop: AtomicBool,
+    stop: Arc<AtomicBool>,
 }
 
 impl Pool {
     fn new(
         class: TaskClass,
         queue_capacity: usize,
+        worker_count: usize,
         quantum: Duration,
         aging_interval: Duration,
     ) -> Self {
         Self {
             class,
             queue_capacity,
+            worker_count,
             quantum,
             aging_interval,
             state: Mutex::new(PoolState::new()),
             available: Condvar::new(),
-            stop: AtomicBool::new(false),
+            stop: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -544,7 +571,11 @@ impl Pool {
             level: priority.level(),
             enqueued_at: Instant::now(),
             cancelled: Arc::clone(&cancelled),
-            task: Box::new(TypedTask { task, sender }),
+            task: Box::new(TypedTask {
+                task,
+                sender,
+                completion: None,
+            }),
         };
         self.push(queued)?;
         Ok(TaskHandle {
@@ -556,9 +587,13 @@ impl Pool {
     fn push(&self, mut task: QueuedTask) -> Result<(), SchedulerError> {
         let mut state = lock(&self.state);
         if self.stop.load(Ordering::Acquire) {
+            drop(state);
+            drop_task(task);
             return Err(SchedulerError::Shutdown);
         }
         if state.queued >= self.queue_capacity {
+            drop(state);
+            drop_task(task);
             return Err(SchedulerError::QueueFull);
         }
         let base = task.priority.level();
@@ -594,6 +629,7 @@ impl Pool {
         };
         for mut task in tasks {
             task.task.fail(TaskError::Shutdown);
+            drop_task(task);
         }
     }
 
@@ -621,10 +657,12 @@ impl Pool {
             };
             if self.stop.load(Ordering::Acquire) {
                 task.task.fail(TaskError::Shutdown);
+                drop_task(task);
                 continue;
             }
             if task.cancelled.load(Ordering::Acquire) {
                 task.task.fail(TaskError::Cancelled);
+                drop_task(task);
                 continue;
             }
             let context = TaskContext {
@@ -633,10 +671,16 @@ impl Pool {
                 priority: task.priority,
                 level: task.level,
                 cancelled: Arc::clone(&task.cancelled),
+                shutting_down: Arc::clone(&self.stop),
             };
             let started = Instant::now();
             let outcome = task.task.run(&context);
             let elapsed = started.elapsed();
+            if self.stop.load(Ordering::Acquire) {
+                task.task.fail(TaskError::Shutdown);
+                drop_task(task);
+                continue;
+            }
             let mut state = lock(&self.state);
             match outcome {
                 ErasedProgress::Done => {
@@ -650,16 +694,21 @@ impl Pool {
                         self.quantum,
                         self.queue_capacity,
                     );
+                    drop(state);
+                    task.task.publish();
+                    drop_task(task);
                 }
                 ErasedProgress::Yield => {
                     if self.stop.load(Ordering::Acquire) {
                         drop(state);
                         task.task.fail(TaskError::Shutdown);
+                        drop_task(task);
                         continue;
                     }
                     if task.cancelled.load(Ordering::Acquire) {
                         drop(state);
                         task.task.fail(TaskError::Cancelled);
+                        drop_task(task);
                         continue;
                     }
                     record_feedback(
@@ -675,9 +724,10 @@ impl Pool {
                     let next = (task.level + 1).min(LEVELS - 1);
                     task.level = next;
                     task.enqueued_at = Instant::now();
-                    if state.queued >= self.queue_capacity {
+                    if state.queued >= self.queue_capacity.saturating_add(self.worker_count) {
                         drop(state);
                         task.task.fail(TaskError::QueueFull);
+                        drop_task(task);
                         continue;
                     }
                     state.levels[next].push_back(task);
@@ -687,6 +737,12 @@ impl Pool {
             }
         }
     }
+}
+
+fn drop_task(task: QueuedTask) {
+    // A task-owned destructor must not retire the worker. The handle may
+    // already hold a completion, but later submissions still need a live pool.
+    let _ = catch_unwind(AssertUnwindSafe(|| drop(task)));
 }
 
 fn spawn_workers(
