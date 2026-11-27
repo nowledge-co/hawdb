@@ -43,13 +43,37 @@ const WRITES: &[&str] = &[
     "MATCH (m:M {id: 'k9'}) SET m.id = 'k10'",
     // Both the re-keyed node and the original `k10` match.
     "MATCH (m:M {id: 'k10'}) SET m.v = 10",
+    // Relationships between matched endpoints: both committed, one created
+    // in this run, an existing edge merged, a new edge merged.
+    "MATCH (a:M {id: 'k11'}), (b:M {id: 'k12'}) CREATE (a)-[:R {w: 1}]->(b)",
+    "CREATE (:M {id: 'fresh', state: 'active', v: 0})",
+    "MATCH (a:M {id: 'fresh'}), (b:M {id: 'k13'}) CREATE (a)-[:R {w: 2}]->(b)",
+    "MATCH (a:M {id: 'k11'}), (b:M {id: 'k12'}) MERGE (a)-[:R {w: 1}]->(b)",
+    "MATCH (a:M {id: 'k15'}), (b:M {id: 'k16'}) MERGE (a)-[:R {w: 3}]->(b)",
+    // Re-target: merge an edge from a matched source to a matched target.
+    "MATCH (m:M {id: 'k15'})-[:R]->(src:M {id: 'k16'}) MATCH (dst:M {id: 'k19'}) \
+     MERGE (m)-[r:R]->(dst) ON CREATE SET r.w = 5",
+    // Re-source: copy an existing edge's target to another matched source.
+    "MATCH (old:M {id: 'k15'})-[:R]->(t:M {id: 'k16'}), (new:M {id: 'k20'}) \
+     MERGE (new)-[r:R]->(t) ON CREATE SET r.w = 6",
+    // Node MERGE: an existing key and a new one.
+    "MERGE (m:M {id: 'k17'}) SET m.v = 17",
+    "MERGE (m:M {id: 'merged'}) SET m.v = 18",
+    // Integer keys on a second indexed label.
+    "MATCH (n:N {key: 3}) SET n.v = 1",
+    "MATCH (n:N) WHERE n.key IN [4, 5, 99] SET n.v = 2",
+    "MATCH (a:N {key: 1}), (b:M {id: 'k18'}) CREATE (a)-[:R {w: 4}]->(b)",
+    "MATCH (n:N {key: 6}) DETACH DELETE n",
     "MATCH (m:M {id: 'new'}) DETACH DELETE m",
+    // Deleting an endpoint removes its edges in both graphs.
+    "MATCH (m:M {id: 'k12'}) DETACH DELETE m",
 ];
 
 fn populate(path: &std::path::Path, indexed: bool, checkpoint: bool) {
     let mut db = Database::open(path).unwrap();
     if indexed {
         db.query("CREATE INDEX ON :M(id)").unwrap();
+        db.query("CREATE INDEX ON :N(key)").unwrap();
     }
     for i in 0..NODES {
         let state = if i % 2 == 0 { "inactive" } else { "active" };
@@ -61,6 +85,10 @@ fn populate(path: &std::path::Path, indexed: bool, checkpoint: bool) {
     }
     for _ in 0..2 {
         db.query("CREATE (:M {id: 'dup', state: 'active', v: 0})")
+            .unwrap();
+    }
+    for key in 0..8 {
+        db.query(&format!("CREATE (:N {{key: {key}, v: 0}})"))
             .unwrap();
     }
     if checkpoint {
@@ -90,18 +118,27 @@ fn open(path: &std::path::Path, residency: StorageResidencyMode) -> Database {
     .unwrap()
 }
 
-/// Every `:M` node with its internal id and all properties.
+/// Every `:M` and `:N` node with its internal id and all properties, then
+/// every relationship with its id, endpoints and properties.
 fn graph(db: &mut Database) -> Vec<Vec<Value>> {
-    db.query(
+    let mut rows = Vec::new();
+    for query in [
         "MATCH (m:M) RETURN id(m) AS node, m.id AS id, m.state AS state, m.v AS v, m.body AS body \
          ORDER BY node",
-    )
-    .unwrap()
-    .rows
-    .into_rows()
-    .into_iter()
-    .map(|row| row.values().cloned().collect())
-    .collect()
+        "MATCH (n:N) RETURN id(n) AS node, n.key AS key, n.v AS v ORDER BY node",
+        "MATCH (a)-[r:R]->(b) RETURN id(r) AS rel, id(a) AS source, id(b) AS target, r.w AS w \
+         ORDER BY rel",
+    ] {
+        rows.extend(
+            db.query(query)
+                .unwrap()
+                .rows
+                .into_rows()
+                .into_iter()
+                .map(|row| row.values().cloned().collect::<Vec<_>>()),
+        );
+    }
+    rows
 }
 
 /// The report covers resident indexes; an out-of-core store reports itself
@@ -153,6 +190,15 @@ fn run(
     if indexed {
         assert_index_consistent(&db, &context);
     }
+    // k11->k12 (merged once), fresh->k13, k15->k16, k15->k19, k20->k16 and
+    // N1->k18, minus k11->k12 removed with k12.
+    let edges = db
+        .query("MATCH ()-[r:R]->() RETURN count(r) AS n")
+        .unwrap()
+        .rows
+        .get(0, "n")
+        .map(|value| value.to_owned_value());
+    assert_eq!(edges, Some(Value::Int(5)), "{context}: edges");
     let before_reopen = graph(&mut db);
     drop(db);
     let mut reopened = open(&path, residency);
