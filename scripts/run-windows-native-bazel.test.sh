@@ -132,7 +132,15 @@ export WINDOWS_NATIVE_RESULTS="$fixture/refuse-incomplete"
 if FAKE_NATIVE_MODE=incomplete bash "$root/scripts/run-windows-native-bazel.sh" bindings >"$fixture/refuse-incomplete.log" 2>&1; then
   echo 'native runner accepted incomplete Rust output' >&2; exit 1
 fi
-grep -q 'without a complete positive Rust test summary' "$fixture/refuse-incomplete.log"
-test -s "$WINDOWS_NATIVE_RESULTS/retained-ffi-diagnostic/parallel.json"
-test -s "$WINDOWS_NATIVE_RESULTS/retained-ffi-diagnostic/serial.json"
-python3 "$root/scripts/diagnose-retained-ffi.test.py"
+if ! grep -q 'without a complete positive Rust test summary' "$fixture/refuse-incomplete.log" ||
+   [[ ! -s "$WINDOWS_NATIVE_RESULTS/retained-ffi-diagnostic/parallel.json" ]] ||
+   [[ ! -s "$WINDOWS_NATIVE_RESULTS/retained-ffi-diagnostic/serial.json" ]]; then
+  cat "$fixture/refuse-incomplete.log" >&2
+  echo 'incomplete-output diagnostic did not produce the expected evidence' >&2
+  exit 1
+fi
+diagnostic_test="$root/scripts/diagnose-retained-ffi.test.py"
+if command -v cygpath >/dev/null 2>&1; then
+  diagnostic_test="$(cygpath -m "$diagnostic_test")"
+fi
+python3 "$diagnostic_test"

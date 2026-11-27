@@ -81,7 +81,7 @@ rust_case() {
       if [[ "$name" == retained-ffi ]]; then
         local binary_root
         if binary_root="$("$BAZEL" info "--//:windows_native_profile=$profile" bazel-bin 2>>"$results/testlogs-location-error.txt")"; then
-          python3 "$(dirname "${BASH_SOURCE[0]}")/diagnose-retained-ffi.py" \
+          python3 "$(native_path "$(dirname "${BASH_SOURCE[0]}")/diagnose-retained-ffi.py")" \
             "$(native_path "$binary_root/bindings/ffi/hawdb_ffi_tests.exe")" \
             "$(native_path "$results/retained-ffi-diagnostic")" || true
         fi
