@@ -148,6 +148,7 @@ mod merge_nodes;
 mod merge_relationships;
 mod multi_with_normalization;
 mod mutation_guards;
+mod mutation_index_seek;
 mod mutation_persistence;
 mod mutation_returns;
 mod neighbor_reads;

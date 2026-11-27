@@ -1583,6 +1583,29 @@ impl GraphStore {
         max_ids: usize,
         limit_name: &str,
     ) -> Result<Vec<NodeId>> {
+        self.matching_node_ids_bounded_indexed(None, label_id, filter, max_ids, limit_name)
+    }
+
+    /// Committed node IDs matching `label_id` and `filter`.
+    ///
+    /// `indexed_catalog` names the catalog whose property indexes this store
+    /// has populated (the committed catalog, never one with indexes staged in
+    /// the same transaction). With it, an equality term on an indexed property
+    /// seeks candidates instead of decoding the whole label; every candidate is
+    /// rechecked against the full filter.
+    pub(super) fn matching_node_ids_bounded_indexed(
+        &self,
+        indexed_catalog: Option<&Catalog>,
+        label_id: Option<LabelId>,
+        filter: Option<&PropertyFilter>,
+        max_ids: usize,
+        limit_name: &str,
+    ) -> Result<Vec<NodeId>> {
+        if let Some(ids) =
+            self.indexed_matching_node_ids(indexed_catalog, label_id, filter, max_ids, limit_name)?
+        {
+            return Ok(ids);
+        }
         if let Some((values, recheck)) = filter.and_then(internal_id_candidates) {
             let mut ids = BTreeSet::new();
             for value in values {
@@ -1609,9 +1632,17 @@ impl GraphStore {
             return Ok(ids.into_iter().collect());
         }
         record_matched_node_label_scan();
+        self.graph_index_read_metrics
+            .record_mutation_target_label_scan();
+        // Decode only the properties the filter reads: a matched node needs
+        // its id here, never its full record.
+        let mut required = BTreeSet::new();
+        if let Some(filter) = filter {
+            collect_filter_properties(filter, &mut required);
+        }
         let mut ids = Vec::with_capacity(max_ids.min(1024));
         let mut exceeded = false;
-        self.visit_nodes_owned(label_id, |node| {
+        self.visit_projected_nodes_owned(label_id, &required, |node| {
             if filter
                 .is_none_or(|filter| property_filter_matches(filter, node.id.0, &node.properties))
             {
@@ -1631,6 +1662,109 @@ impl GraphStore {
         Ok(ids)
     }
 
+    fn indexed_matching_node_ids(
+        &self,
+        indexed_catalog: Option<&Catalog>,
+        label_id: Option<LabelId>,
+        filter: Option<&PropertyFilter>,
+        max_ids: usize,
+        limit_name: &str,
+    ) -> Result<Option<Vec<NodeId>>> {
+        let (Some(catalog), Some(label_id), Some(filter)) = (indexed_catalog, label_id, filter)
+        else {
+            return Ok(None);
+        };
+        let cold_projection = self
+            .canonical_base
+            .as_ref()
+            .zip(self.persistent_property_projection.as_ref());
+        // The resident index covers every resident node; nodes left in an
+        // out-of-core canonical base also need a complete equality projection.
+        let out_of_core = self.canonical_base_out_of_core && self.canonical_base.is_some();
+        let Some((property, values)) =
+            equality_seek_terms(filter)
+                .into_iter()
+                .find(|(property, _)| {
+                    catalog.has_scalar_property_index(label_id, property)
+                        && (!out_of_core
+                            || cold_projection.is_some_and(|(_, projection)| {
+                                !projection.is_poisoned()
+                                    && projection.manifest().supports(
+                                        label_id,
+                                        property,
+                                        PersistentPropertyProjectionKind::Equality,
+                                    )
+                            }))
+                })
+        else {
+            return Ok(None);
+        };
+        let matches = |node: &NodeRecord| {
+            node.labels.contains(&label_id)
+                && property_filter_matches(filter, node.id.0, &node.properties)
+        };
+        self.graph_index_read_metrics
+            .record_mutation_target_index_seek();
+        // The cap is checked before each new distinct match, as the label scan
+        // does, so a high-fanout key under a small limit stops at the first
+        // excess match instead of collecting (and, out of core, hydrating)
+        // the whole posting list.
+        let mut ids = BTreeSet::new();
+        let mut exceeded = false;
+        'values: for value in values {
+            for node in self.seek_nodes_by_property(label_id, property, value) {
+                self.graph_index_read_metrics
+                    .record_mutation_target_index_candidate();
+                if matches(node) && !ids.contains(&node.id) {
+                    if ids.len() == max_ids {
+                        exceeded = true;
+                        break 'values;
+                    }
+                    ids.insert(node.id);
+                }
+            }
+            if out_of_core && let Some((reader, projection)) = cold_projection {
+                let (report, _) = projection
+                    .scan_equality_candidates(label_id, property, value, |node_id| {
+                        if self.node_tombstones.contains(&node_id)
+                            || self.nodes.contains_key(&node_id)
+                            || ids.contains(&node_id)
+                        {
+                            return Ok(CanonicalScanControl::Continue);
+                        }
+                        self.graph_index_read_metrics
+                            .record_mutation_target_index_candidate();
+                        let node = reader.get_node(node_id)?.ok_or_else(|| {
+                            PersistentPropertyProjectionError::Corrupt(format!(
+                                "property projection references missing canonical node {}",
+                                node_id.0
+                            ))
+                        })?;
+                        if matches(&node) {
+                            if ids.len() == max_ids {
+                                exceeded = true;
+                                return Ok(CanonicalScanControl::Stop);
+                            }
+                            ids.insert(node_id);
+                        }
+                        Ok(CanonicalScanControl::Continue)
+                    })
+                    .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
+                self.graph_index_read_metrics
+                    .record_property(PersistentGraphIndexClass::NodeEquality, report);
+                if exceeded {
+                    break 'values;
+                }
+            }
+        }
+        if exceeded {
+            return Err(HawDBError::Execution(format!(
+                "mutation would exceed {limit_name} {max_ids}"
+            )));
+        }
+        Ok(Some(ids.into_iter().collect()))
+    }
+
     pub(super) fn matching_node_ids_with_pending_bounded(
         &self,
         label_id: Option<LabelId>,
@@ -1639,7 +1773,32 @@ impl GraphStore {
         max_ids: usize,
         limit_name: &str,
     ) -> Result<Vec<NodeId>> {
-        let mut ids = self.matching_node_ids_bounded(label_id, filter, max_ids, limit_name)?;
+        self.matching_node_ids_with_pending_bounded_indexed(
+            None,
+            label_id,
+            filter,
+            pending_nodes,
+            max_ids,
+            limit_name,
+        )
+    }
+
+    pub(super) fn matching_node_ids_with_pending_bounded_indexed(
+        &self,
+        indexed_catalog: Option<&Catalog>,
+        label_id: Option<LabelId>,
+        filter: Option<&PropertyFilter>,
+        pending_nodes: &[PendingNode],
+        max_ids: usize,
+        limit_name: &str,
+    ) -> Result<Vec<NodeId>> {
+        let mut ids = self.matching_node_ids_bounded_indexed(
+            indexed_catalog,
+            label_id,
+            filter,
+            max_ids,
+            limit_name,
+        )?;
         for id in Self::pending_node_ids_matching(label_id, filter, pending_nodes) {
             if ids.len() == max_ids {
                 return Err(HawDBError::Execution(format!(
@@ -1792,6 +1951,63 @@ fn collect_relational_primary_key_changes_from_wal_ops(
 
 // Membership is established by the candidate loop. Rechecking the leading
 // IdIn for each candidate would turn a fan-out endpoint into quadratic work.
+/// Every property name `filter` reads.
+fn collect_filter_properties(filter: &PropertyFilter, out: &mut BTreeSet<String>) {
+    match filter {
+        PropertyFilter::And(filters) | PropertyFilter::Or(filters) => {
+            for filter in filters {
+                collect_filter_properties(filter, out);
+            }
+        }
+        PropertyFilter::Not(filter) => collect_filter_properties(filter, out),
+        PropertyFilter::IdEq { .. }
+        | PropertyFilter::IdNotEq { .. }
+        | PropertyFilter::IdRange { .. }
+        | PropertyFilter::IdIn { .. } => {}
+        PropertyFilter::Eq { property, .. }
+        | PropertyFilter::NotEq { property, .. }
+        | PropertyFilter::IsNull { property }
+        | PropertyFilter::IsNotNull { property }
+        | PropertyFilter::In { property, .. }
+        | PropertyFilter::ListContains { property, .. }
+        | PropertyFilter::ListContainsLower { property, .. }
+        | PropertyFilter::Contains { property, .. }
+        | PropertyFilter::StartsWith { property, .. }
+        | PropertyFilter::EndsWith { property, .. }
+        | PropertyFilter::RegexMatch { property, .. }
+        | PropertyFilter::DefaultIfNullOrEq { property, .. }
+        | PropertyFilter::Range { property, .. } => {
+            out.insert(property.clone());
+        }
+    }
+}
+
+/// Equality terms an index can seek: `property = value` or `property IN
+/// values`, alone or as a conjunct. NULL and float operands are left to the
+/// scan (NULL never matches; float equality and index key order differ on NaN).
+fn equality_seek_terms(filter: &PropertyFilter) -> Vec<(&str, &[Value])> {
+    fn seekable(values: &[Value]) -> bool {
+        values
+            .iter()
+            .all(|value| !matches!(value, Value::Null | Value::Float(_)))
+    }
+    fn term(filter: &PropertyFilter) -> Option<(&str, &[Value])> {
+        match filter {
+            PropertyFilter::Eq { property, value } if seekable(std::slice::from_ref(value)) => {
+                Some((property.as_str(), std::slice::from_ref(value)))
+            }
+            PropertyFilter::In { property, values } if seekable(values) => {
+                Some((property.as_str(), values.as_slice()))
+            }
+            _ => None,
+        }
+    }
+    match filter {
+        PropertyFilter::And(filters) => filters.iter().filter_map(term).collect(),
+        filter => term(filter).into_iter().collect(),
+    }
+}
+
 pub(super) fn internal_id_candidates(
     filter: &PropertyFilter,
 ) -> Option<(&[Value], &[PropertyFilter])> {
