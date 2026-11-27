@@ -251,10 +251,89 @@ const importReportFields = {
   strings: ["source_hawdb_version", "manifest_sha256"],
 } as const;
 
+/** The C ABI's `"counters"` keys, by `QueryCounters` field. */
+const counterKeys = {
+  nodesCreated: "nodes_created",
+  nodesDeleted: "nodes_deleted",
+  relationshipsCreated: "relationships_created",
+  relationshipsDeleted: "relationships_deleted",
+  propertiesSet: "properties_set",
+  labelsAdded: "labels_added",
+  labelsRemoved: "labels_removed",
+  indexesAdded: "indexes_added",
+  indexesRemoved: "indexes_removed",
+  constraintsAdded: "constraints_added",
+  constraintsRemoved: "constraints_removed",
+} as const;
+
+export type QueryCounterName = keyof typeof counterKeys;
+
+/**
+ * How many write operations one Cypher statement executed
+ * (`QueryResult.counters`), in the spirit of Neo4j's `SummaryCounters`.
+ *
+ * The counters count write operations executed, not data changed:
+ * `SET n.p = v` counts 1 in `propertiesSet` even when `n.p` already equals
+ * `v`. A read, a pattern that matches nothing, every SQL statement and a
+ * transaction commit report all zeros, but `propertiesSet === 0` does not
+ * imply that nothing matched. `labelsRemoved`, `indexesRemoved` and
+ * `constraintsRemoved` stay 0 until the Cypher dialect parses `REMOVE` and
+ * `DROP`.
+ */
+export class QueryCounters {
+  readonly nodesCreated: Count = 0;
+  readonly nodesDeleted: Count = 0;
+  readonly relationshipsCreated: Count = 0;
+  readonly relationshipsDeleted: Count = 0;
+  readonly propertiesSet: Count = 0;
+  readonly labelsAdded: Count = 0;
+  readonly labelsRemoved: Count = 0;
+  readonly indexesAdded: Count = 0;
+  readonly indexesRemoved: Count = 0;
+  readonly constraintsAdded: Count = 0;
+  readonly constraintsRemoved: Count = 0;
+
+  /** Absent fields are 0. */
+  constructor(values: Partial<Record<QueryCounterName, Count>> = {}) {
+    Object.assign(this, values);
+    Object.freeze(this);
+  }
+
+  /** Whether the statement executed any write counted here. */
+  containsUpdates(): boolean {
+    return (Object.keys(counterKeys) as QueryCounterName[]).some((name) => this[name] !== 0);
+  }
+}
+
+/** `undefined` when the loaded library predates write counters. */
+function parseCounters(value: unknown): QueryCounters | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === null || Array.isArray(value) || typeof value !== "object") {
+    throw new TypeError("HawDB returned a malformed result envelope");
+  }
+  const fields = value as Record<string, unknown>;
+  const counts: Partial<Record<QueryCounterName, Count>> = {};
+  for (const [name, key] of Object.entries(counterKeys) as [QueryCounterName, string][]) {
+    const count = fields[key];
+    if (!(typeof count === "number" || typeof count === "bigint") || count < 0) {
+      throw new TypeError("HawDB returned a malformed result envelope");
+    }
+    counts[name] = count;
+  }
+  return new QueryCounters(counts);
+}
+
 export class QueryResult {
   constructor(
     public readonly columns: string[],
     public readonly rows: HawDBValue[][],
+    /**
+     * The write operations the statement executed; all zero for a read, and
+     * `undefined` when the loaded library predates write counters.
+     */
+    public readonly counters?: QueryCounters,
   ) {}
 
   dicts(): Array<Record<string, HawDBValue>> {
@@ -334,7 +413,7 @@ function parseResult(text: string): QueryResult {
     }
     return row.map(normalizeValue);
   });
-  return new QueryResult(normalizedColumns, normalizedRows);
+  return new QueryResult(normalizedColumns, normalizedRows, parseCounters(envelope.counters));
 }
 
 export class HawDBLibrary {

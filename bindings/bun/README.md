@@ -105,7 +105,16 @@ trusted-publisher setup are described in
   library validates values with the same kind. Reads over a budget throw
   instead of returning partial results.
 - `database.query(cypher, parameters)` and `database.querySQL(sql, parameters)`
-  return `QueryResult { columns, rows }`; `dicts()` converts rows to objects.
+  return `QueryResult { columns, rows, counters }`; `dicts()` converts rows to
+  objects. `counters` is a frozen `QueryCounters` with the write operations a
+  Cypher statement executed (`nodesCreated`, `nodesDeleted`,
+  `relationshipsCreated`, `relationshipsDeleted`, `propertiesSet`,
+  `labelsAdded`, `labelsRemoved`, `indexesAdded`, `indexesRemoved`,
+  `constraintsAdded`, `constraintsRemoved`, each a `Count`) and
+  `containsUpdates()`. They count writes executed, not data changed; reads,
+  patterns that match nothing and SQL report all zeros. `counters` is
+  `undefined` when the loaded library predates write counters. See the
+  [C ABI result envelope](../ffi/README.md#value-encoding) for the rules.
 - `database.transaction((tx) => { ... })` runs the body as one atomic
   transaction: `tx.query`, `tx.querySQL` and `tx.exec` run inside it, it
   commits when the body returns (returning the body's value) and rolls back

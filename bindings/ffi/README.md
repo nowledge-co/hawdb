@@ -120,7 +120,19 @@ Parameters and results are JSON so hosts never see HawDB's `Value` type.
 - Cypher `hawdb_query`: `params_json` is a JSON object of `$name` values.
 - SQL `hawdb_query_sql`: `params_json` is a JSON array of positional `$1`
   values.
-- Results: `{"columns": [<name>, ...], "rows": [[<value>, ...], ...]}`.
+- Results: `{"columns": [<name>, ...], "rows": [[<value>, ...], ...],
+  "counters": {...}}`. `"counters"` reports the write operations the
+  statement executed, with every key always present as a non-negative
+  integer: `nodes_created`, `nodes_deleted`, `relationships_created`,
+  `relationships_deleted`, `properties_set`, `labels_added`,
+  `labels_removed`, `indexes_added`, `indexes_removed`, `constraints_added`,
+  `constraints_removed`. They count writes executed, not data changed
+  (`SET n.p = v` counts 1 even when `n.p` already equals `v`); a read, a
+  pattern that matches nothing, every SQL statement and a transaction commit
+  report all zeros, but `properties_set == 0` does not imply that nothing
+  matched. `labels_removed`, `indexes_removed` and `constraints_removed` stay
+  0 until the Cypher dialect parses `REMOVE` and `DROP`. Hosts must ignore
+  envelope keys they do not know; later releases may add more.
 
 | HawDB `Value` | JSON |
 |---|---|

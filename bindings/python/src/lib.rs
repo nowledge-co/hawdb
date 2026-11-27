@@ -25,7 +25,7 @@ mod boundary_profile;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-pub use database::{open, Database, QueryResult, ReadTransaction, Transaction};
+pub use database::{open, Database, QueryCounters, QueryResult, ReadTransaction, Transaction};
 pub use errors::register_exceptions;
 
 /// Private local-qualification hook, absent from ordinary/default/lite builds.
@@ -85,6 +85,7 @@ fn _hawdb(module: &Bound<'_, PyModule>) -> PyResult<()> {
     #[cfg(feature = "boundary-profiling")]
     module.add_function(wrap_pyfunction!(_boundary_profile_snapshot, module)?)?;
     module.add_class::<QueryResult>()?;
+    module.add_class::<QueryCounters>()?;
     module.add_class::<Transaction>()?;
     module.add_class::<ReadTransaction>()?;
     module.add_class::<retained::RetainedCursor>()?;

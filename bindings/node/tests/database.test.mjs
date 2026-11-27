@@ -17,6 +17,7 @@ import {
   importDump,
   verifyDump,
   HawDBError,
+  QueryCounters,
 } from "../dist/index.js";
 
 function workspace(t) {
@@ -99,6 +100,50 @@ test("parameterized SQL/Cypher preserve bigint, binary, tagged and NULL values",
       }),
     /safe|bigint/,
   );
+});
+
+test("query results report the write counters of each Cypher statement", (t) => {
+  const db = openInMemory();
+  t.after(() => db.close());
+  const zero = { ...new QueryCounters() };
+  const created = db.query("CREATE (:A {k: 1, v: 5})-[:R]->(:B)").counters;
+  assert.ok(created instanceof QueryCounters);
+  assert.ok(Object.isFrozen(created));
+  assert.deepEqual(
+    { ...created },
+    {
+      ...zero,
+      nodesCreated: 2,
+      relationshipsCreated: 1,
+      labelsAdded: 2,
+      propertiesSet: 2,
+    },
+  );
+  assert.equal(created.containsUpdates(), true);
+  // A same-value SET still executes, and counts, one property write.
+  assert.deepEqual(
+    { ...db.query("MATCH (n:A {k: 1}) SET n.v = 5").counters },
+    { ...zero, propertiesSet: 1 },
+  );
+  // A pattern that matches nothing, a read and SQL report all zeros.
+  for (const counters of [
+    db.query("MATCH (n:A {k: 2}) SET n.v = 5").counters,
+    db.query("MATCH (n:A) RETURN n.v AS v").counters,
+    db.querySQL("SELECT 1 AS one").counters,
+  ]) {
+    assert.deepEqual({ ...counters }, zero);
+    assert.equal(counters.containsUpdates(), false);
+  }
+  const inside = db.transaction(
+    (tx) => tx.query("CREATE (:A {k: 3})").counters,
+  );
+  assert.deepEqual(
+    { ...inside },
+    { ...zero, nodesCreated: 1, labelsAdded: 1, propertiesSet: 1 },
+  );
+  const deleted = db.query("MATCH (n:A {k: 1}) DETACH DELETE n").counters;
+  assert.equal(deleted.nodesDeleted, 1);
+  assert.equal(deleted.relationshipsDeleted, 1);
 });
 
 test("callback transactions commit together, roll back and expire their scope", (t) => {

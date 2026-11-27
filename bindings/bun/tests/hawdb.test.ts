@@ -18,7 +18,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HawDBError, loadHawDB } from "../src/index.ts";
+import { HawDBError, loadHawDB, QueryCounters } from "../src/index.ts";
 
 const libraryPath = process.env.HAWDB_LIBRARY;
 if (!libraryPath) {
@@ -75,6 +75,47 @@ describe("Bun FFI binding", () => {
         expect(error).toBeInstanceOf(HawDBError);
         expect((error as HawDBError).kind.length).toBeGreaterThan(0);
       }
+    } finally {
+      database.close();
+    }
+  });
+
+  test("reports the write counters of each Cypher statement", () => {
+    const database = library.openInMemory();
+    try {
+      const created = database.query("CREATE (:A {k: 1, v: 5})-[:R]->(:B)").counters!;
+      expect(created).toBeInstanceOf(QueryCounters);
+      expect({ ...created }).toEqual({
+        ...new QueryCounters(),
+        nodesCreated: 2,
+        relationshipsCreated: 1,
+        labelsAdded: 2,
+        propertiesSet: 2,
+      });
+      expect(created.containsUpdates()).toBe(true);
+      // A same-value SET still executes, and counts, one property write.
+      const same = database.query("MATCH (n:A {k: 1}) SET n.v = 5").counters!;
+      expect({ ...same }).toEqual({ ...new QueryCounters(), propertiesSet: 1 });
+      // A pattern that matches nothing, a read and SQL report all zeros.
+      for (const counters of [
+        database.query("MATCH (n:A {k: 2}) SET n.v = 5").counters!,
+        database.query("MATCH (n:A) RETURN n.v AS v").counters!,
+        database.querySQL("SELECT 1 AS one").counters!,
+      ]) {
+        expect({ ...counters }).toEqual({ ...new QueryCounters() });
+        expect(counters.containsUpdates()).toBe(false);
+      }
+      const inside = database.transaction((tx) => tx.query("CREATE (:A {k: 3})").counters!);
+      expect({ ...inside }).toEqual({
+        ...new QueryCounters(),
+        nodesCreated: 1,
+        labelsAdded: 1,
+        propertiesSet: 1,
+      });
+      const deleted = database.query("MATCH (n:A {k: 1}) DETACH DELETE n").counters!;
+      expect(deleted.nodesDeleted).toBe(1);
+      expect(deleted.relationshipsDeleted).toBe(1);
+      expect(Object.isFrozen(deleted)).toBe(true);
     } finally {
       database.close();
     }

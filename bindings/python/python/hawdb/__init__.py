@@ -16,6 +16,7 @@
 
 from hawdb._hawdb import (
     Database,
+    QueryCounters,
     QueryResult,
     ReadTransaction,
     RetainedOptions,
@@ -54,6 +55,7 @@ def __dir__():
 
 __all__ = [
     "Database",
+    "QueryCounters",
     "QueryResult",
     "ReadTransaction",
     "RetainedOptions",

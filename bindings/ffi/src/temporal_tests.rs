@@ -77,6 +77,7 @@ fn temporal_query_results_and_parameters_use_tagged_json() {
         json!({
             "columns": ["on", "took", "year"],
             "rows": [[{"$date": "2026-10-30"}, {"$duration": "PT1H30M"}, 2026]],
+            "counters": counters_to_json(&hawdb::QueryCounters::default()),
         })
     );
 }

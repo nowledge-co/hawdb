@@ -85,6 +85,38 @@ type OpenOptions struct {
 type Result struct {
 	Columns []string
 	Rows    [][]any
+	// Counters are the write operations the statement executed; nil when
+	// the loaded library predates write counters, never a substituted zero.
+	Counters *QueryCounters
+}
+
+// QueryCounters reports how many write operations one Cypher statement
+// executed, in the spirit of Neo4j's SummaryCounters.
+//
+// The counters count write operations executed, not data changed:
+// SET n.p = v counts 1 in PropertiesSet even when n.p already equals v. A
+// read, a pattern that matches nothing, every SQL statement and a
+// transaction commit report all zeros, but PropertiesSet == 0 does not
+// imply that nothing matched. LabelsRemoved, IndexesRemoved and
+// ConstraintsRemoved stay 0 until the Cypher dialect parses REMOVE and DROP.
+type QueryCounters struct {
+	NodesCreated         uint64 `json:"nodes_created"`
+	NodesDeleted         uint64 `json:"nodes_deleted"`
+	RelationshipsCreated uint64 `json:"relationships_created"`
+	RelationshipsDeleted uint64 `json:"relationships_deleted"`
+	PropertiesSet        uint64 `json:"properties_set"`
+	LabelsAdded          uint64 `json:"labels_added"`
+	LabelsRemoved        uint64 `json:"labels_removed"`
+	IndexesAdded         uint64 `json:"indexes_added"`
+	IndexesRemoved       uint64 `json:"indexes_removed"`
+	ConstraintsAdded     uint64 `json:"constraints_added"`
+	ConstraintsRemoved   uint64 `json:"constraints_removed"`
+}
+
+// ContainsUpdates reports whether the statement executed any write counted
+// here.
+func (c QueryCounters) ContainsUpdates() bool {
+	return c != QueryCounters{}
 }
 
 // Dicts returns the rows as maps keyed by column name.

@@ -12,13 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from hawdb._hawdb import Database, QueryResult, RetainedOptions, RetainedCursor, RetainedBatch, RetainedBuffer, RetainedNodeCursor, RetainedNodeView, exceptions, open
+from hawdb._hawdb import Database, QueryCounters, QueryResult, RetainedOptions, RetainedCursor, RetainedBatch, RetainedBuffer, RetainedNodeCursor, RetainedNodeView, exceptions, open
 from hawdb import dbapi as dbapi
 from hawdb import pydantic as pydantic
 from hawdb.dbapi import connect as connect
 
 __all__ = [
     "Database",
+    "QueryCounters",
     "QueryResult",
     "RetainedOptions",
     "RetainedCursor",

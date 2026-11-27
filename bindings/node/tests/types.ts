@@ -17,6 +17,8 @@
 import {
   open,
   openInMemory,
+  QueryCounters,
+  type Count,
   type HawDBValue,
   type Transaction,
 } from "../src/index.js";
@@ -30,6 +32,12 @@ persisted.transaction((transaction: Transaction) =>
   transaction.exec("CREATE (:Note {id: $id})", { id: value }),
 );
 persisted.close();
+const counters: QueryCounters = memory.query("CREATE (:Note)").counters;
+const created: Count = counters.nodesCreated;
+const updated: boolean = counters.containsUpdates() && created !== 0;
+void updated;
+// @ts-expect-error Counters are read-only.
+counters.propertiesSet = 1;
 // @ts-expect-error Cypher uses named parameters, not SQL positional arrays.
 memory.query("MATCH (n) RETURN n", [1]);
 // @ts-expect-error A misspelt budget option must not become part of the API.
