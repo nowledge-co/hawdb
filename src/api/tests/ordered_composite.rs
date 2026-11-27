@@ -306,3 +306,50 @@ fn ordered_composite_query_preserves_consumer_error_and_retry() {
         .blocking_operator_memory_reports
         .is_empty());
 }
+
+/// Ordered composite pages on an out-of-core store include canonical nodes a
+/// write to an unindexed property moved into the delta, like an unindexed
+/// twin (#2040).
+#[test]
+fn ordered_composite_pages_include_materialized_base_nodes() {
+    let config = DatabaseConfig {
+        storage_residency_mode: hawdb_storage::config::StorageResidencyMode::OutOfCore,
+        ..Default::default()
+    };
+    let indexed_path = unique_test_dir("ordered_composite_materialized_indexed");
+    let twin_path = unique_test_dir("ordered_composite_materialized_twin");
+    let mut pages = Vec::new();
+    for (path, indexed) in [(&indexed_path, true), (&twin_path, false)] {
+        let mut db = Database::open_with_config(path, config.clone()).unwrap();
+        populate(&mut db, false, indexed);
+        db.checkpoint().unwrap();
+        // Moves canonical notes into the delta without touching a key.
+        db.query("MATCH (n:Item) WHERE n.rank IN [3, 7, 20] SET n.extra = 1")
+            .unwrap();
+        if indexed {
+            assert_native_plan(&mut db, "materialized");
+        }
+        let mut rows = Vec::new();
+        for descending in [false, true] {
+            let (first, _, _) = queries(descending, 100);
+            rows.push(
+                db.query_with_params(
+                    &first,
+                    &BTreeMap::from([("kind".into(), Value::String("note".into()))]),
+                )
+                .unwrap()
+                .rows
+                .into_rows()
+                .into_iter()
+                .map(|row| row.values().cloned().collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+            );
+        }
+        pages.push(rows);
+        drop(db);
+    }
+    assert_eq!(pages[0][0].len(), 76);
+    assert_eq!(pages[0], pages[1]);
+    std::fs::remove_dir_all(indexed_path).unwrap();
+    std::fs::remove_dir_all(twin_path).unwrap();
+}

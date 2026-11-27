@@ -450,3 +450,77 @@ fn refused_projection_build_is_retried_by_a_later_automatic_checkpoint() {
     drop(db);
     std::fs::remove_dir_all(path).unwrap();
 }
+
+fn item_rows(db: &mut Database, query: &str) -> Vec<Vec<Value>> {
+    db.query(query)
+        .unwrap()
+        .rows
+        .into_rows()
+        .into_iter()
+        .map(|row| row.values().cloned().collect::<Vec<_>>())
+        .collect()
+}
+
+/// Range and composite ordered reads return a canonical node materialized
+/// into the delta by a write to an unindexed property, like an unindexed
+/// twin (#2040).
+#[test]
+fn range_and_composite_ordered_reads_find_materialized_base_nodes() {
+    let indexed_path = unique_test_dir("ooc_index_projection_reads_indexed");
+    let twin_path = unique_test_dir("ooc_index_projection_reads_twin");
+    let mut dbs = Vec::new();
+    for (path, indexed) in [(&indexed_path, true), (&twin_path, false)] {
+        let mut db = Database::open_with_config(path, config(false)).unwrap();
+        let rows = (0..300)
+            .map(|id| {
+                Value::Map(BTreeMap::from([
+                    ("id".to_string(), Value::Int(id)),
+                    ("a".to_string(), Value::Int(id % 3)),
+                    ("b".to_string(), Value::Int(id)),
+                ]))
+            })
+            .collect();
+        db.query_with_params(
+            "UNWIND $rows AS r CREATE (:Item {id: r.id, a: r.a, b: r.b, v: 0})",
+            &BTreeMap::from([("rows".to_string(), Value::List(rows))]),
+        )
+        .unwrap();
+        db.checkpoint().unwrap();
+        if indexed {
+            db.query("CREATE RANGE INDEX ON :Item(b)").unwrap();
+            db.query("CREATE INDEX ON :Item(a, b)").unwrap();
+            db.checkpoint().unwrap();
+            assert!(unserved(&db).is_empty(), "{:?}", unserved(&db));
+        }
+        assert!(db.storage_residency_report().unwrap().out_of_core);
+        // Materializes canonical nodes 30, 31 and 33 without touching a or b.
+        db.query("MATCH (n:Item) WHERE n.id IN [30, 31, 33] SET n.v = 1")
+            .unwrap();
+        dbs.push(db);
+    }
+    let queries = [
+        "MATCH (n:Item) WHERE n.b >= 29 AND n.b <= 34 RETURN n.id AS id, n.v AS v ORDER BY id",
+        "MATCH (n:Item {a: 0}) WHERE n.b >= 27 RETURN n.id AS id, n.v AS v ORDER BY n.b LIMIT 4",
+        "MATCH (n:Item {a: 0}) RETURN n.id AS id, n.v AS v ORDER BY n.b DESC LIMIT 100",
+        "MATCH (n:Item {a: 0}) RETURN n.id AS id, n.v AS v ORDER BY n.b LIMIT 15",
+        "MATCH (n:Item) WHERE n.a = 0 RETURN n.id AS id ORDER BY n.a, n.b LIMIT 15",
+        "MATCH (n:Item) WHERE n.a = 0 AND n.b > 20 RETURN n.id AS id ORDER BY n.b LIMIT 5",
+    ];
+    for query in queries {
+        let indexed = item_rows(&mut dbs[0], query);
+        let twin = item_rows(&mut dbs[1], query);
+        assert_eq!(indexed, twin, "{query}");
+    }
+    assert_eq!(
+        item_rows(&mut dbs[0], queries[1]),
+        vec![
+            vec![Value::Int(27), Value::Int(0)],
+            vec![Value::Int(30), Value::Int(1)],
+            vec![Value::Int(33), Value::Int(1)],
+            vec![Value::Int(36), Value::Int(0)],
+        ]
+    );
+    drop(dbs);
+    std::fs::remove_dir_all(indexed_path).unwrap();
+    std::fs::remove_dir_all(twin_path).unwrap();
+}
