@@ -2008,9 +2008,9 @@ impl GraphStore {
         if matches!(mode, DurableOpenMode::ExistingOnly)
             && replay_config.recovery_mode == RecoveryMode::AutoRepairTornTail
         {
-            return Err(HawDBError::Storage(
-                "automatic WAL tail repair requires a writable database open".to_string(),
-            ));
+            return Err(HawDBError::ReadOnly {
+                operation: "automatic WAL tail repair (open read-only with RecoveryMode::Strict)",
+            });
         }
         let total_open_started = std::time::Instant::now();
         if replay_config.max_graph_manifest_open_bytes == 0 {

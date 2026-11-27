@@ -297,7 +297,19 @@ pub fn has_storage_artifacts(root: &Path) -> Result<bool> {
 }
 
 pub fn store_id_for_path(root: &Path) -> Result<StoreId> {
-    let canonical = fs::canonicalize(root)?;
+    let canonical = match fs::canonicalize(root) {
+        Ok(canonical) => canonical,
+        // A read-only admission does not create a branch's missing artifact
+        // directory; its identity is the canonical parent plus its name, as
+        // it would be once created (#2029).
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            match (root.parent(), root.file_name()) {
+                (Some(parent), Some(name)) => fs::canonicalize(parent)?.join(name),
+                _ => return Err(error.into()),
+            }
+        }
+        Err(error) => return Err(error.into()),
+    };
     let path = canonical.to_string_lossy();
     let lower = checksum_u64(path.as_bytes());
     let mut salted = Vec::with_capacity(path.len().saturating_add(16));

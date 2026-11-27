@@ -295,12 +295,41 @@ impl ImmutableFileHandles {
         self.mount_controlled(path, binding, context, &mut ValidationAdmission(|_| Ok(())))
     }
 
+    /// Like [`Self::mount`] for a read-only admission: verifies the object and
+    /// binds `path` to it in memory, but never links an alias into place.
+    /// Read-only opens of a bound path read the object directly (#2029).
+    pub(crate) fn mount_read_only(
+        &self,
+        path: &Path,
+        binding: ImmutableFileBinding,
+        context: &FileOpenContext,
+    ) -> io::Result<()> {
+        self.mount_controlled_with_alias(
+            path,
+            binding,
+            context,
+            &mut ValidationAdmission(|_| Ok(())),
+            false,
+        )
+    }
+
     pub(crate) fn mount_controlled(
         &self,
         path: &Path,
         binding: ImmutableFileBinding,
         context: &FileOpenContext,
         control: &mut impl crate::file_io::ReadAdmissionControl,
+    ) -> io::Result<()> {
+        self.mount_controlled_with_alias(path, binding, context, control, true)
+    }
+
+    fn mount_controlled_with_alias(
+        &self,
+        path: &Path,
+        binding: ImmutableFileBinding,
+        context: &FileOpenContext,
+        control: &mut impl crate::file_io::ReadAdmissionControl,
+        install_alias: bool,
     ) -> io::Result<()> {
         // Mount validation uses a transient handle and a fixed-size buffer;
         // mounting an unopened artifact must not warm the descriptor cache.
@@ -332,7 +361,11 @@ impl ImmutableFileHandles {
             _ => None,
         };
         let reference = binding.reference;
-        let mounted = self.mount_alias(path, binding, &verified);
+        let mounted = if install_alias {
+            self.mount_alias(path, binding, &verified)
+        } else {
+            self.bind(path, binding)
+        };
         let mut records = self
             .mount_verified
             .lock()

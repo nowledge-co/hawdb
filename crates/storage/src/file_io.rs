@@ -27,6 +27,7 @@ use std::sync::Arc;
 pub use std::fs::{FileType, Metadata, Permissions, TryLockError};
 
 mod source_directory;
+pub(crate) use source_directory::lock_requires_read_only_open;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use source_directory::native_component_within_input_bound;
 #[cfg(any(test, feature = "test-support"))]
@@ -786,7 +787,25 @@ fn two_paths<T>(
 }
 
 pub fn metadata(path: impl AsRef<Path>) -> io::Result<Metadata> {
-    temporary(path.as_ref(), || std::fs::metadata(path.as_ref()))
+    let path = path.as_ref();
+    match temporary(path, || std::fs::metadata(path)) {
+        // A read-only admission binds checkpoint artifacts in memory without
+        // installing aliases; such a path describes its immutable object (#2029).
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            match bound_immutable_object_path(path)? {
+                Some(object) => std::fs::metadata(object),
+                None => Err(error),
+            }
+        }
+        result => result,
+    }
+}
+
+fn bound_immutable_object_path(path: &Path) -> io::Result<Option<PathBuf>> {
+    let Some(handles) = context_for_path(path)?.state.existing_immutable_handles() else {
+        return Ok(None);
+    };
+    Ok(handles.binding(path)?.map(|binding| binding.object_path))
 }
 pub fn try_exists(path: impl AsRef<Path>) -> io::Result<bool> {
     match metadata(path) {
