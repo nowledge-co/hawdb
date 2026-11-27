@@ -672,12 +672,13 @@ pub use store::{
     SegmentReadWave, StorageBackupReport, StorageDebtController, StorageOpenTimings,
     StoragePressureReasonCode, StoragePressureSignals, StoragePressureSnapshot,
     StoragePressureState, StorageReclamationWatermark, StorageRecoveryReport, StorageResidencyMode,
-    StorageResidencyReport, StorageRestoreReport, StorageScrubReport, WalDoctorOptions,
-    WalRepairAcknowledgement, WalReplayConfig, WalTailRepairPlan, WalTailRepairReason,
-    WalTailRepairReport, DENSE_ADJACENCY_DEGREE_THRESHOLD, DERIVED_ARTIFACT_REPAIR_PROTOCOL,
-    RELATIONAL_CONSTRAINT_QUALIFICATION_PROTOCOL, RELATIONAL_INDEX_VIEW_QUALIFICATION_PROTOCOL,
-    STORAGE_PRESSURE_DEFER_RATIO_PER_MILLION, STORAGE_PRESSURE_SOFT_RATIO_PER_MILLION,
-    SYNC_STATISTICS_MAX_RECORDS, WAL_DOCTOR_REPAIR_PROTOCOL,
+    StorageResidencyReport, StorageRestoreReport, StorageScrubReport, UnservedGraphPropertyIndex,
+    WalDoctorOptions, WalRepairAcknowledgement, WalReplayConfig, WalTailRepairPlan,
+    WalTailRepairReason, WalTailRepairReport, DENSE_ADJACENCY_DEGREE_THRESHOLD,
+    DERIVED_ARTIFACT_REPAIR_PROTOCOL, RELATIONAL_CONSTRAINT_QUALIFICATION_PROTOCOL,
+    RELATIONAL_INDEX_VIEW_QUALIFICATION_PROTOCOL, STORAGE_PRESSURE_DEFER_RATIO_PER_MILLION,
+    STORAGE_PRESSURE_SOFT_RATIO_PER_MILLION, SYNC_STATISTICS_MAX_RECORDS,
+    WAL_DOCTOR_REPAIR_PROTOCOL,
 };
 #[cfg(feature = "opentelemetry")]
 pub use telemetry::OpenTelemetryMetrics;

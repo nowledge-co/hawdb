@@ -91,6 +91,7 @@ mod hidden_row_id;
 mod identity_group_keys;
 #[cfg(feature = "test-support")]
 pub(super) mod immutable_retirement_reads;
+mod index_twin_differential;
 mod induced_edge_reads;
 mod joint_ndv_statistics;
 mod knowledge_community_entity_visibility;
@@ -156,6 +157,7 @@ mod neighbor_reads;
 mod node_column_lookup_conjuncts;
 mod nowledge_graph_adapter;
 mod object_reclamation;
+mod ooc_index_projection;
 mod optional_match;
 mod order_by_expressions;
 mod ordered_composite;

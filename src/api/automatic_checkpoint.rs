@@ -332,6 +332,13 @@ pub(super) struct State {
     operation_rearm_at: Option<Instant>,
     operation_rearm_delay: Duration,
     retirement_deferrals: u64,
+    /// Graph property indexes the persistent projection did not serve when
+    /// the owner last started a checkpoint to build it. A checkpoint that
+    /// cannot cover them (for example a refused budget) does not trigger again
+    /// until the set changes; the age trigger still applies (#2019).
+    projection_build_attempted: Option<Vec<crate::store::UnservedGraphPropertyIndex>>,
+    /// The frontend's unserved graph property indexes at its last submit.
+    unserved_graph_indexes: Vec<crate::store::UnservedGraphPropertyIndex>,
     debt: Option<CheckpointDebtSnapshot>,
     /// What the waiting frontend writer's next commit adds to a relational
     /// live overlay that cannot hold it beside the retained overlay (#1479).
@@ -714,6 +721,10 @@ impl Control {
         let finished_group = state.sync_group_active && !store.wal_sync_group_active();
         state.sync_group_active = store.wal_sync_group_active();
         state.debt = store.checkpoint_debt_snapshot();
+        // From the frontend, not the coalesced source: a new index must be
+        // seen even while the owner keeps an older captured source (#2019).
+        state.unserved_graph_indexes =
+            store.graph_indexes_not_served_by_persistent_projection(catalog);
         let generation = state.debt.map(|debt| debt.wal_generation);
         let generation_changed = generation != state.operation_generation;
         if generation_changed {
@@ -1373,14 +1384,16 @@ fn run(
                 }
                 // A writer that declared a commit too large for the remaining
                 // live-overlay headroom also makes the source due (#1479).
-                let due = state.latest.as_ref().is_some_and(|source| {
-                    due(source, max_age)
-                        || state.debt.is_some_and(|debt| {
-                            !debt.read_only
-                                && debt.commit_epoch > debt.checkpoint_commit_epoch
-                                && (soft_pressure(debt) || headroom_demand_short(&state))
-                        })
-                });
+                let projection_due = projection_build_due(&state);
+                let due = projection_due
+                    || state.latest.as_ref().is_some_and(|source| {
+                        due(source, max_age)
+                            || state.debt.is_some_and(|debt| {
+                                !debt.read_only
+                                    && debt.commit_epoch > debt.checkpoint_commit_epoch
+                                    && (soft_pressure(debt) || headroom_demand_short(&state))
+                            })
+                    });
                 if state.phase == Phase::Idle
                     && state.suspensions == 0
                     && !state.sync_group_active
@@ -1438,6 +1451,10 @@ fn run(
                     // Denial must release it instead of repeatedly waiting on
                     // an unavailable background reservation.
                     state.attempts_started = state.attempts_started.wrapping_add(1);
+                    if projection_due {
+                        state.projection_build_attempted =
+                            Some(state.unserved_graph_indexes.clone());
+                    }
                     state.phase = Phase::Preparing;
                     state.report.preparing = true;
                     let task = RuntimeTaskContext::default();
@@ -2026,6 +2043,19 @@ fn soft_pressure(debt: CheckpointDebtSnapshot) -> bool {
                     * u128::from(hawdb_storage::pressure::STORAGE_PRESSURE_SOFT_RATIO_PER_MILLION)
         })
     })
+}
+
+/// Whether a checkpoint should build the persistent projection now rather
+/// than wait for the age trigger: the frontend's last submit had
+/// uncheckpointed commits (a new index is one) and graph property indexes the
+/// projection does not serve, and the owner has not already checkpointed for
+/// this exact set (#2019).
+fn projection_build_due(state: &State) -> bool {
+    !state.unserved_graph_indexes.is_empty()
+        && state.projection_build_attempted.as_ref() != Some(&state.unserved_graph_indexes)
+        && state
+            .debt
+            .is_some_and(|debt| !debt.read_only && debt.commit_epoch > debt.checkpoint_commit_epoch)
 }
 
 fn due(source: &Source, max_age: Duration) -> bool {

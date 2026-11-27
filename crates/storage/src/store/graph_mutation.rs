@@ -1681,30 +1681,47 @@ impl GraphStore {
         // The resident index covers every resident node; nodes left in an
         // out-of-core canonical base also need a complete equality projection.
         let out_of_core = self.canonical_base_out_of_core && self.canonical_base.is_some();
-        let Some((property, values)) =
-            equality_seek_terms(filter)
-                .into_iter()
-                .find(|(property, _)| {
-                    catalog.has_scalar_property_index(label_id, property)
-                        && (!out_of_core
-                            || cold_projection.is_some_and(|(_, projection)| {
-                                !projection.is_poisoned()
-                                    && projection.manifest().supports(
-                                        label_id,
-                                        property,
-                                        PersistentPropertyProjectionKind::Equality,
-                                    )
-                            }))
+        let projection_serves = |property: &str| {
+            cold_projection.is_some_and(|(_, projection)| {
+                !projection.is_poisoned()
+                    && projection.manifest().supports(
+                        label_id,
+                        property,
+                        PersistentPropertyProjectionKind::Equality,
+                    )
+            })
+        };
+        let terms = equality_seek_terms(filter);
+        // Prefer an index the projection serves. An out-of-core index it does
+        // not serve yet still seeks resident nodes and scans the canonical
+        // base by property, as reads do, instead of scanning the label (#2019).
+        let Some((property, values)) = terms
+            .iter()
+            .find(|(property, _)| {
+                catalog.has_scalar_property_index(label_id, property)
+                    && (!out_of_core || projection_serves(property))
+            })
+            .or_else(|| {
+                terms.iter().find(|(property, _)| {
+                    out_of_core && catalog.has_scalar_property_index(label_id, property)
                 })
+            })
+            .copied()
         else {
             return Ok(None);
         };
+        let canonical_property_scan = out_of_core && !projection_serves(property);
         let matches = |node: &NodeRecord| {
             node.labels.contains(&label_id)
                 && property_filter_matches(filter, node.id.0, &node.properties)
         };
-        self.graph_index_read_metrics
-            .record_mutation_target_index_seek();
+        if canonical_property_scan {
+            self.graph_index_read_metrics
+                .record_mutation_target_property_scan();
+        } else {
+            self.graph_index_read_metrics
+                .record_mutation_target_index_seek();
+        }
         // The cap is checked before each new distinct match, as the label scan
         // does, so a high-fanout key under a small limit stops at the first
         // excess match instead of collecting (and, out of core, hydrating)
@@ -1723,7 +1740,35 @@ impl GraphStore {
                     ids.insert(node.id);
                 }
             }
-            if out_of_core && let Some((reader, projection)) = cold_projection {
+            if canonical_property_scan {
+                let reader = self
+                    .canonical_base
+                    .as_ref()
+                    .expect("out-of-core store has a canonical base");
+                reader
+                    .scan_nodes_by_property_control(label_id, property, value, |node| {
+                        if self.node_tombstones.contains(&node.id)
+                            || self.nodes.contains_key(&node.id)
+                            || ids.contains(&node.id)
+                        {
+                            return Ok(CanonicalScanControl::Continue);
+                        }
+                        self.graph_index_read_metrics
+                            .record_mutation_target_index_candidate();
+                        if matches(&node) {
+                            if ids.len() == max_ids {
+                                exceeded = true;
+                                return Ok(CanonicalScanControl::Stop);
+                            }
+                            ids.insert(node.id);
+                        }
+                        Ok(CanonicalScanControl::Continue)
+                    })
+                    .map_err(canonical_segment_error)?;
+                if exceeded {
+                    break 'values;
+                }
+            } else if out_of_core && let Some((reader, projection)) = cold_projection {
                 let (report, _) = projection
                     .scan_equality_candidates(label_id, property, value, |node_id| {
                         if self.node_tombstones.contains(&node_id)

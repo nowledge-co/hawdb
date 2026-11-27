@@ -454,7 +454,6 @@ impl Database {
         if !runtime.store.is_out_of_core() {
             return Ok(false);
         }
-        let manifest = runtime.store.persistent_property_projection_manifest();
         for registry in registries {
             for migration in registry.migrations() {
                 for statement in migration.cypher_statements() {
@@ -473,13 +472,12 @@ impl Database {
                     let Some(label_id) = runtime.catalog.label_id(&label) else {
                         continue;
                     };
-                    let ready = manifest.is_some_and(|manifest| match kind {
-                        Kind::CompositeEquality => {
-                            manifest.supports_composite_equality(label_id, &properties)
-                        }
-                        kind => manifest.supports(label_id, &properties[0], kind),
-                    });
-                    if !ready {
+                    // The residency report's unserved indexes use this too.
+                    if !runtime.store.persistent_projection_serves_index(
+                        label_id,
+                        &properties,
+                        kind,
+                    ) {
                         return Ok(true);
                     }
                 }

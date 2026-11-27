@@ -266,6 +266,10 @@ fn stale_optimizer_statistics_are_caller_owned_background_work() {
     };
     let index_id = {
         let mut db = Database::open_with_config(&path, config.clone()).unwrap();
+        // The new index would otherwise make the automatic checkpoint build
+        // its projection and publish exact samples (#2019); this test drives
+        // the caller-owned refresh of the stale sample itself.
+        let _suspension = db.runtime.suspend_automatic_checkpoint().unwrap();
         db.query("CREATE NODE TABLE Memory").unwrap();
         db.query("CREATE PROPERTY ON NODE TABLE Memory(kind) TYPE TEXT")
             .unwrap();

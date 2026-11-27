@@ -96,6 +96,11 @@ pub struct GraphIndexReadMetricsSnapshot {
     /// Index hits a mutation-target seek examined (resident records and
     /// hydrated out-of-core records), whether or not they matched.
     pub mutation_target_index_candidates: u64,
+    /// Mutations on an out-of-core store whose property index is not yet
+    /// served by the persistent projection: they seek the resident index for
+    /// delta nodes and scan the canonical base by property, as reads do,
+    /// instead of scanning the label (#2019).
+    pub mutation_target_property_scans: u64,
 }
 
 impl GraphIndexReadMetricsSnapshot {
@@ -235,6 +240,9 @@ impl GraphIndexReadMetricsSnapshot {
             mutation_target_index_candidates: self
                 .mutation_target_index_candidates
                 .saturating_sub(before.mutation_target_index_candidates),
+            mutation_target_property_scans: self
+                .mutation_target_property_scans
+                .saturating_sub(before.mutation_target_property_scans),
         }
     }
 }
@@ -273,6 +281,7 @@ pub struct GraphIndexReadMetrics {
     mutation_target_index_seeks: AtomicU64,
     mutation_target_label_scans: AtomicU64,
     mutation_target_index_candidates: AtomicU64,
+    mutation_target_property_scans: AtomicU64,
 }
 
 impl GraphIndexReadMetrics {
@@ -283,6 +292,11 @@ impl GraphIndexReadMetrics {
 
     pub fn record_mutation_target_label_scan(&self) {
         self.mutation_target_label_scans
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_mutation_target_property_scan(&self) {
+        self.mutation_target_property_scans
             .fetch_add(1, Ordering::Relaxed);
     }
 
@@ -475,6 +489,9 @@ impl GraphIndexReadMetrics {
             mutation_target_label_scans: self.mutation_target_label_scans.load(Ordering::Relaxed),
             mutation_target_index_candidates: self
                 .mutation_target_index_candidates
+                .load(Ordering::Relaxed),
+            mutation_target_property_scans: self
+                .mutation_target_property_scans
                 .load(Ordering::Relaxed),
         }
     }
