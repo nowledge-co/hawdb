@@ -24,7 +24,13 @@ The protocol follows the useful local subset of TiDB bootstrap upgrades:
    `hawdb-system-schema-cypher-v1` tag, so SQL-only checksums are unchanged
    and a Cypher statement never hashes like SQL of the same text. Any other
    Cypher (data writes, reads, transaction control, `CHECKPOINT`) is refused
-   before any write.
+   before any write. Creating an index that already exists with the same
+   label, property and kind is a no-op and the migration is still recorded; an
+   index of another kind is a separate index. On an out-of-core handle the
+   apply checkpoints after the commit when a registry index is not yet served
+   by the persistent projection (#2019), so the host's first write seeks it. A
+   failed checkpoint is returned as an error after the migration is recorded;
+   the next apply retries it.
 3. Existing migration identities and checksums are verified before any write.
 4. All pending DDL and migration records for one owner are staged in one mixed
    graph/relational transaction and published by one WAL commit.

@@ -40,17 +40,20 @@ struct SystemSchemaPlan<'a> {
 ///
 /// Registries carry durable, versioned schema; data-modifying, transaction
 /// control or read statements would make an upgrade depend on graph contents.
+fn parse_system_schema_cypher(statement: &str) -> Result<hawdb_cypher::ast::Statement> {
+    Ok(match hawdb_cypher::parse(statement)? {
+        hawdb_cypher::ast::Statement::CypherQuery(query) if query.system_variables.is_empty() => {
+            query.statement
+        }
+        other => other,
+    })
+}
+
 fn validate_system_schema_cypher(registry: &SystemSchemaRegistry) -> Result<()> {
     use hawdb_cypher::ast::Statement;
     for migration in registry.migrations() {
         for statement in migration.cypher_statements() {
-            let parsed = hawdb_cypher::parse(statement)?;
-            let parsed = match parsed {
-                Statement::CypherQuery(query) if query.system_variables.is_empty() => {
-                    query.statement
-                }
-                other => other,
-            };
+            let parsed = parse_system_schema_cypher(statement)?;
             let allowed = matches!(
                 parsed,
                 Statement::CreateIndex(_)
@@ -402,6 +405,20 @@ impl Database {
             applied_versions.resize_with(plans.len(), Vec::new);
         }
 
+        // An index created on an out-of-core handle serves seeks only after a
+        // checkpoint publishes its persistent projection (#2019). Publish it
+        // now, before the host's first write, so that write does not scan the
+        // label. The check also runs when nothing is pending, so a checkpoint
+        // that failed after an earlier commit is retried on the next apply.
+        if !self.config.read_only && self.registry_graph_indexes_await_checkpoint(registries)? {
+            self.checkpoint().map_err(|error| {
+                HawDBError::Storage(format!(
+                    "system schema graph indexes are recorded but not yet usable: \
+                     checkpoint failed: {error}"
+                ))
+            })?;
+        }
+
         let commit_epoch_after = self.commit_epoch()?;
         Ok(plans
             .into_iter()
@@ -426,6 +443,52 @@ impl Database {
                 }
             })
             .collect())
+    }
+
+    /// Whether an out-of-core handle holds a registry graph index that seeks
+    /// cannot use yet because its persistent projection is not published.
+    fn registry_graph_indexes_await_checkpoint(
+        &self,
+        registries: &[&SystemSchemaRegistry],
+    ) -> Result<bool> {
+        use hawdb_cypher::ast::Statement;
+        use hawdb_storage::property_projection::PersistentPropertyProjectionKind as Kind;
+        let runtime = self.runtime.get()?;
+        if !runtime.store.is_out_of_core() {
+            return Ok(false);
+        }
+        let manifest = runtime.store.persistent_property_projection_manifest();
+        for registry in registries {
+            for migration in registry.migrations() {
+                for statement in migration.cypher_statements() {
+                    let (label, properties, kind) = match parse_system_schema_cypher(statement)? {
+                        Statement::CreateIndex(index) => {
+                            (index.label, vec![index.property], Kind::Equality)
+                        }
+                        Statement::CreateRangeIndex(index) => {
+                            (index.label, vec![index.property], Kind::Range)
+                        }
+                        Statement::CreateCompositeIndex(index) => {
+                            (index.label, index.properties, Kind::CompositeEquality)
+                        }
+                        _ => continue,
+                    };
+                    let Some(label_id) = runtime.catalog.label_id(&label) else {
+                        continue;
+                    };
+                    let ready = manifest.is_some_and(|manifest| match kind {
+                        Kind::CompositeEquality => {
+                            manifest.supports_composite_equality(label_id, &properties)
+                        }
+                        kind => manifest.supports(label_id, &properties[0], kind),
+                    });
+                    if !ready {
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+        Ok(false)
     }
 
     /// Verifies a registry against its applied records without writing.

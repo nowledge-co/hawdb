@@ -243,7 +243,25 @@ fn cypher_index_migration_applies_to_an_out_of_core_database() {
         assert!(db.storage_residency_report().unwrap().out_of_core);
         let report = db.apply_system_schema_registry(&index_registry()).unwrap();
         assert_eq!(report.applied_versions, vec![1, 2]);
+        // Without reopening, the first writes already seek the new index:
+        // the migration published its persistent projection.
+        let (scans, seeks) = mutation_targets(&db);
         db.query("MATCH (m:Memory {id: 'k7'}) SET m.v = 1").unwrap();
+        assert_eq!(mutation_targets(&db), (scans, seeks + 1), "SET");
+        // MERGE resolves its node through the read plan, which must not fall
+        // back to a mutation label scan either.
+        db.query("MERGE (m:Memory {id: 'k8'}) SET m.v = 2").unwrap();
+        assert_eq!(mutation_targets(&db).0, scans, "MERGE");
+        let rows = db
+            .query("MATCH (m:Memory {id: 'k8'}) RETURN count(m) AS n, max(m.v) AS v")
+            .unwrap();
+        assert_eq!(
+            rows.rows.into_rows()[0]
+                .values()
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec![Value::Int(1), Value::Int(2)]
+        );
     }
     let mut db = open();
     assert!(db
@@ -264,4 +282,52 @@ fn cypher_index_migration_applies_to_an_out_of_core_database() {
     );
     drop(db);
     std::fs::remove_dir_all(path).unwrap();
+}
+
+fn memory_id_index_kinds(db: &Database) -> Vec<crate::schema::IndexKind> {
+    let runtime = db.runtime.get().unwrap();
+    let label = runtime.catalog.label_id("Memory").unwrap();
+    [
+        crate::schema::IndexKind::Equality,
+        crate::schema::IndexKind::Range,
+    ]
+    .into_iter()
+    .filter(|kind| {
+        runtime
+            .catalog
+            .property_index_id_with_kind(label, "id", *kind)
+            .is_some()
+    })
+    .collect()
+}
+
+/// After #2013 a primary key creates the equality index itself, and hosts or
+/// tests may create it ahead of the migration: an identical index is a no-op
+/// and the migration is still recorded. An index of another kind on the same
+/// property is a different index, so the migration adds its own next to it.
+#[test]
+fn an_existing_index_is_reused_and_another_kind_is_kept() {
+    for existing in [
+        "CREATE INDEX ON :Memory(id)",
+        "CREATE RANGE INDEX ON :Memory(id)",
+    ] {
+        let path = unique_test_dir("system_schema_cypher_existing");
+        let mut db = Database::open(&path).unwrap();
+        db.query("CREATE (:Memory {id: 'k1', v: 0})").unwrap();
+        db.query(existing).unwrap();
+        let before = memory_id_index_kinds(&db);
+        let report = db.apply_system_schema_registry(&index_registry()).unwrap();
+        assert_eq!(report.applied_versions, vec![1, 2], "{existing}");
+        assert_eq!(owner_versions(&mut db, OWNER), vec![1, 2], "{existing}");
+        let mut expected = before;
+        if !expected.contains(&crate::schema::IndexKind::Equality) {
+            expected.insert(0, crate::schema::IndexKind::Equality);
+        }
+        assert_eq!(memory_id_index_kinds(&db), expected, "{existing}");
+        let (_, seeks) = mutation_targets(&db);
+        db.query("MATCH (m:Memory {id: 'k1'}) SET m.v = 1").unwrap();
+        assert_eq!(mutation_targets(&db).1, seeks + 1, "{existing}");
+        drop(db);
+        std::fs::remove_dir_all(path).unwrap();
+    }
 }
