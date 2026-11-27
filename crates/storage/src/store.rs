@@ -1382,7 +1382,7 @@ pub use hawdb_storage::{
     residency::{
         OptimizerStatisticsMaintenanceReport, OptimizerStatisticsPath,
         OptimizerStatisticsRecomputeCounts, RelationalRowStorageResidencyReport,
-        StorageResidencyReport,
+        StorageResidencyReport, UnservedGraphPropertyIndex,
     },
 };
 

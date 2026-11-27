@@ -224,11 +224,11 @@ fn indexed_property_writes_match_the_label_scan() {
                 assert_eq!(indexed, scanned, "{context}");
                 assert!(scan_scans > 0, "{context}: unindexed writes scan");
                 assert_eq!(scan_seeks, 0, "{context}: no index to seek");
-                // An out-of-core base checkpointed before the index existed
-                // has no equality projection for it: writes keep scanning
-                // until the next checkpoint publishes one.
+                // Indexed writes never scan the label. An out-of-core base whose
+                // projection does not serve the index yet scans the canonical
+                // base by property until a checkpoint publishes it (#2019).
+                assert_eq!(index_scans, 0, "{context}: indexed writes never scan");
                 if residency == StorageResidencyMode::Materialized || checkpoint {
-                    assert_eq!(index_scans, 0, "{context}: indexed writes never scan");
                     assert!(index_seeks > 0, "{context}: indexed writes seek");
                 }
             }

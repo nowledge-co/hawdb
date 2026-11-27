@@ -171,6 +171,8 @@ pub(super) struct DurableStore {
     // maintenance result. A checkpoint-source clone must not hide a failed
     // reclamation from admission, pressure reports, or the next retry.
     generation_reclamation_debt: Arc<std::sync::Mutex<GenerationReclamationDebt>>,
+    /// Persistent property projection builds refused by a budget (#2019).
+    pub(super) property_projection_budget_refusals: Arc<PropertyProjectionBudgetRefusals>,
     wal_free_space_probe: WalFreeSpaceProbeState,
 }
 
@@ -253,6 +255,51 @@ pub(super) use hawdb_storage::derived_repair::DerivedArtifactBuildConfig;
 pub(super) struct ReadOnlyBranchMount {
     pub(super) manifest: DurableManifest,
     pub(super) branch_lease: Arc<DatabaseDirectoryLease>,
+}
+
+/// Persistent property projection builds a checkpoint refused because a
+/// projection budget was exceeded. The checkpoint fails and its indexes stay
+/// served by canonical scans; hosts see the count and the last reason (#2019).
+#[derive(Debug, Default)]
+pub(super) struct PropertyProjectionBudgetRefusals {
+    count: std::sync::atomic::AtomicU64,
+    last_reason: std::sync::Mutex<Option<String>>,
+}
+
+impl PropertyProjectionBudgetRefusals {
+    /// Records `error` if it is a budget refusal.
+    pub(super) fn record(
+        &self,
+        error: &hawdb_storage::property_projection::PersistentPropertyProjectionError,
+    ) {
+        use hawdb_storage::property_projection::PersistentPropertyProjectionError as Error;
+        if matches!(
+            error,
+            Error::MemoryBudgetExceeded { .. }
+                | Error::SpillBudgetExceeded { .. }
+                | Error::SpillRunBudgetExceeded { .. }
+                | Error::GeneratedEntryBudgetExceeded { .. }
+                | Error::DefinitionCountBudgetExceeded { .. }
+                | Error::DefinitionBytesBudgetExceeded { .. }
+        ) {
+            self.count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            *self
+                .last_reason
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = Some(error.to_string());
+        }
+    }
+
+    pub(super) fn snapshot(&self) -> (u64, Option<String>) {
+        (
+            self.count.load(std::sync::atomic::Ordering::Relaxed),
+            self.last_reason
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone(),
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -743,6 +790,7 @@ impl DurableStore {
             generation_reclamation_debt: Arc::new(std::sync::Mutex::new(
                 GenerationReclamationDebt::default(),
             )),
+            property_projection_budget_refusals: Arc::default(),
             wal_free_space_probe: WalFreeSpaceProbeState::default(),
         })
     }

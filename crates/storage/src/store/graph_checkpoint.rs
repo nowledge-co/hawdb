@@ -269,19 +269,26 @@ fn exact_overflow_publication_error(
 
 fn push_property_projection_definition(
     definitions: &mut Vec<PersistentPropertyProjectionDefinition>,
-    admission: &mut PersistentPropertyProjectionDefinitionAdmission,
+    admission: &mut ProjectionDefinitionAdmission<'_>,
     definition: PersistentPropertyProjectionDefinition,
     work: &crate::background::CheckpointDecodeContext,
 ) -> Result<()> {
-    admission
-        .admit(&definition)
-        .map_err(HawDBError::from_storage_error)?;
+    admission.admission.admit(&definition).map_err(|error| {
+        admission.refusals.record(&error);
+        HawDBError::from_storage_error(error)
+    })?;
     work.push(definitions, definition)
+}
+
+/// Definition admission that records budget refusals for the residency report.
+struct ProjectionDefinitionAdmission<'a> {
+    admission: PersistentPropertyProjectionDefinitionAdmission,
+    refusals: &'a durable::PropertyProjectionBudgetRefusals,
 }
 
 fn push_relationship_property_projection_definitions(
     definitions: &mut Vec<PersistentPropertyProjectionDefinition>,
-    admission: &mut PersistentPropertyProjectionDefinitionAdmission,
+    admission: &mut ProjectionDefinitionAdmission<'_>,
     rel_type: RelTypeId,
     property: &str,
     work: &crate::background::CheckpointDecodeContext,
@@ -858,8 +865,12 @@ impl GraphStore {
             memory: std::cell::RefCell::default(),
         };
         let mut property_projection_definitions = Vec::new();
-        let mut property_projection_definition_admission =
-            PersistentPropertyProjectionDefinitionAdmission::new(build_config.property_projection);
+        let mut property_projection_definition_admission = ProjectionDefinitionAdmission {
+            admission: PersistentPropertyProjectionDefinitionAdmission::new(
+                build_config.property_projection,
+            ),
+            refusals: &durable.property_projection_budget_refusals,
+        };
         if reused_graph.is_none() {
             for index in catalog.property_indexes() {
                 let kind = match index.kind {
@@ -1876,6 +1887,74 @@ impl GraphStore {
             .property_spill_manifest()
     }
 
+    /// Whether seeks on this graph property index can use the persistent
+    /// property projection. Resident stores serve every index from memory.
+    /// The registry checkpoint decision and the residency report both use
+    /// this, so they never disagree (#2019).
+    pub fn persistent_projection_serves_index(
+        &self,
+        label_id: LabelId,
+        properties: &[String],
+        kind: PersistentPropertyProjectionKind,
+    ) -> bool {
+        if !self.canonical_base_out_of_core {
+            return true;
+        }
+        self.persistent_property_projection
+            .as_ref()
+            .map(PersistentPropertyProjectionReader::manifest)
+            .is_some_and(|manifest| match kind {
+                PersistentPropertyProjectionKind::CompositeEquality => {
+                    manifest.supports_composite_equality(label_id, properties)
+                }
+                kind => properties
+                    .first()
+                    .is_some_and(|property| manifest.supports(label_id, property, kind)),
+            })
+    }
+
+    /// Catalog graph property indexes the persistent property projection does
+    /// not serve on an out-of-core store. Empty for resident stores.
+    pub fn graph_indexes_not_served_by_persistent_projection(
+        &self,
+        catalog: &Catalog,
+    ) -> Vec<crate::residency::UnservedGraphPropertyIndex> {
+        if !self.canonical_base_out_of_core {
+            return Vec::new();
+        }
+        let single = catalog.property_indexes().map(|index| {
+            let kind = match index.kind {
+                IndexKind::Equality => PersistentPropertyProjectionKind::Equality,
+                IndexKind::Range => PersistentPropertyProjectionKind::Range,
+                IndexKind::FullText => PersistentPropertyProjectionKind::FullText,
+            };
+            (index.label_id, vec![index.property.clone()], kind)
+        });
+        let composite = catalog.composite_property_indexes().map(|index| {
+            (
+                index.label_id,
+                index.properties.clone(),
+                PersistentPropertyProjectionKind::CompositeEquality,
+            )
+        });
+        single
+            .chain(composite)
+            .filter(|(label_id, properties, kind)| {
+                !self.persistent_projection_serves_index(*label_id, properties, *kind)
+            })
+            .map(
+                |(label_id, properties, kind)| crate::residency::UnservedGraphPropertyIndex {
+                    label: catalog
+                        .label_name(label_id)
+                        .unwrap_or("<unknown>")
+                        .to_string(),
+                    properties,
+                    kind,
+                },
+            )
+            .collect()
+    }
+
     pub fn persistent_property_projection_manifest(
         &self,
     ) -> Option<&PersistentPropertyProjectionManifest> {
@@ -1911,6 +1990,9 @@ impl GraphStore {
                 })
             })
             .unwrap_or_default();
+        let projection_refusals = self.durable.as_ref().map_or((0, None), |durable| {
+            durable.property_projection_budget_refusals.snapshot()
+        });
         StorageResidencyReport {
             out_of_core: self.canonical_base_out_of_core,
             canonical_generation: manifest.map(|manifest| manifest.generation.0),
@@ -1923,6 +2005,10 @@ impl GraphStore {
                 .persistent_property_projection
                 .as_ref()
                 .map_or(0, |reader| reader.manifest().artifact_len),
+            // Needs the catalog; `Database::storage_residency_report` fills it.
+            unserved_graph_property_indexes: Vec::new(),
+            persistent_property_projection_budget_refusals: projection_refusals.0,
+            last_persistent_property_projection_budget_refusal: projection_refusals.1,
             canonical_node_count: manifest.map_or(0, |manifest| manifest.node_count),
             canonical_relationship_count: manifest
                 .map_or(0, |manifest| manifest.relationship_count),

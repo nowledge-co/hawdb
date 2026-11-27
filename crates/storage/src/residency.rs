@@ -26,6 +26,15 @@ pub struct StorageResidencyReport {
     pub canonical_artifact_bytes: u64,
     pub canonical_adjacency_artifact_bytes: u64,
     pub persistent_property_projection_artifact_bytes: u64,
+    /// Catalog graph property indexes an out-of-core store cannot serve from
+    /// its persistent property projection yet: they fall back to canonical
+    /// scans until a checkpoint covers them. Always empty for resident
+    /// stores; filled by `Database::storage_residency_report` (#2019).
+    pub unserved_graph_property_indexes: Vec<UnservedGraphPropertyIndex>,
+    /// Projection builds a checkpoint refused because a projection budget was
+    /// exceeded, and the last refusal's reason.
+    pub persistent_property_projection_budget_refusals: u64,
+    pub last_persistent_property_projection_budget_refusal: Option<String>,
     pub canonical_node_count: u64,
     pub canonical_relationship_count: u64,
     pub delta_node_count: usize,
@@ -117,6 +126,15 @@ pub struct OptimizerStatisticsMaintenanceReport {
     pub last_refresh_write_guard_hold: Option<std::time::Duration>,
     /// Longest write-guard hold time of any background or explicit refresh.
     pub max_refresh_write_guard_hold: std::time::Duration,
+}
+
+/// A graph property index the persistent property projection does not serve.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnservedGraphPropertyIndex {
+    pub label: String,
+    /// One property, or the ordered properties of a composite index.
+    pub properties: Vec<String>,
+    pub kind: crate::property_projection::PersistentPropertyProjectionKind,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

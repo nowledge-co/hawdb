@@ -449,7 +449,7 @@ impl GraphStore {
         }
     }
 
-    fn materialize_node_for_write(&mut self, id: NodeId) -> Result<bool> {
+    fn materialize_node_for_write(&mut self, catalog: &Catalog, id: NodeId) -> Result<bool> {
         if self.node_tombstones.contains(&id) {
             return Ok(false);
         }
@@ -465,6 +465,19 @@ impl GraphStore {
         else {
             return Ok(false);
         };
+        // The resident index covers every resident node: index seeks skip
+        // canonical candidates the delta overrides, so a node materialized by
+        // a write to another property must stay findable by its indexed
+        // values (#2019).
+        for label_id in &node.labels {
+            for (property, value) in &node.properties {
+                if catalog.has_scalar_property_index(*label_id, property) {
+                    self.property_index
+                        .entry_or_default((*label_id, property.clone(), value.clone()))
+                        .insert(id);
+                }
+            }
+        }
         self.nodes.insert(id, node);
         Ok(true)
     }
@@ -734,7 +747,7 @@ impl GraphStore {
                 property,
                 value,
             } => {
-                self.materialize_node_for_write(id)?;
+                self.materialize_node_for_write(catalog, id)?;
                 let affected_indexes = self.nodes.get(&id).map_or_else(Vec::new, |node| {
                     node_property_index_sample_updates(catalog, node, &property, &value)
                 });
@@ -760,7 +773,7 @@ impl GraphStore {
                     .transpose()?
                     .flatten()
                     .is_some();
-                self.materialize_node_for_write(id)?;
+                self.materialize_node_for_write(catalog, id)?;
                 let affected_indexes = self.nodes.get(&id).map_or_else(Vec::new, |node| {
                     node_delete_index_sample_updates(catalog, node)
                 });

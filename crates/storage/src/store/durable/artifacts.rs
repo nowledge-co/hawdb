@@ -267,7 +267,10 @@ impl DurableStore {
                     GraphDescriptorTreeBuildConfig::default(),
                 ),
             )
-            .map_err(HawDBError::from_storage_error)?;
+            .map_err(|error| {
+                self.property_projection_budget_refusals.record(&error);
+                HawDBError::from_storage_error(error)
+            })?;
         let descriptor_tree = &output.descriptor_tree;
         if descriptor_tree.root.kind != GraphDescriptorKind::PropertyProjection
             || descriptor_tree.root.generation != generation
