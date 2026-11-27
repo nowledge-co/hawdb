@@ -74,7 +74,20 @@ rust_case() {
   if [[ "$status" != 0 ]]; then return "$status"; fi
   test -s "$results/$name.bep.json"
   if [[ "$expected" == positive ]]; then
-    grep -Eq '^test result: ok\. [1-9][0-9]* passed;' "$results/$name.txt"
+    if ! grep -Eq '^test result: ok\. [1-9][0-9]* passed;' "$results/$name.txt"; then
+      echo "ERROR: $name: Bazel returned success without a complete positive Rust test summary" >&2
+      # Preserve the failed gate even if a direct replay succeeds. Capture the
+      # native child status outside Bazel's Windows test launcher.
+      if [[ "$name" == retained-ffi ]]; then
+        local binary_root
+        if binary_root="$("$BAZEL" info "--//:windows_native_profile=$profile" bazel-bin 2>>"$results/testlogs-location-error.txt")"; then
+          python3 "$(dirname "${BASH_SOURCE[0]}")/diagnose-retained-ffi.py" \
+            "$(native_path "$binary_root/bindings/ffi/hawdb_ffi_tests.exe")" \
+            "$(native_path "$results/retained-ffi-diagnostic")" || true
+        fi
+      fi
+      return 1
+    fi
   else
     grep -Eq "^test result: ok\\. $expected passed; 0 failed; 0 ignored;" "$results/$name.txt"
   fi
