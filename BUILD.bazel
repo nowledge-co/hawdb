@@ -60,6 +60,7 @@ _CARGO_WORKSPACE_PACKAGES = [
     "crates/route-ownership",
     "crates/search",
     "crates/runtime-tokio",
+    "crates/scheduler",
     "crates/sql",
     "crates/sql-syntax",
     "crates/storage",

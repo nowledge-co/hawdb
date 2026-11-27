@@ -135,6 +135,7 @@ members = [
   "crates/system-sql",
   "crates/telemetry",
   "crates/runtime-tokio",
+  "crates/scheduler",
   "crates/vector-projection",
 ]
 resolver = "2"

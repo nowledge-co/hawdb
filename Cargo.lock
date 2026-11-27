@@ -646,6 +646,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "hawdb-scheduler"
+version = "0.41.0"
+
+[[package]]
 name = "hawdb-search"
 version = "0.41.0"
 dependencies = [

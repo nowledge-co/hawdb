@@ -1,0 +1,22 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+test_suite(
+    name = "presubmit_tests",
+)
+
+rust_library(
+    name = "hawdb_scheduler",
+    crate_name = "hawdb_scheduler",
+    crate_root = "src/lib.rs",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+)
+
+rust_test(
+    name = "hawdb_scheduler_tests",
+    crate = ":hawdb_scheduler",
+    edition = "2024",
+    size = "small",
+)
