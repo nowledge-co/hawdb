@@ -232,6 +232,7 @@ mod source_revisions;
 mod sql_current_timestamp;
 mod sql_timestamp;
 mod statistics;
+mod statistics_refresh_policy;
 mod storage_recovery;
 mod synthesized_source_reads;
 mod system_introspection;

@@ -88,6 +88,22 @@ only catalog and resident sample metadata. A candidate exists only for a
 writable, durable, out-of-core store with at least one supported index whose
 sample is missing or stale. Full-text descriptors remain excluded.
 
+A writable, durable resident store above `SYNC_STATISTICS_MAX_RECORDS` (1,000
+committed nodes plus relationships) is also a candidate when a supported sample
+is missing or stale, its distributions are unavailable, or graph mutation
+operations committed since the last refresh exceed `max(1000, 10% of records)`
+(#2017). Its refresh recomputes from resident records under the same
+`max_input_records` bound, publishes without a checkpoint (a resident
+checkpoint recomputes statistics itself), and reports
+`checkpoint_persisted = false`. A resident store at or below the bound
+recomputes exact statistics for every plan and has no candidate. A resident
+store without durable storage has no background task: the commit that crosses
+the bound, and any commit after which dirty operations exceed the same
+threshold, refreshes synchronously. Writes staged in an explicit transaction
+count only when it commits. `StorageResidencyReport::optimizer_statistics`
+reports the active path, commit lag, dirty operations and full recomputations
+by caller site.
+
 The candidate uses the `Projection` QoS lane. Its estimated operation count is
 the current canonical node plus relationship count, clamped to at least one so
 an empty indexed database still publishes an exact zero sample. Missing sample

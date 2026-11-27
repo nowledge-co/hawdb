@@ -938,6 +938,30 @@ pub use hawdb_storage::consistency::{
     DistinctValueStatisticsConsistencyReport, PropertyIndexConsistencyReport,
 };
 
+/// Largest resident graph, in committed nodes plus relationships, whose planner
+/// statistics are recomputed exactly on every planning request.
+///
+/// Below this bound a full recompute costs about 1-2 ms, which stays bounded
+/// and independent of database growth, and tiny in-memory databases keep exact
+/// statistics. Larger graphs plan from cached distributions that commits,
+/// background maintenance and checkpoints refresh (#2017).
+pub const SYNC_STATISTICS_MAX_RECORDS: u64 = 1_000;
+
+/// Smallest number of committed graph mutation operations since the last
+/// refresh that makes cached optimizer statistics due for a refresh.
+const MIN_STATISTICS_REFRESH_DIRTY_OPERATIONS: u64 = 1_000;
+
+/// Dirty operations above which cached statistics of a graph with `records`
+/// committed records are refreshed: `max(1000, 10% of records)`.
+pub(crate) const fn statistics_refresh_dirty_operation_threshold(records: u64) -> u64 {
+    let proportional = records / 10;
+    if proportional > MIN_STATISTICS_REFRESH_DIRTY_OPERATIONS {
+        proportional
+    } else {
+        MIN_STATISTICS_REFRESH_DIRTY_OPERATIONS
+    }
+}
+
 /// Mutation domains that invalidate an out-of-core advanced-statistics snapshot.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[doc(hidden)]
@@ -984,6 +1008,50 @@ impl AdvancedStatisticsDirtyState {
     }
 }
 
+/// Caller sites of a full optimizer-statistics recomputation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StatisticsRecomputeSite {
+    Planning,
+    Commit,
+    Background,
+    Checkpoint,
+    Forced,
+}
+
+/// Per-database counts of full statistics recomputations. Snapshots and
+/// transaction workspaces share the owning database's counters.
+#[derive(Debug, Default)]
+struct StatisticsRecomputeCounters {
+    planning: AtomicU64,
+    commit: AtomicU64,
+    background: AtomicU64,
+    checkpoint: AtomicU64,
+    forced: AtomicU64,
+}
+
+impl StatisticsRecomputeCounters {
+    fn record(&self, site: StatisticsRecomputeSite) {
+        let counter = match site {
+            StatisticsRecomputeSite::Planning => &self.planning,
+            StatisticsRecomputeSite::Commit => &self.commit,
+            StatisticsRecomputeSite::Background => &self.background,
+            StatisticsRecomputeSite::Checkpoint => &self.checkpoint,
+            StatisticsRecomputeSite::Forced => &self.forced,
+        };
+        counter.fetch_add(1, AtomicOrdering::Relaxed);
+    }
+
+    fn snapshot(&self) -> OptimizerStatisticsRecomputeCounts {
+        OptimizerStatisticsRecomputeCounts {
+            planning: self.planning.load(AtomicOrdering::Relaxed),
+            commit: self.commit.load(AtomicOrdering::Relaxed),
+            background: self.background.load(AtomicOrdering::Relaxed),
+            checkpoint: self.checkpoint.load(AtomicOrdering::Relaxed),
+            forced: self.forced.load(AtomicOrdering::Relaxed),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct SnapshotResidencyObserver {
     segment_cache: Arc<SegmentCache>,
@@ -1022,6 +1090,7 @@ pub struct GraphStore {
     basic_statistics: BasicStatisticsState,
     checkpoint_statistics: CheckpointStatisticsState,
     advanced_statistics_dirty: AdvancedStatisticsDirtyState,
+    statistics_recomputes: Arc<StatisticsRecomputeCounters>,
     outgoing: CowSegmentedMap<(NodeId, RelTypeId), AdjacencyPostingList>,
     incoming: CowSegmentedMap<(NodeId, RelTypeId), AdjacencyPostingList>,
     property_index: NodePropertyIndex,
@@ -1278,7 +1347,11 @@ pub use hawdb_storage::relational::{
 };
 pub use hawdb_storage::{
     relational_index_view::RelationalIndexStorageResidencyReport,
-    residency::{RelationalRowStorageResidencyReport, StorageResidencyReport},
+    residency::{
+        OptimizerStatisticsMaintenanceReport, OptimizerStatisticsPath,
+        OptimizerStatisticsRecomputeCounts, RelationalRowStorageResidencyReport,
+        StorageResidencyReport,
+    },
 };
 
 pub use hawdb_storage::graph_overlay::{GraphNodeIterator, GraphRelationshipIterator};
@@ -2055,6 +2128,7 @@ impl GraphStore {
             basic_statistics: BasicStatisticsState::default(),
             checkpoint_statistics: CheckpointStatisticsState::default(),
             advanced_statistics_dirty: AdvancedStatisticsDirtyState::default(),
+            statistics_recomputes: Arc::default(),
             outgoing: CowSegmentedMap::default(),
             incoming: CowSegmentedMap::default(),
             property_index: CowSegmentedMap::default(),
@@ -2592,6 +2666,7 @@ impl GraphStore {
             basic_statistics: self.basic_statistics.clone(),
             checkpoint_statistics: self.checkpoint_statistics.clone(),
             advanced_statistics_dirty: self.advanced_statistics_dirty,
+            statistics_recomputes: Arc::clone(&self.statistics_recomputes),
             outgoing: self.outgoing.clone(),
             incoming: self.incoming.clone(),
             property_index: self.property_index.clone(),

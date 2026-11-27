@@ -19,12 +19,21 @@ use hawdb_storage::statistics_refresh::{
 };
 
 impl GraphStore {
+    /// Background optimizer-statistics refresh work, if any is due.
+    ///
+    /// Only durable stores have the background task. An out-of-core store is
+    /// due after any change; a resident store above the synchronous bound is
+    /// due once its committed dirty operations exceed
+    /// `max(1000, 10% of records)`, its distributions are unavailable, or an
+    /// index sample is missing or stale.
     #[doc(hidden)]
     pub fn optimizer_statistics_refresh_work(
         &self,
         catalog: &Catalog,
     ) -> Option<OptimizerStatisticsRefreshWork> {
-        if !self.canonical_base_out_of_core || self.durable.is_none() {
+        if self.durable.is_none()
+            || self.optimizer_statistics_path() == OptimizerStatisticsPath::SynchronousSmallGraph
+        {
             return None;
         }
 
@@ -47,19 +56,23 @@ impl GraphStore {
         let freshness = self
             .checkpoint_statistics
             .advanced_statistics_freshness(self.commit_epoch);
-        if freshness == AdvancedStatisticsFreshness::Fresh
-            && self.advanced_statistics_dirty.is_empty()
-            && missing_sample_count == 0
-            && stale_updates == 0
-        {
+        let record_count = self.committed_statistics_records();
+        let dirty_operations = self.advanced_statistics_dirty.mutation_operations();
+        let due = if self.canonical_base_out_of_core {
+            freshness != AdvancedStatisticsFreshness::Fresh
+                || !self.advanced_statistics_dirty.is_empty()
+                || missing_sample_count != 0
+                || stale_updates != 0
+        } else {
+            freshness == AdvancedStatisticsFreshness::Unavailable
+                || dirty_operations > statistics_refresh_dirty_operation_threshold(record_count)
+                || missing_sample_count != 0
+                || stale_updates != 0
+        };
+        if !due {
             return None;
         }
 
-        let record_count = self
-            .basic_statistics
-            .node_count
-            .saturating_add(self.basic_statistics.relationship_count);
-        let dirty_operations = self.advanced_statistics_dirty.mutation_operations();
         Some(OptimizerStatisticsRefreshWork {
             estimated_operations: usize::try_from(record_count).unwrap_or(usize::MAX).max(1),
             recent_delta_operations: usize::try_from(stale_updates.max(dirty_operations))
@@ -71,21 +84,23 @@ impl GraphStore {
         })
     }
 
+    /// Refreshes the cached optimizer statistics of a durable store. An
+    /// out-of-core store streams its graph through bounded spill runs; a
+    /// resident store recomputes from its resident records, bounded by
+    /// `max_input_records`.
     pub fn refresh_optimizer_statistics_external(
         &mut self,
         catalog: &Catalog,
         options: &OptimizerStatisticsRefreshOptions,
     ) -> Result<OptimizerStatisticsRefreshReport> {
         options.validate()?;
-        if !self.canonical_base_out_of_core {
-            return Err(HawDBError::Execution(
-                "external optimizer statistics refresh requires out-of-core storage".to_string(),
-            ));
-        }
         if self.durable.is_none() {
             return Err(HawDBError::Execution(
                 "external optimizer statistics refresh requires durable storage".to_string(),
             ));
+        }
+        if !self.canonical_base_out_of_core {
+            return self.refresh_resident_optimizer_statistics_background(catalog, options);
         }
 
         let source_commit_epoch = self.commit_epoch;
@@ -206,8 +221,7 @@ impl GraphStore {
                 "optimizer statistics refresh source epoch changed before publication".to_string(),
             ));
         }
-        self.checkpoint_statistics = statistics.into();
-        self.advanced_statistics_dirty = AdvancedStatisticsDirtyState::default();
+        self.publish_refreshed_statistics(statistics);
 
         Ok(OptimizerStatisticsRefreshReport {
             source_commit_epoch,
@@ -233,6 +247,130 @@ impl GraphStore {
             bounded_path_truncated: work.bounded_path_exhausted(),
             checkpoint_persisted: false,
         })
+    }
+
+    fn refresh_resident_optimizer_statistics_background(
+        &mut self,
+        catalog: &Catalog,
+        options: &OptimizerStatisticsRefreshOptions,
+    ) -> Result<OptimizerStatisticsRefreshReport> {
+        let source_commit_epoch = self.commit_epoch;
+        let node_records_read = self.basic_statistics.node_count;
+        let relationship_records_read = self.basic_statistics.relationship_count;
+        if node_records_read.saturating_add(relationship_records_read) > options.max_input_records {
+            return Err(HawDBError::Execution(format!(
+                "optimizer statistics refresh exceeded max_input_records {}",
+                options.max_input_records
+            )));
+        }
+        let statistics =
+            self.compute_resident_statistics(catalog, StatisticsRecomputeSite::Background);
+        if source_commit_epoch != self.commit_epoch {
+            return Err(HawDBError::Execution(
+                "optimizer statistics refresh source epoch changed before publication".to_string(),
+            ));
+        }
+        self.publish_refreshed_statistics(statistics);
+        Ok(OptimizerStatisticsRefreshReport {
+            source_commit_epoch,
+            node_records_read,
+            relationship_records_read,
+            path_expansions: 0,
+            generated_facts: 0,
+            spill_run_count: 0,
+            spilled_bytes: 0,
+            peak_buffer_bytes: 0,
+            output_statistics_bytes: 0,
+            property_group_count: self.checkpoint_statistics.property_distinct_counts.len(),
+            relationship_property_group_count: self
+                .checkpoint_statistics
+                .rel_property_distinct_counts
+                .len(),
+            excluded_property_group_count: 0,
+            excluded_relationship_property_group_count: 0,
+            index_sample_count: self.checkpoint_statistics.index_samples.len(),
+            path_group_count: self.checkpoint_statistics.path_counts.len(),
+            bounded_path_group_count: self.checkpoint_statistics.bounded_path_counts.len(),
+            bounded_path_truncated: false,
+            checkpoint_persisted: false,
+        })
+    }
+
+    fn publish_refreshed_statistics(&mut self, statistics: GraphStatistics) {
+        self.checkpoint_statistics = statistics.into();
+        self.advanced_statistics_dirty = AdvancedStatisticsDirtyState::default();
+    }
+
+    /// Statistics maintenance after the real store published a commit. Never
+    /// runs on a transaction's private workspace, so staged writes count only
+    /// once the transaction commits.
+    ///
+    /// A resident store that crosses [`SYNC_STATISTICS_MAX_RECORDS`] computes
+    /// its distributions once here, so the first cached plan has them. A
+    /// resident store without durable storage has no background refresh task:
+    /// it refreshes here once committed dirty operations exceed
+    /// `max(1000, 10% of records)`. Durable stores leave that refresh to the
+    /// background task. Returns whether a full recompute ran.
+    #[doc(hidden)]
+    pub fn after_committed_statistics_maintenance(&mut self, catalog: &Catalog) -> bool {
+        if self.optimizer_statistics_path() != OptimizerStatisticsPath::Cached
+            || self.canonical_base_out_of_core
+            || ensure_graph_read_flags_usable(
+                &self.integrity_poisoned,
+                &self.post_wal_apply_poisoned,
+            )
+            .is_err()
+        {
+            return false;
+        }
+        let records = self.committed_statistics_records();
+        let cached_records = self
+            .checkpoint_statistics
+            .node_count
+            .saturating_add(self.checkpoint_statistics.relationship_count);
+        let crossed_bound = !self.checkpoint_statistics.advanced_statistics_complete
+            || cached_records <= SYNC_STATISTICS_MAX_RECORDS;
+        let amortized_refresh_due = self.durable.is_none()
+            && self.advanced_statistics_dirty.mutation_operations()
+                > statistics_refresh_dirty_operation_threshold(records);
+        if !crossed_bound && !amortized_refresh_due {
+            return false;
+        }
+        let statistics = self.compute_resident_statistics(catalog, StatisticsRecomputeSite::Commit);
+        self.publish_refreshed_statistics(statistics);
+        true
+    }
+
+    /// Recomputes and publishes resident optimizer statistics now. Out-of-core
+    /// stores refresh through [`Self::refresh_optimizer_statistics_external`].
+    #[doc(hidden)]
+    pub fn refresh_resident_optimizer_statistics_now(&mut self, catalog: &Catalog) -> Result<()> {
+        if self.canonical_base_out_of_core {
+            return Err(HawDBError::Execution(
+                "a synchronous optimizer statistics refresh requires resident storage".to_string(),
+            ));
+        }
+        let statistics = self.compute_resident_statistics(catalog, StatisticsRecomputeSite::Forced);
+        self.publish_refreshed_statistics(statistics);
+        Ok(())
+    }
+
+    /// Which statistics path planning uses, the cached distributions' lag,
+    /// and full recomputations by caller site.
+    pub fn optimizer_statistics_maintenance_report(&self) -> OptimizerStatisticsMaintenanceReport {
+        let committed_records = self.committed_statistics_records();
+        OptimizerStatisticsMaintenanceReport {
+            path: self.optimizer_statistics_path(),
+            committed_records,
+            commit_lag: self
+                .checkpoint_statistics
+                .advanced_statistics_commit_lag(self.commit_epoch),
+            dirty_mutation_operations: self.advanced_statistics_dirty.mutation_operations(),
+            refresh_dirty_operation_threshold: statistics_refresh_dirty_operation_threshold(
+                committed_records,
+            ),
+            recomputes: self.statistics_recomputes.snapshot(),
+        }
     }
 
     #[doc(hidden)]
