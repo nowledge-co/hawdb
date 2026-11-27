@@ -104,9 +104,21 @@ count only when it commits. `StorageResidencyReport::optimizer_statistics`
 reports the active path, commit lag, dirty operations and full recomputations
 by caller site.
 
-The candidate uses the `Projection` QoS lane. Its estimated operation count is
-the current canonical node plus relationship count, clamped to at least one so
-an empty indexed database still publishes an exact zero sample. Missing sample
+The candidate uses the `Projection` QoS lane. Its record allowance is the
+current node plus relationship count, at least one so an empty indexed database
+still publishes an exact zero sample. A refresh is one whole-graph maintenance
+pass bounded by its own allowance (`max_input_records`, the refresh memory
+budget), so its QoS charge is that record count clamped to the policy's
+per-task cap (`max_background_operations`): the default policy admits a refresh
+of any size as one full task slot without host configuration. Background
+enablement and the total and per-class budgets still apply (#2017). When the
+database has a runtime governor, the refresh also tries, without waiting, to
+admit `memory_budget_bytes` as background maintenance memory; if that is
+unavailable the refresh returns `None`, increments
+`optimizer_statistics.background_refresh_skipped`, and a later pass retries. A
+QoS refusal remains an error and increments `background_refresh_refused`. Each
+refresh records its database write-guard hold time
+(`last_refresh_write_guard_hold`, `max_refresh_write_guard_hold`). Missing sample
 count and stale `updates_since_sample` contribute to the recent-delta hint; the
 gap between the current commit epoch and published statistics epoch contributes
 to the source-commit-lag hint. This estimate does not replace the refresh's hard

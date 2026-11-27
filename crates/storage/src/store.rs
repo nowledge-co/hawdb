@@ -1027,6 +1027,11 @@ struct StatisticsRecomputeCounters {
     background: AtomicU64,
     checkpoint: AtomicU64,
     forced: AtomicU64,
+    background_refresh_refused: AtomicU64,
+    background_refresh_skipped: AtomicU64,
+    /// Nanoseconds plus one, so zero means no refresh has run.
+    last_refresh_write_guard_hold_nanos: AtomicU64,
+    max_refresh_write_guard_hold_nanos: AtomicU64,
 }
 
 impl StatisticsRecomputeCounters {
@@ -1039,6 +1044,31 @@ impl StatisticsRecomputeCounters {
             StatisticsRecomputeSite::Forced => &self.forced,
         };
         counter.fetch_add(1, AtomicOrdering::Relaxed);
+    }
+
+    fn record_write_guard_hold(&self, hold: std::time::Duration) {
+        let nanos = u64::try_from(hold.as_nanos()).unwrap_or(u64::MAX - 1);
+        self.last_refresh_write_guard_hold_nanos
+            .store(nanos.saturating_add(1), AtomicOrdering::Relaxed);
+        self.max_refresh_write_guard_hold_nanos
+            .fetch_max(nanos, AtomicOrdering::Relaxed);
+    }
+
+    fn last_write_guard_hold(&self) -> Option<std::time::Duration> {
+        match self
+            .last_refresh_write_guard_hold_nanos
+            .load(AtomicOrdering::Relaxed)
+        {
+            0 => None,
+            nanos => Some(std::time::Duration::from_nanos(nanos - 1)),
+        }
+    }
+
+    fn max_write_guard_hold(&self) -> std::time::Duration {
+        std::time::Duration::from_nanos(
+            self.max_refresh_write_guard_hold_nanos
+                .load(AtomicOrdering::Relaxed),
+        )
     }
 
     fn snapshot(&self) -> OptimizerStatisticsRecomputeCounts {

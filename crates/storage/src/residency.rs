@@ -85,7 +85,8 @@ pub struct OptimizerStatisticsRecomputeCounts {
     /// Recomputed after a committed write (bound crossing or amortized
     /// refresh of a store without background maintenance).
     pub commit: u64,
-    /// Recomputed by the background optimizer-statistics refresh task.
+    /// Recomputed by the optimizer-statistics refresh entry that the
+    /// background task drives (resident and out-of-core stores).
     pub background: u64,
     /// Recomputed while preparing a resident checkpoint.
     pub checkpoint: u64,
@@ -106,6 +107,16 @@ pub struct OptimizerStatisticsMaintenanceReport {
     /// Dirty operations above which a refresh is due.
     pub refresh_dirty_operation_threshold: u64,
     pub recomputes: OptimizerStatisticsRecomputeCounts,
+    /// Background refreshes refused by local QoS admission.
+    pub background_refresh_refused: u64,
+    /// Background refreshes skipped, without waiting, because runtime memory
+    /// admission was unavailable; the next maintenance pass retries.
+    pub background_refresh_skipped: u64,
+    /// Database write-guard hold time of the most recent background or
+    /// explicit refresh, if any ran.
+    pub last_refresh_write_guard_hold: Option<std::time::Duration>,
+    /// Longest write-guard hold time of any background or explicit refresh.
+    pub max_refresh_write_guard_hold: std::time::Duration,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

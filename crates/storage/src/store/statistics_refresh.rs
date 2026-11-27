@@ -103,6 +103,8 @@ impl GraphStore {
             return self.refresh_resident_optimizer_statistics_background(catalog, options);
         }
 
+        self.statistics_recomputes
+            .record(StatisticsRecomputeSite::Background);
         let source_commit_epoch = self.commit_epoch;
         let spill = RefreshSpillDirectory::create(&options.spill_directory)?;
         let run_options = StatsRunOptions {
@@ -370,7 +372,40 @@ impl GraphStore {
                 committed_records,
             ),
             recomputes: self.statistics_recomputes.snapshot(),
+            background_refresh_refused: self
+                .statistics_recomputes
+                .background_refresh_refused
+                .load(AtomicOrdering::Relaxed),
+            background_refresh_skipped: self
+                .statistics_recomputes
+                .background_refresh_skipped
+                .load(AtomicOrdering::Relaxed),
+            last_refresh_write_guard_hold: self.statistics_recomputes.last_write_guard_hold(),
+            max_refresh_write_guard_hold: self.statistics_recomputes.max_write_guard_hold(),
         }
+    }
+
+    /// Counts a background refresh refused by local QoS admission.
+    #[doc(hidden)]
+    pub fn record_optimizer_statistics_refresh_refused(&self) {
+        self.statistics_recomputes
+            .background_refresh_refused
+            .fetch_add(1, AtomicOrdering::Relaxed);
+    }
+
+    /// Counts a background refresh skipped because runtime memory admission
+    /// was unavailable.
+    #[doc(hidden)]
+    pub fn record_optimizer_statistics_refresh_skipped(&self) {
+        self.statistics_recomputes
+            .background_refresh_skipped
+            .fetch_add(1, AtomicOrdering::Relaxed);
+    }
+
+    /// Records how long one refresh held the database write guard.
+    #[doc(hidden)]
+    pub fn record_optimizer_statistics_refresh_write_guard_hold(&self, hold: std::time::Duration) {
+        self.statistics_recomputes.record_write_guard_hold(hold);
     }
 
     #[doc(hidden)]
