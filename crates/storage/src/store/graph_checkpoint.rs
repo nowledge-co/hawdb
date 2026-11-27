@@ -2175,7 +2175,27 @@ impl GraphStore {
             .saturating_add(relationship_index_bytes)
     }
 
-    pub(super) fn estimated_logical_record_bytes(&self) -> u64 {
+    /// Logical bytes of the canonical base plus every resident or delta
+    /// record. Constant time: node and relationship maps maintain the sum of
+    /// the same per-record estimate on every insert, update and removal, so
+    /// commit admission and pressure reports do not grow with the graph
+    /// (#2032). [`Self::estimated_logical_record_bytes_reference`] is the
+    /// full-walk reference.
+    #[doc(hidden)]
+    pub fn estimated_logical_record_bytes(&self) -> u64 {
+        self.canonical_base
+            .as_ref()
+            .map_or(0, |reader| reader.manifest().artifact_len)
+            .saturating_add(self.nodes.delta_pressure_bytes())
+            .saturating_add(self.relationships.delta_pressure_bytes())
+    }
+
+    /// Full-walk reference for [`Self::estimated_logical_record_bytes`], for
+    /// tests and consistency checks. Each call counts one walk.
+    #[doc(hidden)]
+    pub fn estimated_logical_record_bytes_reference(&self) -> u64 {
+        self.logical_record_byte_walks
+            .fetch_add(1, AtomicOrdering::Relaxed);
         let base_bytes = self
             .canonical_base
             .as_ref()
@@ -2188,5 +2208,11 @@ impl GraphStore {
             .saturating_add(self.relationships.values().fold(0, |bytes, relationship| {
                 bytes.saturating_add(estimated_relationship_record_bytes(relationship))
             }))
+    }
+
+    /// Full logical-record walks performed by this database's stores.
+    #[doc(hidden)]
+    pub fn logical_record_byte_walks(&self) -> u64 {
+        self.logical_record_byte_walks.load(AtomicOrdering::Relaxed)
     }
 }
