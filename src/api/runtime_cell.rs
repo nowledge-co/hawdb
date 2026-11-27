@@ -85,6 +85,15 @@ pub(super) struct AdmittedBranchRuntimeMut<'a> {
 
 impl Drop for AdmittedBranchRuntimeMut<'_> {
     fn drop(&mut self) {
+        // Every publication to the database's own store ends here; a
+        // transaction's private workspace never does, so its staged writes
+        // reach statistics maintenance only once committed (#2017).
+        if !std::thread::panicking() {
+            let runtime = &mut *self.runtime;
+            runtime
+                .store
+                .after_committed_statistics_maintenance(&runtime.catalog);
+        }
         let retired = self.publication.take().and_then(|mut state| {
             self.control
                 .submit(&mut state, &self.runtime.store, &self.runtime.catalog)

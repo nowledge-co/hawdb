@@ -1941,6 +1941,7 @@ impl GraphStore {
                 .checkpoint_statistics
                 .advanced_statistics_freshness(self.commit_epoch)
                 != AdvancedStatisticsFreshness::Fresh,
+            optimizer_statistics: self.optimizer_statistics_maintenance_report(),
             graph_manifest_open_budget_bytes,
             graph_manifest_encoded_bytes,
             segment_cache_capacity_bytes: cache.capacity_bytes,

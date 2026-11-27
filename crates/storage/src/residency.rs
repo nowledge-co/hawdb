@@ -38,6 +38,9 @@ pub struct StorageResidencyReport {
     pub checkpoint_statistics_commit_epoch: u64,
     pub checkpoint_statistics_complete: bool,
     pub checkpoint_statistics_stale: bool,
+    /// Which optimizer-statistics path planning uses and how far the cached
+    /// value distributions lag the committed graph (#2017).
+    pub optimizer_statistics: OptimizerStatisticsMaintenanceReport,
     pub graph_manifest_open_budget_bytes: u64,
     pub graph_manifest_encoded_bytes: u64,
     pub segment_cache_capacity_bytes: u64,
@@ -51,6 +54,69 @@ pub struct StorageResidencyReport {
     pub graph_index_reads: GraphIndexReadMetricsSnapshot,
     pub relational_rows: RelationalRowStorageResidencyReport,
     pub relational_indexes: RelationalIndexStorageResidencyReport,
+}
+
+/// How planner statistics are produced for the current committed graph.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum OptimizerStatisticsPath {
+    /// A small resident graph: every planning request recomputes exact
+    /// statistics, bounded by `SYNC_STATISTICS_MAX_RECORDS`.
+    #[default]
+    SynchronousSmallGraph,
+    /// Planning reads the last refreshed distributions with live counts;
+    /// commits, background maintenance and checkpoints refresh them.
+    Cached,
+}
+
+impl OptimizerStatisticsPath {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SynchronousSmallGraph => "synchronous_small_graph",
+            Self::Cached => "cached",
+        }
+    }
+}
+
+/// Full optimizer-statistics recomputations of one database, by caller site.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct OptimizerStatisticsRecomputeCounts {
+    /// Recomputed while answering a planner statistics request.
+    pub planning: u64,
+    /// Recomputed after a committed write (bound crossing or amortized
+    /// refresh of a store without background maintenance).
+    pub commit: u64,
+    /// Recomputed by the optimizer-statistics refresh entry that the
+    /// background task drives (resident and out-of-core stores).
+    pub background: u64,
+    /// Recomputed while preparing a resident checkpoint.
+    pub checkpoint: u64,
+    /// Recomputed by an explicit synchronous refresh request.
+    pub forced: u64,
+}
+
+/// Optimizer-statistics freshness evidence for health and residency reports.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct OptimizerStatisticsMaintenanceReport {
+    pub path: OptimizerStatisticsPath,
+    /// Committed nodes plus relationships.
+    pub committed_records: u64,
+    /// Commits since the cached distributions were computed.
+    pub commit_lag: u64,
+    /// Graph mutation operations committed since the last refresh.
+    pub dirty_mutation_operations: u64,
+    /// Dirty operations above which a refresh is due.
+    pub refresh_dirty_operation_threshold: u64,
+    pub recomputes: OptimizerStatisticsRecomputeCounts,
+    /// Background refreshes refused by local QoS admission.
+    pub background_refresh_refused: u64,
+    /// Background refreshes skipped, without waiting, because runtime memory
+    /// admission was unavailable; the next maintenance pass retries.
+    pub background_refresh_skipped: u64,
+    /// Database write-guard hold time of the most recent background or
+    /// explicit refresh, if any ran.
+    pub last_refresh_write_guard_hold: Option<std::time::Duration>,
+    /// Longest write-guard hold time of any background or explicit refresh.
+    pub max_refresh_write_guard_hold: std::time::Duration,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

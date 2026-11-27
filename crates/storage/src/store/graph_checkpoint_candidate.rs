@@ -419,6 +419,7 @@ impl GraphStore {
             source.search_projection_change_log_retained_bytes;
         self.checkpoint_statistics = source.checkpoint_statistics.clone();
         self.advanced_statistics_dirty = source.advanced_statistics_dirty;
+        self.statistics_recomputes = Arc::clone(&source.statistics_recomputes);
         self.runtime_governor = source.runtime_governor.clone();
         self.projection_generations = source.projection_generations.take();
         self.snapshot_file_context = source.snapshot_file_context.clone();

@@ -1247,20 +1247,15 @@ impl GraphStore {
         }
     }
 
+    /// Planner statistics. A small resident graph (at most
+    /// [`SYNC_STATISTICS_MAX_RECORDS`] committed records) recomputes exact
+    /// statistics on every call. Any other store returns the last refreshed
+    /// value distributions with the counts maintained at commit and never
+    /// scans the graph; commits, background statistics work and checkpoints
+    /// refresh those distributions (#2017).
     pub fn statistics(&self, catalog: &Catalog) -> GraphStatistics {
-        if !self.canonical_base_out_of_core {
-            let mut statistics = compute_statistics_with_basic(
-                &self.nodes,
-                &self.relationships,
-                Some(catalog),
-                self.basic_statistics(),
-            );
-            statistics.index_samples = compute_index_statistics_samples(
-                catalog,
-                &self.property_index,
-                &self.composite_property_index,
-            );
-            return statistics;
+        if self.optimizer_statistics_path() == OptimizerStatisticsPath::SynchronousSmallGraph {
+            return self.compute_resident_statistics(catalog, StatisticsRecomputeSite::Planning);
         }
         let mut statistics = self.checkpoint_statistics.materialize();
         retain_supported_property_statistics(&mut statistics, Some(catalog));
@@ -1270,6 +1265,44 @@ impl GraphStore {
         statistics.relationship_count = basic.relationship_count;
         statistics.label_counts = basic.label_counts;
         statistics.rel_type_counts = basic.rel_type_counts;
+        statistics
+    }
+
+    /// Committed nodes plus relationships, from the counts maintained at commit.
+    pub(super) fn committed_statistics_records(&self) -> u64 {
+        self.basic_statistics
+            .node_count
+            .saturating_add(self.basic_statistics.relationship_count)
+    }
+
+    pub(super) fn optimizer_statistics_path(&self) -> OptimizerStatisticsPath {
+        if !self.canonical_base_out_of_core
+            && self.committed_statistics_records() <= SYNC_STATISTICS_MAX_RECORDS
+        {
+            OptimizerStatisticsPath::SynchronousSmallGraph
+        } else {
+            OptimizerStatisticsPath::Cached
+        }
+    }
+
+    /// Full statistics of a resident graph, counted under `site`.
+    pub(super) fn compute_resident_statistics(
+        &self,
+        catalog: &Catalog,
+        site: StatisticsRecomputeSite,
+    ) -> GraphStatistics {
+        self.statistics_recomputes.record(site);
+        let mut statistics = compute_statistics_with_basic(
+            &self.nodes,
+            &self.relationships,
+            Some(catalog),
+            self.basic_statistics(),
+        );
+        statistics.index_samples = compute_index_statistics_samples(
+            catalog,
+            &self.property_index,
+            &self.composite_property_index,
+        );
         statistics
     }
 
@@ -1296,6 +1329,8 @@ impl GraphStore {
             )
             .map_err(HawDBError::from_storage_error);
         }
+        self.statistics_recomputes
+            .record(StatisticsRecomputeSite::Checkpoint);
         let mut statistics =
             compute_with_work_context(&self.nodes, &self.relationships, Some(catalog), basic, work)
                 .map_err(HawDBError::from_storage_error)?;
