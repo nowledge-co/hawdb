@@ -27,6 +27,7 @@ use std::sync::Arc;
 pub use std::fs::{FileType, Metadata, Permissions, TryLockError};
 
 mod source_directory;
+pub(crate) use source_directory::lock_requires_read_only_open;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use source_directory::native_component_within_input_bound;
 #[cfg(any(test, feature = "test-support"))]

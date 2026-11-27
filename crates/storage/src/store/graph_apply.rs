@@ -526,6 +526,9 @@ impl GraphStore {
             )));
         }
         if self.uses_sparse_read_only_relational_recovery() {
+            // Sparse recovery captures no row changes, so an in-memory replay
+            // view could not follow this commit (#2029).
+            self.relational_row_pages.read_only_replay_view = None;
             if batch.transaction.changes_schema() {
                 return Err(HawDBError::Storage(
                     "read-only sparse relational recovery rejects schema-changing WAL until a new canonical checkpoint is published"

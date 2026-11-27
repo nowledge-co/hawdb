@@ -1244,9 +1244,9 @@ impl GraphStore {
             )));
         }
         if read_only && request.replay_config.recovery_mode == RecoveryMode::AutoRepairTornTail {
-            return Err(BranchAdmissionError::Recovery(HawDBError::Storage(
-                "automatic WAL tail repair requires a writable database open".into(),
-            )));
+            return Err(BranchAdmissionError::Recovery(HawDBError::ReadOnly {
+                operation: "automatic WAL tail repair (open read-only with RecoveryMode::Strict)",
+            }));
         }
         let before = ready_branch_record_from_project(
             project,
@@ -1399,24 +1399,44 @@ impl GraphStore {
         }
         let result = (|| {
             format_result.map_err(BranchAdmissionError::Recovery)?;
-            mount_branch_runtime(
-                &objects,
-                &root,
-                &runtime_directory,
-                &artifact_directory,
-                derived_repair,
-            )
-            .map_err(BranchAdmissionError::Recovery)?;
             let mut catalog = crate::schema::Catalog::default();
             let manifest_open_started = std::time::Instant::now();
-            let durable = super::durable::DurableStore::open_branch_runtime(
-                &runtime_directory,
-                &artifact_directory,
-                request.durability,
-                request.replay_config,
-                read_only,
-                !derived_repair,
-            )
+            // A read-only admission never touches the disposable runtime
+            // directory: it reads the sealed manifest in memory and treats the
+            // empty WAL anchor as virtual (#2029).
+            let durable = if read_only && !derived_repair {
+                let manifest =
+                    read_only_branch_runtime_manifest(&objects, &root, &artifact_directory)
+                        .map_err(BranchAdmissionError::Recovery)?;
+                super::durable::DurableStore::open_branch_runtime_read_only(
+                    &runtime_directory,
+                    &artifact_directory,
+                    request.durability,
+                    request.replay_config,
+                    true,
+                    super::durable::ReadOnlyBranchMount {
+                        manifest,
+                        branch_lease: Arc::clone(&branch_lease),
+                    },
+                )
+            } else {
+                mount_branch_runtime(
+                    &objects,
+                    &root,
+                    &runtime_directory,
+                    &artifact_directory,
+                    derived_repair,
+                )
+                .map_err(BranchAdmissionError::Recovery)?;
+                super::durable::DurableStore::open_branch_runtime(
+                    &runtime_directory,
+                    &artifact_directory,
+                    request.durability,
+                    request.replay_config,
+                    read_only,
+                    !derived_repair,
+                )
+            }
             .map_err(BranchAdmissionError::Recovery)?;
             let (mut store, _) = GraphStore::finish_open_with_replay(
                 durable,
@@ -1432,8 +1452,11 @@ impl GraphStore {
                         durable.wal_generation,
                         durable.wal_replay_start_lsn,
                     );
-                    store.storage_recovery_report =
-                        store.replay_wal_interval(catalog, replay_config, &mut source)?;
+                    store.storage_recovery_report = if read_only && !derived_repair {
+                        store.replay_virtual_empty_wal_anchor(replay_config)?
+                    } else {
+                        store.replay_wal_interval(catalog, replay_config, &mut source)?
+                    };
                     store.replay_sealed_wals(
                         catalog,
                         &root,
@@ -1491,7 +1514,12 @@ impl GraphStore {
             if let Some(project) = project {
                 validate_captured_admission_namespace(project, &branch_lease, branch_directory)?;
             }
-            store.branch_root_pin =
+            // A read-only handle holds the branch lease for its lifetime, so
+            // its head and sealed root cannot move or be reclaimed; it
+            // publishes no root pin and never checkpoints (#2029).
+            store.branch_root_pin = if read_only && !derived_repair {
+                None
+            } else {
                 Some(
                     RootRegistry::open(
                         request.catalog_path.parent().ok_or(
@@ -1504,7 +1532,8 @@ impl GraphStore {
                         head.sealed_root,
                     )
                     .map_err(|error| BranchAdmissionError::Recovery(error.into()))?,
-                );
+                )
+            };
             store.storage_recovery_report.open_timings.total_open_micros =
                 super::elapsed_micros(total_open_started);
             Ok((store, catalog))
@@ -1550,10 +1579,16 @@ impl GraphStore {
                 if !matches!(
                     error,
                     BranchAdmissionError::Recovery(HawDBError::UnsupportedStorageFormat(_))
-                ) && project.is_none_or(|project| {
-                    validate_captured_admission_namespace(project, &branch_lease, branch_directory)
+                ) && !(read_only && !derived_repair)
+                    && project.is_none_or(|project| {
+                        validate_captured_admission_namespace(
+                            project,
+                            &branch_lease,
+                            branch_directory,
+                        )
                         .is_ok()
-                }) {
+                    })
+                {
                     cleanup(&runtime_directory);
                 }
                 Err(error)
@@ -2834,6 +2869,32 @@ pub(super) fn validate_admission_binding(
         ));
     }
     Ok(())
+}
+
+/// The sealed manifest of a read-only branch admission, validated exactly as
+/// [`mount_branch_runtime`] validates it, with checkpoint artifacts mounted as
+/// in-memory immutable-handle aliases. Nothing is written (#2029).
+fn read_only_branch_runtime_manifest(
+    objects: &ImmutableObjectStore,
+    root: &SealedRoot,
+    artifact_directory: &Path,
+) -> Result<DurableManifest> {
+    root.validate().map_err(HawDBError::from_storage_error)?;
+    let bytes = objects
+        .read(root.durable_manifest)
+        .map_err(HawDBError::from_storage_error)?;
+    let text = std::str::from_utf8(&bytes)
+        .map_err(|_| HawDBError::StorageIntegrity("sealed durable manifest is not UTF-8".into()))?;
+    let manifest = DurableManifest::decode(text)?;
+    if manifest.checkpoint_commit_epoch != root.checkpoint_epoch
+        || manifest.wal_replay_start_lsn != root.wal_replay_start_lsn
+    {
+        return Err(HawDBError::Storage(
+            "sealed root differs from its checkpoint manifest recovery boundary".to_string(),
+        ));
+    }
+    mount_checkpoint_bindings(objects, artifact_directory, &root.checkpoint_bindings, None)?;
+    Ok(manifest)
 }
 
 fn mount_branch_runtime(

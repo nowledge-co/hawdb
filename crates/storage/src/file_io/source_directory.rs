@@ -354,11 +354,17 @@ impl SourceDirectory {
     }
 
     pub(crate) fn open_catalog_metadata_lock(&self, context: &FileOpenContext) -> io::Result<File> {
-        self.open_named_lock(
-            context,
-            ChildName::new(crate::branch_catalog::METADATA_LOCK_FILE)?,
-            SourceDirectoryLockMode::ReadWriteCreate,
-        )
+        let name = ChildName::new(crate::branch_catalog::METADATA_LOCK_FILE)?;
+        self.open_named_lock(context, name, SourceDirectoryLockMode::ReadWriteCreate)
+            .or_else(|error| {
+                // Read-only media: lock an existing file through a read-only
+                // descriptor; flock needs no write access (#2029).
+                if lock_requires_read_only_open(&error) {
+                    self.open_named_lock(context, name, SourceDirectoryLockMode::ReadExisting)
+                } else {
+                    Err(error)
+                }
+            })
     }
 
     fn open_named_lock(
@@ -1093,3 +1099,12 @@ mod tests;
 
 #[cfg(all(test, any(target_os = "linux", target_vendor = "apple", windows)))]
 mod recording_tests;
+
+/// Whether opening a lock file read-write failed only because the directory
+/// or file is not writable, so an existing lock file can be opened read-only.
+pub(crate) fn lock_requires_read_only_open(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem
+    )
+}

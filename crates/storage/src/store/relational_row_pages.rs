@@ -501,9 +501,9 @@ impl GraphStore {
                 }
             };
         let reader = Arc::new(reader);
-        self.relational_row_pages.read_view = Some(Arc::new(RelationalRowPageReadView::from_base(
-            Arc::clone(&reader),
-        )));
+        let base_view = Arc::new(RelationalRowPageReadView::from_base(Arc::clone(&reader)));
+        self.relational_row_pages.read_only_replay_view = read_only.then(|| Arc::clone(&base_view));
+        self.relational_row_pages.read_view = Some(base_view);
         self.relational_row_pages.serving_resources =
             Some(Arc::new(RelationalRowPageServingResources {
                 base_overflow: overflow_root,
@@ -942,10 +942,13 @@ impl GraphStore {
             return Ok(());
         };
         if let RelationalRowChangeCapture::RequiresCheckpoint { tables, .. } = &capture {
+            // A schema rewrite cannot be served from an in-memory view.
+            self.relational_row_pages.read_only_replay_view = None;
             self.mark_relational_row_page_schema_checkpoint_required(epoch, tables.clone());
             return Ok(());
         }
         let Some(mut builder) = self.relational_row_pages.recovery_builder.take() else {
+            self.advance_read_only_relational_row_recovery(epoch, Some(capture));
             return Ok(());
         };
         let result = match work {
@@ -973,6 +976,7 @@ impl GraphStore {
 
     pub(super) fn advance_relational_row_recovery_epoch(&mut self, epoch: u64) {
         let Some(mut builder) = self.relational_row_pages.recovery_builder.take() else {
+            self.advance_read_only_relational_row_recovery(epoch, None);
             return;
         };
         match builder.advance_empty(epoch) {
@@ -981,6 +985,39 @@ impl GraphStore {
                 epoch,
                 format!("relational row recovery epoch could not advance: {error}"),
             ),
+        }
+    }
+
+    /// Read-only recovery cannot publish a row delta, so it advances the
+    /// checkpoint read view by each replayed commit as an in-memory live
+    /// batch, exactly as a writer's live commits do. If a commit does not fit
+    /// the live limits, the view is dropped and recovery falls back to a
+    /// writer-published delta (#2029).
+    fn advance_read_only_relational_row_recovery(
+        &mut self,
+        epoch: u64,
+        capture: Option<RelationalRowChangeCapture>,
+    ) {
+        if !self
+            .durable
+            .as_ref()
+            .is_some_and(|durable| durable.read_only)
+            || !matches!(
+                self.relational_row_pages.recovery_status,
+                RelationalRowPageRecoveryStatus::CheckpointReady { .. }
+            )
+        {
+            return;
+        }
+        let Some(view) = self.relational_row_pages.read_only_replay_view.take() else {
+            return;
+        };
+        if view.identity().visible_commit_epoch >= epoch {
+            self.relational_row_pages.read_only_replay_view = Some(view);
+            return;
+        }
+        if let Ok(next) = view.advance(epoch, capture, self.relational_row_pages.live_limits) {
+            self.relational_row_pages.read_only_replay_view = Some(Arc::new(next));
         }
     }
 
@@ -1207,6 +1244,11 @@ impl GraphStore {
                     );
                     return;
                 };
+                let replay_view = self
+                    .relational_row_pages
+                    .read_only_replay_view
+                    .take()
+                    .filter(|view| view.identity().visible_commit_epoch == self.commit_epoch);
                 // No builder recorded this published delta; its debt is unknown.
                 match self.open_relational_row_delta_view(self.commit_epoch, recovery_source, None)
                 {
@@ -1239,8 +1281,17 @@ impl GraphStore {
                                 peak_dirty_bytes: None,
                             };
                     }
+                    // Without an exact published delta, read-only recovery
+                    // serves the WAL tail it replayed in memory (#2029).
+                    Err(_) if replay_view.is_some() => {
+                        self.publish_relational_row_live_view(replay_view.map(Ok));
+                    }
                     Err(error) => {
                         self.relational_row_pages.read_view = None;
+                        self.relational_row_pages.read_only_unpublished_row_delta = self
+                            .durable
+                            .as_ref()
+                            .is_some_and(|durable| durable.read_only);
                         self.relational_row_pages.recovery_status =
                             RelationalRowPageRecoveryStatus::Unavailable {
                                 base_generation: Some(generation),
@@ -1677,6 +1728,12 @@ impl GraphStore {
                 }
                 _ if self.relational_row_pages.schema_checkpoint_required => Err(self
                     .relational_row_schema_checkpoint_pending_error("out-of-core relational read")),
+                _ if self.relational_row_pages.read_only_unpublished_row_delta => {
+                    Err(crate::error::HawDBError::ReadOnly {
+                        operation: "reading relational rows committed after the last checkpoint \
+                            (their WAL tail needs a writable open or a checkpoint to publish a row delta)",
+                    })
+                }
                 status => Err(crate::error::HawDBError::StorageIntegrity(format!(
                     "canonical relational row reader is unavailable at commit epoch {}: {status:?}",
                     self.commit_epoch
