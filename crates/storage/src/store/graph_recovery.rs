@@ -357,7 +357,7 @@ impl GraphStore {
         let Some(durable) = &self.durable else {
             return Ok(());
         };
-        if !durable.checkpoint_path.exists() {
+        if !fs::try_exists(&durable.checkpoint_path)? {
             if durable.checkpoint_commit_epoch != 0 {
                 return Err(HawDBError::Storage(format!(
                     "manifest checkpoint generation {} is missing",
@@ -735,7 +735,7 @@ impl GraphStore {
                 "a virtual WAL anchor requires a read-only branch admission".into(),
             ));
         }
-        let checkpoint_present = durable.checkpoint_path.exists();
+        let checkpoint_present = fs::try_exists(&durable.checkpoint_path)?;
         let wal_replay_start_lsn = durable.wal_replay_start_lsn;
         durable.next_lsn = wal_replay_start_lsn;
         durable.wal_commit_epoch = commit_epoch;
@@ -784,7 +784,7 @@ impl GraphStore {
         let mut torn_tail_reason = tail_repair
             .as_ref()
             .map(|_| "resumed interrupted repair of an incomplete final WAL record".to_string());
-        let checkpoint_present = durable.checkpoint_path.exists();
+        let checkpoint_present = fs::try_exists(&durable.checkpoint_path)?;
         let mut replayed_entries = 0_usize;
         let mut replayed_bytes = 0u64;
         let wal_present = captured || wal_path.exists();

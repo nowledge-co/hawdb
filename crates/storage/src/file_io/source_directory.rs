@@ -354,20 +354,34 @@ impl SourceDirectory {
     }
 
     pub(crate) fn open_catalog_metadata_lock(&self, context: &FileOpenContext) -> io::Result<File> {
-        let name = ChildName::new(crate::branch_catalog::METADATA_LOCK_FILE)?;
-        self.open_named_lock(context, name, SourceDirectoryLockMode::ReadWriteCreate)
-            .or_else(|error| {
-                // Read-only media: lock an existing file through a read-only
-                // descriptor; flock needs no write access (#2029).
-                if lock_requires_read_only_open(&error) {
-                    self.open_named_lock(context, name, SourceDirectoryLockMode::ReadExisting)
-                } else {
-                    Err(error)
-                }
-            })
+        self.open_named_lock(
+            context,
+            ChildName::new(crate::branch_catalog::METADATA_LOCK_FILE)?,
+            SourceDirectoryLockMode::ReadWriteCreate,
+        )
     }
 
+    /// Opens a lock file. On read-only media a read-write open is refused, so
+    /// an existing lock file is opened read-only instead: locking never needs
+    /// write access, and a missing lock file still fails (#2029).
     fn open_named_lock(
+        &self,
+        context: &FileOpenContext,
+        name: ChildName<'_>,
+        mode: SourceDirectoryLockMode,
+    ) -> io::Result<File> {
+        match self.open_named_lock_once(context, name, mode) {
+            Err(error)
+                if mode == SourceDirectoryLockMode::ReadWriteCreate
+                    && lock_requires_read_only_open(&error) =>
+            {
+                self.open_named_lock_once(context, name, SourceDirectoryLockMode::ReadExisting)
+            }
+            result => result,
+        }
+    }
+
+    fn open_named_lock_once(
         &self,
         context: &FileOpenContext,
         name: ChildName<'_>,

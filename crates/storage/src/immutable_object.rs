@@ -44,7 +44,7 @@ pub use published::{record_verified_file, verified_file_unchanged, VerifiedFileS
 const OBJECTS_DIRECTORY: &str = "objects";
 const STAGING_DIRECTORY: &str = ".staging";
 const IDENTITY_DOMAIN: &[u8] = b"HAWDB-IMMUTABLE-OBJECT-V1\0";
-const DEFAULT_MAX_OBJECT_BYTES: u64 = 128 * 1024 * 1024;
+pub(crate) const DEFAULT_MAX_OBJECT_BYTES: u64 = 128 * 1024 * 1024;
 /// Checkpoint data and artifacts are only ever streamed (published, verified
 /// and mounted in bounded buffers), so their size is bounded by the
 /// checkpoint encoding limit rather than by the in-memory object bound.

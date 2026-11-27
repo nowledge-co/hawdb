@@ -1297,10 +1297,18 @@ impl GraphStore {
             super::derived_repair::reject_pending_derived_artifact_repair(branch_directory)
                 .map_err(BranchAdmissionError::Recovery)?;
         }
-        let objects =
+        // A read-only admission only reads published objects; it never
+        // creates the object or staging directories (#2029).
+        let objects = if read_only && !derived_repair {
+            ImmutableObjectStore::open_existing(
+                request.immutable_store_root.to_path_buf(),
+                crate::immutable_object::DEFAULT_MAX_OBJECT_BYTES,
+            )
+        } else {
             ImmutableObjectStore::open(request.immutable_store_root).map_err(|error| {
                 BranchAdmissionError::Recovery(HawDBError::from_storage_error(error))
-            })?;
+            })?
+        };
         let root_bytes = objects.read(head.sealed_root).map_err(|error| {
             BranchAdmissionError::Recovery(HawDBError::from_storage_error(error))
         })?;
@@ -2096,19 +2104,41 @@ impl GraphStore {
                     "sealed WAL header differs from its declared interval".to_string(),
                 ));
             }
-            let path = runtime_directory.join("replay.hawdb");
-            fs::write(&path, bytes)?;
-            self.replay_branch_wal_interval(
-                catalog,
-                BranchWalReplayInput {
-                    path: &path,
-                    generation,
-                    start_lsn,
-                    captured_file: None,
-                },
-                replay_config,
-                source,
-            )?;
+            if self
+                .durable
+                .as_ref()
+                .is_some_and(|durable| durable.read_only)
+            {
+                // Replay the verified immutable object in place: a read-only
+                // admission never stages a copy under the runtime (#2029).
+                let path = objects.object_path(interval.object);
+                let mut file = Some(fs::File::open(&path)?);
+                self.replay_branch_wal_interval(
+                    catalog,
+                    BranchWalReplayInput {
+                        path: &path,
+                        generation,
+                        start_lsn,
+                        captured_file: Some(&mut file),
+                    },
+                    replay_config,
+                    source,
+                )?;
+            } else {
+                let path = runtime_directory.join("replay.hawdb");
+                fs::write(&path, bytes)?;
+                self.replay_branch_wal_interval(
+                    catalog,
+                    BranchWalReplayInput {
+                        path: &path,
+                        generation,
+                        start_lsn,
+                        captured_file: None,
+                    },
+                    replay_config,
+                    source,
+                )?;
+            }
             if self.durable.as_ref().map(|durable| durable.next_lsn) != Some(interval.end_lsn) {
                 return Err(HawDBError::Storage(
                     "sealed WAL replay does not reach the declared interval boundary".to_string(),
@@ -2893,7 +2923,13 @@ fn read_only_branch_runtime_manifest(
             "sealed root differs from its checkpoint manifest recovery boundary".to_string(),
         ));
     }
-    mount_checkpoint_bindings(objects, artifact_directory, &root.checkpoint_bindings, None)?;
+    mount_checkpoint_bindings_with_directories(
+        objects,
+        artifact_directory,
+        &root.checkpoint_bindings,
+        None,
+        false,
+    )?;
     Ok(manifest)
 }
 
@@ -2953,21 +2989,44 @@ fn mount_checkpoint_bindings(
     bindings: &[CheckpointArtifactBinding],
     derived_repair_generation: Option<DurableManifest>,
 ) -> Result<()> {
+    mount_checkpoint_bindings_with_directories(
+        objects,
+        destination,
+        bindings,
+        derived_repair_generation,
+        true,
+    )
+}
+
+/// Mounts checkpoint artifacts as immutable-handle aliases. Only a writable
+/// mount creates missing parent directories (#2029).
+fn mount_checkpoint_bindings_with_directories(
+    objects: &ImmutableObjectStore,
+    destination: &Path,
+    bindings: &[CheckpointArtifactBinding],
+    derived_repair_generation: Option<DurableManifest>,
+    writable: bool,
+) -> Result<()> {
     let project = crate::file_descriptors::ProjectFileDescriptors::registered(destination)?;
     let context = crate::file_descriptors::context_for_path(destination)?;
     for binding in bindings {
         let path = destination.join(&binding.relative_path);
-        if let Some(parent) = path.parent() {
+        if writable && let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let mounted = project.immutable_handles.mount(
-            &path,
-            crate::immutable_files::ImmutableFileBinding {
-                reference: binding.reference,
-                object_path: objects.object_path(binding.reference),
-            },
-            &context,
-        );
+        let file_binding = crate::immutable_files::ImmutableFileBinding {
+            reference: binding.reference,
+            object_path: objects.object_path(binding.reference),
+        };
+        let mounted = if writable {
+            project
+                .immutable_handles
+                .mount(&path, file_binding, &context)
+        } else {
+            project
+                .immutable_handles
+                .mount_read_only(&path, file_binding, &context)
+        };
         if let Err(error) = mounted {
             let rebuildable = derived_repair_generation.is_some_and(|manifest| {
                 let graph = manifest

@@ -118,6 +118,35 @@ pub(super) struct RelationalOverflowClosureScanReport {
     pub sort: RelationalOverflowReferenceSortReport,
 }
 
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static DISCARD_READ_ONLY_ROW_REPLAY: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+/// While alive, read-only recovery on this thread discards its in-memory row
+/// view at the first replayed commit, as when a commit exceeds the live
+/// limits, so tests can observe the fallback (#2029).
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+#[must_use]
+pub struct DiscardReadOnlyRowReplay(());
+
+#[cfg(any(test, feature = "test-support"))]
+impl DiscardReadOnlyRowReplay {
+    pub fn arm() -> Self {
+        DISCARD_READ_ONLY_ROW_REPLAY.with(|flag| flag.set(true));
+        Self(())
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Drop for DiscardReadOnlyRowReplay {
+    fn drop(&mut self) {
+        DISCARD_READ_ONLY_ROW_REPLAY.with(|flag| flag.set(false));
+    }
+}
+
 impl GraphStore {
     #[doc(hidden)]
     pub fn set_relational_monotonic_append_fast_path_enabled(&mut self, enabled: bool) {
@@ -1012,6 +1041,10 @@ impl GraphStore {
         let Some(view) = self.relational_row_pages.read_only_replay_view.take() else {
             return;
         };
+        #[cfg(any(test, feature = "test-support"))]
+        if DISCARD_READ_ONLY_ROW_REPLAY.with(std::cell::Cell::get) {
+            return;
+        }
         if view.identity().visible_commit_epoch >= epoch {
             self.relational_row_pages.read_only_replay_view = Some(view);
             return;
