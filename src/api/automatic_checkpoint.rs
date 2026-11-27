@@ -966,6 +966,23 @@ pub(super) struct Suspension {
 }
 
 impl Suspension {
+    /// Drops the automatic owner's parked source while this caller-held
+    /// suspension still excludes a new automatic publication. A manual
+    /// checkpoint has already captured and prepared its own source, so
+    /// retaining this stale clone would pin the superseded immutable root
+    /// through the publication sweep. The next automatic attempt recaptures
+    /// the advanced runtime.
+    pub(super) fn discard_cached_source(&self) -> Result<()> {
+        let mut state = self.control.lock()?;
+        let source = state.latest.take();
+        state.last_identity = None;
+        drop(state);
+        // Releasing snapshot/branch leases and old COW pages can scale with
+        // the source. Never destroy them under the publication mutex.
+        drop(source);
+        Ok(())
+    }
+
     pub(super) fn wait_idle(&self) -> Result<()> {
         let mut state = self.control.lock()?;
         while state.phase != Phase::Idle {

@@ -332,6 +332,56 @@ fn checkpoint_reclamation_failure_is_reported_and_retried_after_publication() {
 }
 
 #[test]
+fn checkpoint_current_only_retention_reclaims_every_previous_generation() {
+    let path = unique_test_dir("checkpoint_current_only_reclaim");
+    let mut catalog = Catalog::default();
+    let mut store = GraphStore::open_with_durability_and_replay_config(
+        &path,
+        &mut catalog,
+        DurabilityPolicy::default(),
+        WalReplayConfig {
+            checkpoint_generation_retention:
+                crate::config::CheckpointGenerationRetention::CurrentOnly,
+            ..WalReplayConfig::default()
+        },
+    )
+    .unwrap();
+    for id in 1..=3 {
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(id))]))
+            .unwrap();
+        store.checkpoint(&catalog).unwrap();
+    }
+
+    // Only the selected generation remains; both the immediately previous
+    // checkpoint and every older WAL/graph bundle were reclaimed.
+    for generation in [1, 2] {
+        assert!(!path.join(format!("checkpoint.{generation}.hawdb")).exists());
+        assert!(!path.join(format!("wal.{generation}.hawdb")).exists());
+        assert!(!path.join(format!("canonical.{generation}.hawdb")).exists());
+        assert!(!path
+            .join(hawdb_storage::canonical::canonical_segment_descriptor_page_file(generation))
+            .exists());
+        assert!(!path.join(format!("adjacency.{generation}.hawdb")).exists());
+        assert!(!path
+            .join(hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_page_file(
+                generation
+            ))
+            .exists());
+    }
+    assert!(path.join("checkpoint.3.hawdb").exists());
+    assert!(path.join("wal.3.hawdb").exists());
+    assert!(path.join("canonical.3.hawdb").exists());
+    assert!(path.join("adjacency.3.hawdb").exists());
+    drop(store);
+
+    let recovered = GraphStore::open(&path, &mut Catalog::default()).unwrap();
+    assert_eq!(recovered.node_count_for_label(None), 3);
+    drop(recovered);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
 fn checkpoint_retains_one_previous_generation_before_reclaim() {
     let path = unique_test_dir("checkpoint_generation_reclaim");
     let mut catalog = Catalog::default();

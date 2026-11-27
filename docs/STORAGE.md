@@ -774,11 +774,18 @@ and the cold opens that reused a mount's verification.
 operations inside a batch, so a budgeted recovery either applies a complete
 batch record or rejects the open before applying the next record.
 
-Checkpoint reclamation keeps the current and previous generations plus every
-physical generation pinned by an active read transaction. Unpinned intermediate
-generations are reclaimed even while an older reader remains active. Reclamation
-also follows retained row-page, overflow-extent, and append manifests so shared
-physical artifacts outlive every reader that can still reference them.
+Checkpoint reclamation keeps the selected generation, every physical generation
+pinned by an active read transaction, and — under the default
+`CheckpointGenerationRetention::CurrentAndPrevious` — the immediately previous
+generation. Hosts that prefer disk over the previous-generation rollback
+fallback select `CurrentOnly` through `DatabaseConfig` or the lower-level
+`WalReplayConfig`; the post-publication sweep then reclaims every unpinned
+generation below the selected one, including the superseded graph bundle and
+WAL. Reader pins always override the policy, and unpinned intermediate
+generations are reclaimed even while an older reader remains active.
+Reclamation also follows retained row-page, overflow-extent, and append
+manifests so shared physical artifacts outlive every reader that can still
+reference them.
 
 An admitted branch keeps its private WAL beside `branch.head`
 (`branches/<id>/wal.<generation>.hawdb`), outside the data root. Each
@@ -889,11 +896,14 @@ storage-pressure snapshot (`object_reclamation_retry_required`,
 `EmbeddedStoreHandle::reclaim_branch_storage` / `Database::reclaim_branch_storage`
 retries it. A crash between head publication and removal leaves only
 unreachable objects for a later pass. After a checkpoint the store holds the
-selected head's closure, the closure of the head it superseded while the
-checkpoint source, the retired frontend or a handle's read publication still
-pins it (released by the next pass), every pinned reader and branch closure,
-and the catalog creation baseline of each branch (for `main`, the root it was
-created or bootstrapped from).
+selected head's closure, the closure of the head it superseded while a pinned
+reader or branch closure still references it, and the catalog creation
+baseline of each branch (for `main`, the root it was created or bootstrapped
+from). Under `CurrentOnly`, a manual checkpoint discards the automatic owner's
+parked source before publication; that stale source would otherwise pin the
+superseded immutable root through the sweep. The next automatic attempt
+recaptures the advanced runtime. The default mode keeps the parked source and
+its previous-generation fallback unchanged.
 
 `DatabaseTransaction` owns a transaction-private COW graph workspace. Each
 Cypher mutation is applied to that workspace immediately, so later Cypher reads
@@ -1022,8 +1032,10 @@ epoch, the WAL replay start LSN, and the next WAL LSN. This does not provide an
 in-place page-version chain. Read snapshots share immutable COW map pages and
 immutable canonical segment readers. A
 checkpoint retains all old generations while any snapshot reader is pinned;
-after the last pin is released, a later checkpoint keeps the current and
-immediately previous generations and reclaims older files.
+after the last pin is released, a later checkpoint applies
+`CheckpointGenerationRetention`: the default keeps the current and immediately
+previous generations, while `CurrentOnly` keeps only the selected generation.
+Either policy reclaims older files.
 `Database::storage_reclamation_watermark` exposes the same boundary in
 structured form: current commit epoch, optional checkpoint epoch and checkpoint commit epoch, active
 oldest reader epoch, computed safe reclaim commit epoch, and whether the store

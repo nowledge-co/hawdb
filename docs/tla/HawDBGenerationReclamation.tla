@@ -4,7 +4,8 @@ EXTENDS Integers, Naturals, FiniteSets
 (***************************************************************************)
 (* Readers pin immutable generations. Reclamation is deliberately coarse:  *)
 (* while any reader exists, no generation is removed. Without readers, the  *)
-(* current and immediately previous generations remain available.           *)
+(* configured retention policy keeps either the current and immediately     *)
+(* previous generations or only the current generation.                     *)
 (***************************************************************************)
 
 CONSTANT Readers, MaxGeneration
@@ -15,20 +16,23 @@ ASSUME /\ Readers # {}
 Generations == 0..MaxGeneration
 ReaderGenerations == (-1)..MaxGeneration
 WriterPhases == {"idle", "building", "durable"}
+RetentionPolicies == {"current-and-previous", "current-only"}
 
 VARIABLES
     currentGeneration,
     availableGenerations,
     readerGeneration,
     writerPhase,
-    targetGeneration
+    targetGeneration,
+    retentionPolicy
 
 vars == <<
     currentGeneration,
     availableGenerations,
     readerGeneration,
     writerPhase,
-    targetGeneration
+    targetGeneration,
+    retentionPolicy
 >>
 
 NoReaders == \A reader \in Readers: readerGeneration[reader] = -1
@@ -39,6 +43,7 @@ Init ==
     /\ readerGeneration = [reader \in Readers |-> -1]
     /\ writerPhase = "idle"
     /\ targetGeneration = 0
+    /\ retentionPolicy \in RetentionPolicies
 
 BeginRead(reader) ==
     /\ readerGeneration[reader] = -1
@@ -48,7 +53,8 @@ BeginRead(reader) ==
         currentGeneration,
         availableGenerations,
         writerPhase,
-        targetGeneration
+        targetGeneration,
+        retentionPolicy
         >>
 
 EndRead(reader) ==
@@ -58,7 +64,8 @@ EndRead(reader) ==
         currentGeneration,
         availableGenerations,
         writerPhase,
-        targetGeneration
+        targetGeneration,
+        retentionPolicy
         >>
 
 BeginCheckpoint ==
@@ -69,7 +76,8 @@ BeginCheckpoint ==
     /\ UNCHANGED <<
         currentGeneration,
         availableGenerations,
-        readerGeneration
+        readerGeneration,
+        retentionPolicy
         >>
 
 PersistGeneration ==
@@ -80,7 +88,8 @@ PersistGeneration ==
     /\ UNCHANGED <<
         currentGeneration,
         readerGeneration,
-        targetGeneration
+        targetGeneration,
+        retentionPolicy
         >>
 
 PublishGeneration ==
@@ -89,26 +98,32 @@ PublishGeneration ==
     /\ currentGeneration' = targetGeneration
     /\ writerPhase' = "idle"
     /\ targetGeneration' = 0
-    /\ UNCHANGED <<availableGenerations, readerGeneration>>
+    /\ UNCHANGED <<availableGenerations, readerGeneration, retentionPolicy>>
+
+RetentionFloor ==
+    IF retentionPolicy = "current-and-previous" /\ currentGeneration > 0
+    THEN currentGeneration - 1
+    ELSE currentGeneration
 
 Reclaim ==
     /\ writerPhase = "idle"
     /\ NoReaders
     /\ availableGenerations' =
         {generation \in availableGenerations:
-            generation >= currentGeneration - 1}
+            generation >= RetentionFloor}
     /\ UNCHANGED <<
         currentGeneration,
         readerGeneration,
         writerPhase,
-        targetGeneration
+        targetGeneration,
+        retentionPolicy
         >>
 
 Crash ==
     /\ writerPhase' = "idle"
     /\ targetGeneration' = 0
     /\ readerGeneration' = [reader \in Readers |-> -1]
-    /\ UNCHANGED <<currentGeneration, availableGenerations>>
+    /\ UNCHANGED <<currentGeneration, availableGenerations, retentionPolicy>>
 
 Next ==
     \/ \E reader \in Readers: BeginRead(reader)
@@ -125,6 +140,7 @@ TypeOK ==
     /\ readerGeneration \in [Readers -> ReaderGenerations]
     /\ writerPhase \in WriterPhases
     /\ targetGeneration \in Generations
+    /\ retentionPolicy \in RetentionPolicies
 
 ManifestGenerationAvailable ==
     currentGeneration \in availableGenerations
@@ -135,8 +151,14 @@ PinnedReadersRemainAvailable ==
             readerGeneration[reader] \in availableGenerations
 
 PreviousGenerationRetained ==
+    retentionPolicy = "current-only" \/
     currentGeneration = 0 \/
         currentGeneration - 1 \in availableGenerations
+
+RetentionPolicyRespected ==
+    retentionPolicy = "current-and-previous" =>
+        (currentGeneration = 0 \/
+            currentGeneration - 1 \in availableGenerations)
 
 PublishedOnlyAfterDurable ==
     writerPhase = "durable" =>

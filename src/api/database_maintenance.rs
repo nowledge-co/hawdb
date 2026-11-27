@@ -346,6 +346,10 @@ impl Database {
             catalog: self.runtime.get()?.catalog.clone(),
             store: self.runtime.get()?.store.checkpoint_source(),
             suspension,
+            discard_cached_source: !self
+                .config
+                .checkpoint_generation_retention
+                .retains_previous(),
         })
     }
 

@@ -20,6 +20,112 @@ mod composite_mutations;
 #[path = "storage_recovery/wal_tail.rs"]
 mod wal_tail;
 
+fn project_unique_bytes(root: &std::path::Path) -> u64 {
+    #[cfg(unix)]
+    use std::os::unix::fs::MetadataExt;
+
+    #[cfg(unix)]
+    let mut seen = BTreeSet::new();
+    let mut total = 0_u64;
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(directory).unwrap().flatten() {
+            let metadata = entry.metadata().unwrap();
+            if metadata.is_dir() {
+                pending.push(entry.path());
+            } else if metadata.is_file() {
+                #[cfg(unix)]
+                if !seen.insert((metadata.dev(), metadata.ino())) {
+                    continue;
+                }
+                total = total.saturating_add(metadata.len());
+            }
+        }
+    }
+    total
+}
+
+fn data_root_generations(root: &std::path::Path, prefix: &str) -> Vec<u64> {
+    let branches = std::fs::read_dir(root.join("branches")).unwrap();
+    let branch = branches
+        .filter_map(std::result::Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| path.join("data").is_dir())
+        .expect("admitted branch data root");
+    let mut generations = std::fs::read_dir(branch.join("data"))
+        .unwrap()
+        .filter_map(std::result::Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let name = name.to_str()?;
+            let generation = name.strip_prefix(prefix)?.strip_suffix(".hawdb")?;
+            generation.parse::<u64>().ok()
+        })
+        .collect::<Vec<_>>();
+    generations.sort_unstable();
+    generations
+}
+
+#[test]
+fn current_only_checkpoint_retention_reclaims_previous_generation() {
+    let path = unique_test_dir("current_only_checkpoint_retention");
+    let mut first_unique_bytes = None;
+    {
+        let mut db = Database::open_with_config(
+            &path,
+            DatabaseConfig {
+                checkpoint_generation_retention: crate::CheckpointGenerationRetention::CurrentOnly,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        for id in 0..3 {
+            db.query_with_params(
+                "CREATE (:Note {id: $id})",
+                &BTreeMap::from([("id".into(), Value::Int(id))]),
+            )
+            .unwrap();
+            db.checkpoint().unwrap();
+            if first_unique_bytes.is_none() {
+                first_unique_bytes = Some(project_unique_bytes(&path));
+            }
+        }
+    }
+    let first_unique_bytes = first_unique_bytes.expect("first checkpoint footprint");
+    let final_unique_bytes = project_unique_bytes(&path);
+    assert!(
+        final_unique_bytes <= first_unique_bytes.saturating_mul(3) / 2,
+        "current-only retained a superseded immutable closure: first={first_unique_bytes}, final={final_unique_bytes}"
+    );
+
+    for prefix in [
+        "checkpoint.",
+        "wal.",
+        "canonical.",
+        "adjacency.",
+        "properties.",
+        "property-index.",
+    ] {
+        let generations = data_root_generations(&path, prefix);
+        assert_eq!(
+            generations.len(),
+            1,
+            "{prefix} retained more than the selected generation: {generations:?}"
+        );
+    }
+
+    let mut reopened = Database::open(&path).unwrap();
+    assert_eq!(
+        reopened
+            .query("MATCH (n:Note) RETURN count(n) AS count")
+            .unwrap()
+            .rows[0]["count"],
+        Value::Int(3)
+    );
+    drop(reopened);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
 #[test]
 fn strict_append_sql_replays_from_wal_after_reopen() {
     let path = unique_test_dir("strict_append_sql_reopen");

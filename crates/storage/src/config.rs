@@ -45,6 +45,28 @@ pub enum DurableCompression {
     Zstd,
 }
 
+/// Physical checkpoint generations retained after a successful publication.
+///
+/// The default keeps one previous generation as a rollback and damage-recovery
+/// fallback. Space-constrained hosts may select [`Self::CurrentOnly`]; the
+/// post-publication sweep then reclaims every unpinned generation below the
+/// selected one, including the superseded WAL and graph bundles. Reader pins
+/// always win over this policy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CheckpointGenerationRetention {
+    /// Keep the selected generation and its immediate predecessor.
+    #[default]
+    CurrentAndPrevious,
+    /// Keep only the selected generation when no reader pins an older one.
+    CurrentOnly,
+}
+
+impl CheckpointGenerationRetention {
+    pub const fn retains_previous(self) -> bool {
+        matches!(self, Self::CurrentAndPrevious)
+    }
+}
+
 pub const DEFAULT_MAX_WAL_REPLAY_ENTRIES: usize = 1_000_000;
 pub const DEFAULT_MAX_WAL_REPLAY_BYTES: u64 = 1024 * 1024 * 1024;
 pub const DEFAULT_MAX_BRANCH_SEALED_WAL_INTERVALS: usize = 256;
@@ -140,6 +162,9 @@ pub struct WalReplayConfig {
     pub graph_columnar_shadow_checkpoint: bool,
     /// Persistent relational-index publication and read activation mode.
     pub relational_index_mode: RelationalIndexMode,
+    /// Checkpoint generations retained after publication. Reader pins still
+    /// protect every generation a live snapshot can reference.
+    pub checkpoint_generation_retention: CheckpointGenerationRetention,
 }
 
 impl Default for WalReplayConfig {
@@ -163,6 +188,7 @@ impl Default for WalReplayConfig {
             max_out_of_core_delta_bytes: Some(DEFAULT_MAX_OUT_OF_CORE_DELTA_BYTES),
             graph_columnar_shadow_checkpoint: false,
             relational_index_mode: RelationalIndexMode::default(),
+            checkpoint_generation_retention: CheckpointGenerationRetention::default(),
         }
     }
 }
@@ -193,6 +219,12 @@ mod tests {
         assert!(RelationalIndexMode::Authoritative.publishes_persistent_indexes());
         assert!(RelationalIndexMode::Authoritative.serves_demand_paged_reads());
         assert!(RelationalIndexMode::Authoritative.requires_authoritative_indexes());
+        assert_eq!(
+            CheckpointGenerationRetention::default(),
+            CheckpointGenerationRetention::CurrentAndPrevious
+        );
+        assert!(CheckpointGenerationRetention::CurrentAndPrevious.retains_previous());
+        assert!(!CheckpointGenerationRetention::CurrentOnly.retains_previous());
         let replay = WalReplayConfig::default();
         assert_eq!(replay.max_entries, Some(DEFAULT_MAX_WAL_REPLAY_ENTRIES));
         assert_eq!(replay.max_bytes, Some(DEFAULT_MAX_WAL_REPLAY_BYTES));
