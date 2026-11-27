@@ -417,9 +417,11 @@ impl Task for SlowTask {
     type Output = ();
 
     fn run(&mut self, _: &TaskContext) -> TaskProgress<()> {
-        // Exceed the one-nanosecond quantum deterministically; the test is
+        // Exceed the one-nanosecond quantum without sleeping; the test is
         // about feedback publication, not about racing the clock.
-        std::thread::sleep(Duration::from_millis(1));
+        for index in 0..1024 {
+            std::hint::black_box(index);
+        }
         TaskProgress::Done(())
     }
 }
