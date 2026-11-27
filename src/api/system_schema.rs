@@ -29,6 +29,58 @@ pub use hawdb_relational::{
 };
 use hawdb_storage::relational::RelationalState;
 
+/// The outcome of applying system schema registries through
+/// [`crate::EmbeddedStoreHandle::apply_system_schema_registry_context`] or
+/// [`crate::EmbeddedStoreHandle::apply_system_schema_registries_context`] on
+/// an already-open database.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemSchemaApplyReport {
+    /// One report per supplied registry, in slice order, exactly as
+    /// [`Database::apply_system_schema_registries`] returns them: the
+    /// installed version before and after, the versions this call applied
+    /// (empty when nothing was pending) and the commit epochs around it.
+    pub registries: Vec<SystemSchemaUpgradeReport>,
+    /// Whether the post-schema checkpoint ran: on an out-of-core store a
+    /// registry graph index whose persistent projection is not published
+    /// yet is checkpointed before the call returns (#2030), so seeks can use
+    /// it at once. Always false on a resident or in-memory store, whose
+    /// indexes are served from memory without one, and false when nothing
+    /// awaited a projection. It can be true with nothing applied: a
+    /// checkpoint that failed after an earlier apply committed is retried.
+    /// A commit that rewrites existing SQL rows may
+    /// also run the canonical row checkpoint inside that commit (#1942); this
+    /// flag does not report that one.
+    pub checkpointed: bool,
+    /// Time queued in the runtime governor's maintenance admission. The
+    /// database write access is never held during it.
+    pub admission_wait: std::time::Duration,
+    /// Time spent acquiring the handle's exclusive database write access
+    /// after admission (waiting for in-flight writers and readers of the
+    /// store guard to finish).
+    pub write_lock_wait: std::time::Duration,
+    /// Time the exclusive write access was held while planning, applying,
+    /// committing and (when `checkpointed`) checkpointing, excluding the
+    /// admission and lock waits above. Other readers and writers of the
+    /// handle may wait for this long, plus the read publication refresh on
+    /// release.
+    pub write_lock_held: std::time::Duration,
+}
+
+impl SystemSchemaApplyReport {
+    /// Whether any registry applied at least one migration.
+    pub fn applied_any(&self) -> bool {
+        self.registries
+            .iter()
+            .any(|report| !report.applied_versions.is_empty())
+    }
+}
+
+/// What applying registries committed, and whether it checkpointed.
+pub(crate) struct SystemSchemaApplyOutcome {
+    pub(crate) reports: Vec<SystemSchemaUpgradeReport>,
+    pub(crate) checkpointed: bool,
+}
+
 /// A registry's pending suffix, verified before any write.
 struct SystemSchemaPlan<'a> {
     registry: &'a SystemSchemaRegistry,
@@ -224,8 +276,9 @@ impl Database {
     }
 
     pub(super) fn apply_engine_system_schema(&mut self) -> Result<SystemSchemaUpgradeReport> {
-        let mut reports =
-            self.apply_system_schema_registries_inner(&[&engine_system_schema_registry()])?;
+        let mut reports = self
+            .apply_system_schema_registries_inner(&[&engine_system_schema_registry()], None)?
+            .reports;
         Ok(reports
             .pop()
             .expect("one system schema report per registry"))
@@ -265,22 +318,43 @@ impl Database {
         &mut self,
         registries: &[SystemSchemaRegistry],
     ) -> Result<Vec<SystemSchemaUpgradeReport>> {
+        Ok(self
+            .apply_system_schema_registries_with_outcome(registries, None)?
+            .reports)
+    }
+
+    /// [`Self::apply_system_schema_registries`], also reporting whether the
+    /// post-schema checkpoint ran.
+    ///
+    /// `shadow_admission_bytes` is `Some` when the caller already holds a
+    /// runtime permit extended by [`Self::columnar_shadow_admission_bytes`]
+    /// (as [`crate::EmbeddedStoreHandle::checkpoint_context`] does); that
+    /// checkpoint then draws against it instead of admitting again.
+    pub(crate) fn apply_system_schema_registries_with_outcome(
+        &mut self,
+        registries: &[SystemSchemaRegistry],
+        shadow_admission_bytes: Option<u64>,
+    ) -> Result<SystemSchemaApplyOutcome> {
         let engine_registry = engine_system_schema_registry();
         validate_system_schema_registries(registries)?;
         // Application registries are recorded in the engine registry table,
         // so the engine schema must be current before they are planned.
-        let engine_report = self
-            .apply_system_schema_registries_inner(&[&engine_registry])?
-            .pop()
+        let engine_outcome =
+            self.apply_system_schema_registries_inner(&[&engine_registry], shadow_admission_bytes)?;
+        let engine_report = engine_outcome
+            .reports
+            .into_iter()
+            .next()
             .expect("one system schema report per registry");
         let application = registries
             .iter()
             .filter(|registry| registry.owner() != ENGINE_SYSTEM_SCHEMA_OWNER)
             .collect::<Vec<_>>();
-        let mut application_reports = self
-            .apply_system_schema_registries_inner(&application)?
-            .into_iter();
-        Ok(registries
+        let application_outcome =
+            self.apply_system_schema_registries_inner(&application, shadow_admission_bytes)?;
+        let checkpointed = engine_outcome.checkpointed || application_outcome.checkpointed;
+        let mut application_reports = application_outcome.reports.into_iter();
+        let reports = registries
             .iter()
             .map(|registry| {
                 if registry.owner() == ENGINE_SYSTEM_SCHEMA_OWNER {
@@ -291,7 +365,11 @@ impl Database {
                         .expect("one system schema report per application registry")
                 }
             })
-            .collect())
+            .collect();
+        Ok(SystemSchemaApplyOutcome {
+            reports,
+            checkpointed,
+        })
     }
 
     /// Reports the installed and expected versions of the engine's system
@@ -353,7 +431,8 @@ impl Database {
     fn apply_system_schema_registries_inner(
         &mut self,
         registries: &[&SystemSchemaRegistry],
-    ) -> Result<Vec<SystemSchemaUpgradeReport>> {
+        shadow_admission_bytes: Option<u64>,
+    ) -> Result<SystemSchemaApplyOutcome> {
         let commit_epoch_before = self.commit_epoch()?;
         let mut plans = Vec::with_capacity(registries.len());
         for registry in registries {
@@ -410,14 +489,21 @@ impl Database {
         // now, before the host's first write, so that write does not scan the
         // label. The check also runs when nothing is pending, so a checkpoint
         // that failed after an earlier commit is retried on the next apply.
-        if !self.config.read_only && self.registry_graph_indexes_await_checkpoint(registries)? {
+        let checkpointed =
+            !self.config.read_only && self.registry_graph_indexes_await_checkpoint(registries)?;
+        if checkpointed {
             // The migration is already recorded; a failure here propagates
             // unchanged and the next apply retries the checkpoint.
-            self.checkpoint()?;
+            match shadow_admission_bytes {
+                Some(bytes) => self.checkpoint_with_shadow_admission(
+                    crate::store::ColumnarShadowAdmission::pre_admitted(bytes),
+                )?,
+                None => self.checkpoint()?,
+            }
         }
 
         let commit_epoch_after = self.commit_epoch()?;
-        Ok(plans
+        let reports = plans
             .into_iter()
             .zip(applied_versions)
             .map(|(plan, applied_versions)| {
@@ -439,7 +525,11 @@ impl Database {
                     },
                 }
             })
-            .collect())
+            .collect();
+        Ok(SystemSchemaApplyOutcome {
+            reports,
+            checkpointed,
+        })
     }
 
     /// Whether an out-of-core handle holds a registry graph index that seeks

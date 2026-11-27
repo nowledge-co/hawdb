@@ -14,6 +14,10 @@ pub struct EmbeddedStoreHandle {
     // last-good publication untouched, so readers fail closed instead of
     // silently serving pre-write state. Mirrors CommitGuard's poison flag.
     pub(super) read_publication_failed: Arc<AtomicBool>,
+    // Held by one system schema apply at a time, across every clone, so a
+    // concurrent apply is refused at once instead of timing out on the
+    // database lease.
+    pub(super) system_schema_apply: Arc<Mutex<()>>,
 }
 
 #[derive(Debug)]
@@ -563,6 +567,7 @@ impl EmbeddedStoreHandle {
             concurrent,
             published_read,
             read_publication_failed,
+            system_schema_apply: Arc::new(Mutex::new(())),
         })
     }
 

@@ -322,8 +322,8 @@ pub use source_candidates::{
 };
 pub(crate) use system_schema::validate_system_schema_registries;
 pub use system_schema::{
-    engine_system_schema_expected_version, SystemSchemaMigration, SystemSchemaRegistry,
-    SystemSchemaStatus, SystemSchemaUpgradeReport,
+    engine_system_schema_expected_version, SystemSchemaApplyReport, SystemSchemaMigration,
+    SystemSchemaRegistry, SystemSchemaStatus, SystemSchemaUpgradeReport,
 };
 pub use system_variables::QuerySystemVariables;
 
