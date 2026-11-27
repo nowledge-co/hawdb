@@ -72,6 +72,7 @@ mod search_markers;
 pub use search_markers::MAX_SEARCH_PROJECTION_MARKER_REASON_BYTES;
 mod search_projection_rebuild;
 mod search_read;
+mod system_schema;
 use resident_read::ResidentProjectionRef;
 mod handle;
 mod registered_search;
