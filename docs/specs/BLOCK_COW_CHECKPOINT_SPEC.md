@@ -134,10 +134,13 @@ Block assignment MUST therefore use stable boundaries:
 - property projections use stable value/key range buckets once their
   implementation is migrated.
 
-A record insert, update or delete MUST affect only its bucket's blocks and,
-where required, the tail. It MUST NOT shift records into later buckets.
-Deleting every record in a bucket MAY leave an empty bucket; an empty bucket
-MUST NOT publish a block.
+Bucket endpoints are inclusive. A one-key bucket may use equal start and end
+keys, and the final bucket MAY use `u64::MAX` as its end. An inverted range
+(`start > end`) is invalid; an empty bucket is a logical absence, not a block
+with no records. A record insert, update or delete MUST affect only its bucket's
+blocks and, where required, the tail. It MUST NOT shift records into later
+buckets. Deleting every record in a bucket MAY leave an empty bucket; an empty
+bucket MUST NOT publish a block.
 
 The block target size is a writer policy with a bounded maximum. The initial
 target SHOULD be 1-4 MiB and MUST be benchmarked against point-read latency,
