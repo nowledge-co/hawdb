@@ -689,7 +689,7 @@ impl Database {
                 ])
             })
             .collect();
-        Ok(QueryOutput { rows })
+        Ok(QueryOutput::from_query_rows(rows))
     }
 
     fn enqueue_derived_artifact_job(

@@ -86,9 +86,7 @@ fn admitted<T>(
 }
 
 fn empty_output(_: &DerivedArtifactJob) -> Result<QueryOutput> {
-    Ok(QueryOutput {
-        rows: Vec::new().into(),
-    })
+    Ok(QueryOutput::from_query_rows(Vec::new().into()))
 }
 
 #[test]

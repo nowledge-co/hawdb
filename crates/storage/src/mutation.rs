@@ -15,7 +15,8 @@
 use crate::wal::WalOp;
 use hawdb_core::ids::{NodeId, RelId};
 use hawdb_core::{
-    HawDBError, PropertyType, Result, SchemaObjectState, TableKind, ValidatedRegex, Value,
+    HawDBError, PropertyType, QueryCounters, Result, SchemaObjectState, TableKind, ValidatedRegex,
+    Value,
 };
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
@@ -45,11 +46,16 @@ pub struct MutationLimits {
 }
 
 /// Storage-neutral outcome of an atomically committed graph mutation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MutationSummary {
     pub rows: Vec<BTreeMap<String, Value>>,
     pub relational_mutation_outcomes: Vec<crate::relational::RelationalMutationOutcome>,
     pub append_mutation_outcomes: Vec<crate::append_table::AppendMutationOutcome>,
+    /// The graph write operations the mutation layer executed for these
+    /// mutations, counted where each write is decided (before transaction
+    /// compaction and WAL encoding). Zero for a commit that only publishes
+    /// writes staged and counted earlier, such as an explicit transaction.
+    pub counters: QueryCounters,
 }
 
 impl Default for MutationLimits {

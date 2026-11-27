@@ -16,7 +16,8 @@
 //! persistent property projection for an index it does not serve yet, the
 //! residency report names unserved indexes, and until then mutation targets
 //! scan the canonical base by property instead of the label. Indexed results
-//! always equal an unindexed twin's.
+//! always equal an unindexed twin's. Without such an index the trigger never
+//! starts a checkpoint.
 
 use super::*;
 use crate::store::StorageResidencyMode;
@@ -138,6 +139,69 @@ fn automatic_checkpoint_builds_the_projection_for_a_new_index() {
     set_k(&mut reopened, "k8");
     assert_eq!(targets(&reopened).1, before.1 + 1);
     drop(reopened);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+/// Without graph property indexes, the projection trigger never fires: many
+/// small node and SQL commits on an out-of-core database with background
+/// maintenance start no automatic checkpoint (the age trigger is an hour
+/// away). `CREATE INDEX` is the positive control: it does start one (#2019).
+#[test]
+fn commits_without_graph_property_indexes_never_start_a_projection_checkpoint() {
+    let path = unique_test_dir("ooc_index_projection_no_indexes");
+    let mut db = Database::open_with_config(&path, config(false)).unwrap();
+    create_memories(&mut db, 0..300);
+    db.query_sql("CREATE TABLE records (id BIGINT PRIMARY KEY, value BIGINT)")
+        .unwrap();
+    db.checkpoint().unwrap();
+    drop(db);
+    // A fresh owner: no projection build was attempted for any index set.
+    let mut db = Database::open_with_config(&path, config(true)).unwrap();
+    assert!(db.storage_residency_report().unwrap().out_of_core);
+    let baseline = completed(&db);
+    assert_eq!(baseline, 0);
+    for id in 0..50 {
+        if id % 2 == 0 {
+            db.query(&format!(
+                "CREATE (:Memory {{id: {}, k: 'new', v: 0}})",
+                1000 + id
+            ))
+            .unwrap();
+        } else {
+            db.query_sql(&format!("INSERT INTO records VALUES ({id}, {id})"))
+                .unwrap();
+        }
+        assert!(unserved(&db).is_empty());
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // Give the owner time to act on the last submit before asserting nothing.
+    std::thread::sleep(Duration::from_millis(500));
+    let report = db.automatic_checkpoint_report().unwrap().unwrap();
+    assert_eq!(report.completed_checkpoints, baseline, "{report:?}");
+    assert!(!report.preparing, "{report:?}");
+    assert_eq!(report.failed_attempts, 0, "{report:?}");
+    assert!(db
+        .storage_residency_report()
+        .unwrap()
+        .unserved_graph_property_indexes
+        .is_empty());
+
+    // Positive control: an index the projection does not serve starts a
+    // checkpoint without an explicit one.
+    db.query("CREATE INDEX ON :Memory(k)").unwrap();
+    assert_eq!(unserved(&db).len(), 1);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !unserved(&db).is_empty() {
+        assert!(
+            Instant::now() < deadline,
+            "projection not built: {:?}",
+            db.automatic_checkpoint_report()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+        db.query("CREATE (:Probe)").unwrap();
+    }
+    assert!(completed(&db) > baseline);
+    drop(db);
     std::fs::remove_dir_all(path).unwrap();
 }
 

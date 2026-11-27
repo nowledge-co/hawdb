@@ -696,7 +696,8 @@ struct PrimaryCheckOutput {
 enum CypherCheckOutcome {
     Rows {
         output: QueryOutput,
-        effect: Option<QueryOutput>,
+        // Boxed: two inline outputs make this variant much larger than `Error`.
+        effect: Option<Box<QueryOutput>>,
     },
     Error(ExpectedErrorClass),
 }
@@ -1084,7 +1085,7 @@ fn run_cypher_check(
             &effect,
             check.tolerance,
         )?;
-        Some(effect)
+        Some(Box::new(effect))
     } else {
         None
     };
@@ -1135,7 +1136,7 @@ fn run_cypher_session_check(
             &effect,
             check.tolerance,
         )?;
-        Some(effect)
+        Some(Box::new(effect))
     } else {
         None
     };

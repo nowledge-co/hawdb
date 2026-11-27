@@ -1535,9 +1535,9 @@ pub(super) fn decode_external_query_response(
             "shadow engine '{engine_name}' query response missing rows"
         ))
     })?;
-    Ok(QueryOutput {
-        rows: rows_from_json(engine_name, rows)?.into(),
-    })
+    Ok(QueryOutput::from_query_rows(
+        rows_from_json(engine_name, rows)?.into(),
+    ))
 }
 
 fn validate_external_response_request_id(
@@ -1663,13 +1663,11 @@ pub(super) fn decode_external_session_response(
                     "shadow engine '{engine_name}' session output {index} missing rows"
                 ))
             })?;
-            Ok(QueryOutput {
-                rows: rows_from_json(engine_name, rows)
+            Ok(QueryOutput::from_query_rows(rows_from_json(engine_name, rows)
                     .map_err(|error| HawDBError::or_stop(&error, || HawDBError::Execution(format!(
                         "shadow engine '{engine_name}' session output {index} row decoding failed: {error}"
                     ))))?
-                    .into(),
-            })
+                    .into()))
         })
         .collect()
 }
@@ -2226,9 +2224,7 @@ mod protocol_server_tests {
             self.executed.push(statement.cypher);
             let mut row = Row::new();
             row.insert("value".to_string(), Value::Int(self.executed.len() as i64));
-            Ok(QueryOutput {
-                rows: vec![row].into(),
-            })
+            Ok(QueryOutput::from_query_rows(vec![row].into()))
         }
     }
 

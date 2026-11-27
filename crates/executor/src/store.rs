@@ -14,7 +14,7 @@
 
 //! Storage-neutral graph read contract used by execution operators.
 
-use hawdb_core::{Catalog, LabelId, RelTypeId, Result};
+use hawdb_core::{Catalog, LabelId, QueryCounters, RelTypeId, Result};
 use hawdb_plan_cypher::{CompositeRangeSeek, NodeProjectionAccess};
 use hawdb_storage::{
     adjacency::{AdjacencyDirection, OrderedAdjacencyEntry},
@@ -804,32 +804,37 @@ pub trait GraphExecutionWrite: GraphExecutionRead {
         limits: MutationLimits,
     ) -> Result<MutationSummary>;
 
+    /// Sets `assignments` on every node in `ids` and returns the counters of
+    /// the writes executed.
     fn set_node_properties_by_ids_with_limits(
         &mut self,
         catalog: &mut Catalog,
         ids: &[NodeId],
         assignments: &[NodeSetAssignment],
         limits: MutationLimits,
-    ) -> Result<Vec<NodeId>>;
+    ) -> Result<QueryCounters>;
 
+    /// Deletes every node in `ids` and returns the counters of the writes
+    /// executed, including relationships a detach deletes.
     fn delete_node_ids_with_limits(
         &mut self,
         catalog: &mut Catalog,
         ids: &[NodeId],
         detach: bool,
         limits: MutationLimits,
-    ) -> Result<Vec<NodeId>>;
+    ) -> Result<QueryCounters>;
 
     /// Applies `mutation` to a private working copy and passes the working
     /// catalog, the unchanged and working stores and the storage summary to
     /// `project`. The mutation is
     /// published only when `project` succeeds, so a statement and its
-    /// `RETURN` rows commit or fail together.
+    /// `RETURN` rows commit or fail together. Returns the projected rows and
+    /// the counters of the writes the mutation executed.
     fn commit_mutation_with_output(
         &mut self,
         catalog: &mut Catalog,
         mutation: GraphMutation,
         limits: MutationLimits,
         project: &mut crate::store::MutationOutputProjector<'_>,
-    ) -> Result<Vec<crate::Row>>;
+    ) -> Result<(Vec<crate::Row>, QueryCounters)>;
 }

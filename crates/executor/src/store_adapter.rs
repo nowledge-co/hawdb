@@ -807,8 +807,8 @@ impl GraphExecutionWrite for GraphStore {
         ids: &[NodeId],
         assignments: &[NodeSetAssignment],
         limits: MutationLimits,
-    ) -> Result<Vec<NodeId>> {
-        GraphStore::set_node_properties_by_ids_with_limits(self, catalog, ids, assignments, limits)
+    ) -> Result<hawdb_core::QueryCounters> {
+        GraphStore::set_node_properties_by_ids_counted(self, catalog, ids, assignments, limits)
     }
 
     fn delete_node_ids_with_limits(
@@ -817,8 +817,8 @@ impl GraphExecutionWrite for GraphStore {
         ids: &[NodeId],
         detach: bool,
         limits: MutationLimits,
-    ) -> Result<Vec<NodeId>> {
-        GraphStore::delete_node_ids_with_limits(self, catalog, ids, detach, limits)
+    ) -> Result<hawdb_core::QueryCounters> {
+        GraphStore::delete_node_ids_counted(self, catalog, ids, detach, limits)
     }
 
     fn commit_mutation_with_output(
@@ -827,7 +827,7 @@ impl GraphExecutionWrite for GraphStore {
         mutation: GraphMutation,
         limits: MutationLimits,
         project: &mut crate::store::MutationOutputProjector<'_>,
-    ) -> Result<Vec<crate::Row>> {
+    ) -> Result<(Vec<crate::Row>, hawdb_core::QueryCounters)> {
         // The transaction workspace is a private snapshot: projection reads
         // the mutated state, and nothing is published unless it succeeds.
         let mut transaction = self.begin_mutation_transaction(catalog);
@@ -846,6 +846,6 @@ impl GraphExecutionWrite for GraphStore {
             hawdb_storage::relational::RelationalTransaction::default(),
             limits,
         )?;
-        Ok(rows)
+        Ok((rows, summary.counters))
     }
 }

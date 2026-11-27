@@ -49,7 +49,7 @@ pub mod numeric;
 #[doc(hidden)]
 pub mod observer;
 mod output;
-pub use output::QueryOutput;
+pub use output::{QueryCounters, QueryOutput};
 #[doc(hidden)]
 pub mod pipeline;
 #[doc(hidden)]

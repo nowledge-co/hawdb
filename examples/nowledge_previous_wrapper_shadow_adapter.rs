@@ -572,7 +572,7 @@ fn query_output_from_json_rows(rows: Vec<JsonRow>) -> Result<QueryOutput> {
                 .collect::<Result<BTreeMap<_, _>>>()
         })
         .collect::<Result<Vec<_>>>()
-        .map(|rows| QueryOutput { rows: rows.into() })
+        .map(|rows| QueryOutput::from_query_rows(rows.into()))
 }
 
 #[cfg(test)]

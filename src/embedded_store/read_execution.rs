@@ -1582,9 +1582,7 @@ mod tests {
                         resource_profile_limits(),
                         profile_identity.unwrap(),
                     )
-                    .map(|_| crate::QueryOutput {
-                        rows: Default::default(),
-                    }),
+                    .map(|_| crate::QueryOutput::from_query_rows(Default::default())),
                 };
                 handle.set_telemetry_sink(None).unwrap();
                 let prior_released = sink.prior_released.load(Ordering::SeqCst);

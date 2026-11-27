@@ -671,9 +671,7 @@ impl ConcurrentDatabase {
                 *result_slot.lock().map_err(|_| {
                     HawDBError::Execution("concurrent append result slot is poisoned".to_string())
                 })? = Some(result);
-                Ok(QueryOutput {
-                    rows: Vec::new().into(),
-                })
+                Ok(QueryOutput::from_query_rows(Vec::new().into()))
             })
             .map(|_| ())?;
         committed_result

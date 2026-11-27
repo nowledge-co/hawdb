@@ -365,10 +365,12 @@ pub(super) fn execute_graph_transaction_plan(
             mutation_limits.max_result_rows = mutation_limits.max_result_rows.min(limit);
         }
         let statement_savepoint = transaction.savepoint();
-        let finish = |transaction: &mut GraphMutationTransaction, rows: Vec<executor::Row>| {
-            let output = QueryOutput {
-                rows: optimized.collect_named_rows(rows)?,
-            };
+        // Each statement reports only the writes it staged itself.
+        let finish = |transaction: &mut GraphMutationTransaction,
+                      rows: Vec<executor::Row>,
+                      counters: executor::QueryCounters| {
+            let output = QueryOutput::from_query_rows(optimized.collect_named_rows(rows)?)
+                .with_counters(counters);
             hawdb_executor::result_delivery::OutputLimits {
                 max_rows: restrictive_query_limit(
                     runtime.read_result_row_limit(),
@@ -394,7 +396,7 @@ pub(super) fn execute_graph_transaction_plan(
         };
         let execute = || {
             if let PhysicalPlan::MatchSetExec(set) = &optimized.physical_plan {
-                let outcome = executor::resolve_match_set(
+                let mut outcome = executor::resolve_match_set(
                     set,
                     parameters,
                     transaction.catalog(),
@@ -404,22 +406,23 @@ pub(super) fn execute_graph_transaction_plan(
                     &runtime.config.execution_memory,
                     task_context,
                 )?;
-                if !outcome.mutations.is_empty() {
-                    if is_mutation_return {
+                let mut committed = executor::QueryCounters::default();
+                let mutations = std::mem::take(&mut outcome.mutations);
+                if !mutations.is_empty() {
+                    let summary = if is_mutation_return {
                         let staging_limits =
                             hawdb_executor::mutation::mutation_return_staging_limits(
                                 mutation_limits,
                             );
-                        transaction.stage_mutations_without_commit_rows(
-                            outcome.mutations,
-                            staging_limits,
-                        )?;
-                    } else {
                         transaction
-                            .stage_mutations_with_limits(outcome.mutations, mutation_limits)?;
-                    }
+                            .stage_mutations_without_commit_rows(mutations, staging_limits)?
+                    } else {
+                        transaction.stage_mutations_with_limits(mutations, mutation_limits)?
+                    };
+                    committed = summary.counters;
                 }
-                return finish(transaction, outcome.rows);
+                let counters = outcome.counters(committed);
+                return finish(transaction, outcome.rows, counters);
             }
             let staged = executor::stage_row_mutations(
                 &optimized.physical_plan,
@@ -520,7 +523,11 @@ pub(super) fn execute_graph_transaction_plan(
                     runtime.config.mutation_limits,
                 )?,
             };
-            finish(transaction, returned_rows.unwrap_or_default())
+            finish(
+                transaction,
+                returned_rows.unwrap_or_default(),
+                summary.counters,
+            )
         };
         // Row-evaluated clock reads observe the instant planning observed.
         let execution =
@@ -568,9 +575,7 @@ pub(super) fn execute_graph_transaction_plan(
             ),
             executor::ExecutionResources::new(catalog, store, &mut external),
         );
-        profiled.map(|profiled| QueryOutput {
-            rows: profiled.rows,
-        })
+        profiled.map(|profiled| QueryOutput::from_query_rows(profiled.rows))
     };
     transaction.store().poison_on_storage_error(&query_result);
     query_result.map(|output| GraphTransactionStatementOutcome {
@@ -1227,9 +1232,9 @@ fn execute_database_transaction_prepared_sql_at_clock(
             plan.max_rows,
             max_read_result_payload_bytes.unwrap_or(usize::MAX),
         )?;
-        return Ok(sql_query_result(QueryOutput {
-            rows: crate::relational_sql::project_append_rows(&plan, &output.rows)?,
-        }));
+        return Ok(sql_query_result(QueryOutput::from_query_rows(
+            crate::relational_sql::project_append_rows(&plan, &output.rows)?,
+        )));
     }
     if let Some(plan) = crate::relational_sql::compile_prepared_append_explain_sql(
         &prepared.template,
@@ -1334,7 +1339,7 @@ fn execute_database_transaction_prepared_sql_at_clock(
             .map(|cte| Some(cte.returning))
             .collect::<Vec<_>>();
         publish_staged_relational_sql_transaction(state, staged, transaction, returning)?;
-        return Ok(sql_query_result(QueryOutput { rows: output.rows }));
+        return Ok(sql_query_result(QueryOutput::from_query_rows(output.rows)));
     }
     if matches!(
         prepared.statement(),
@@ -1356,7 +1361,7 @@ fn execute_database_transaction_prepared_sql_at_clock(
             )
             .with_join_planning(options.join_planning),
         )?;
-        return Ok(sql_query_result(QueryOutput { rows: output.rows }));
+        return Ok(sql_query_result(QueryOutput::from_query_rows(output.rows)));
     }
 
     runtime.ensure_writable(
@@ -1400,9 +1405,9 @@ fn execute_database_transaction_prepared_sql_at_clock(
                 _ => None,
             }));
         state.append_transaction.writes.extend(transaction.writes);
-        return Ok(sql_query_result(QueryOutput {
-            rows: Vec::new().into(),
-        }));
+        return Ok(sql_query_result(QueryOutput::from_query_rows(
+            Vec::new().into(),
+        )));
     }
     if let crate::sql::SqlStatement::CreateTable(create) = prepared.statement()
         && state.append_state.schema(&create.table.name).is_some()
@@ -1469,7 +1474,7 @@ fn execute_database_transaction_prepared_sql_at_clock(
         .map(|mutation| mutation.rows.clone())
         .unwrap_or_default();
     Ok(SqlStatementResult {
-        output: QueryOutput { rows },
+        output: QueryOutput::from_query_rows(rows),
         mutation,
     })
 }
@@ -1810,7 +1815,7 @@ pub(super) fn commit_database_transaction_state_inner(
         rows = mutations[0].rows.clone();
     }
     Ok(TransactionCommitResult {
-        output: QueryOutput { rows },
+        output: QueryOutput::from_query_rows(rows),
         mutations,
         append_mutations: summary.append_mutation_outcomes,
     })
@@ -2109,9 +2114,7 @@ impl DatabaseSession<'_> {
                         .store
                         .begin_mutation_transaction(&branch_runtime.catalog),
                 );
-                Ok(QueryOutput {
-                    rows: Vec::new().into(),
-                })
+                Ok(QueryOutput::from_query_rows(Vec::new().into()))
             }
             cypher::Statement::Commit => {
                 reject_transaction_control_parameters("COMMIT", parameters)?;
@@ -2140,9 +2143,7 @@ impl DatabaseSession<'_> {
                         hawdb_storage::relational::RelationalTransaction::default(),
                         mutation_limits,
                     )?;
-                Ok(QueryOutput {
-                    rows: summary.rows.into(),
-                })
+                Ok(QueryOutput::from_query_rows(summary.rows.into()))
             }
             cypher::Statement::Rollback => {
                 reject_transaction_control_parameters("ROLLBACK", parameters)?;
@@ -2152,9 +2153,7 @@ impl DatabaseSession<'_> {
                     ));
                 }
                 self.transaction_runtime.take();
-                Ok(QueryOutput {
-                    rows: Vec::new().into(),
-                })
+                Ok(QueryOutput::from_query_rows(Vec::new().into()))
             }
             cypher::Statement::Checkpoint if self.graph_transaction.is_some() => {
                 Err(HawDBError::Execution(

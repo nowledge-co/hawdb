@@ -21,7 +21,7 @@ use crate::schema::{
 };
 use crate::telemetry::TelemetrySink;
 use crate::value::Value;
-use hawdb_core::{DeclaredPropertyDefault, PropertyDefault, RuntimeTaskContext};
+use hawdb_core::{DeclaredPropertyDefault, PropertyDefault, QueryCounters, RuntimeTaskContext};
 use hawdb_integrity::{checksum_u64, Sha256Digest};
 use hawdb_storage::mutation::compact_transaction_graph_ops;
 use hawdb_storage::projection::projection_document_id_for_node as search_projection_document_id_for_node;
@@ -1643,11 +1643,7 @@ impl GraphMutationTransaction {
         retain_commit_rows: bool,
     ) -> Result<MutationSummary> {
         if mutations.is_empty() {
-            return Ok(MutationSummary {
-                rows: Vec::new(),
-                relational_mutation_outcomes: Vec::new(),
-                append_mutation_outcomes: Vec::new(),
-            });
+            return Ok(MutationSummary::default());
         }
         let mut captured_ops = Vec::new();
         let summary = self.store.commit_mutations_internal(
@@ -3528,7 +3524,7 @@ fn pending_node_index(pending_nodes: &[PendingNode], id: NodeId) -> Option<usize
 fn apply_set_relationship_properties_mutation(
     store: &GraphStore,
     catalog: &Catalog,
-    ops: &mut Vec<WalOp>,
+    ops: &mut CountedOps,
     rows: &mut Vec<BTreeMap<String, Value>>,
     pending_nodes: &[PendingNode],
     pending_relationships: &mut [PendingRelationship],
@@ -3768,8 +3764,16 @@ fn node_matches_optional_label_and_filter_checked(
         }))
 }
 
-fn apply_pending_relationship_property(ops: &mut [WalOp], id: RelId, property: &str, value: Value) {
-    for op in ops {
+/// Folds a property write into a relationship created earlier in the batch.
+/// The folded write is counted as executed.
+fn apply_pending_relationship_property(
+    ops: &mut CountedOps,
+    id: RelId,
+    property: &str,
+    value: Value,
+) {
+    ops.counters.properties_set += 1;
+    for op in &mut ops.ops {
         if let WalOp::CreateRelationship {
             id: create_id,
             properties,
@@ -3796,9 +3800,12 @@ fn pending_relationship_ids_for_nodes(
         .collect()
 }
 
-fn remove_pending_node(ops: &mut Vec<WalOp>, pending_nodes: &mut PendingNodes, id: NodeId) {
+/// Deletes a node created earlier in the same batch: its writes leave the
+/// batch, and the delete is counted like any other executed node delete.
+fn remove_pending_node(ops: &mut CountedOps, pending_nodes: &mut PendingNodes, id: NodeId) {
     pending_nodes.remove(id);
-    ops.retain(|op| match op {
+    ops.counters.nodes_deleted += 1;
+    ops.ops.retain(|op| match op {
         WalOp::CreateNode { id: node_id, .. } | WalOp::SetNodeProperty { id: node_id, .. } => {
             *node_id != id
         }
@@ -3806,13 +3813,15 @@ fn remove_pending_node(ops: &mut Vec<WalOp>, pending_nodes: &mut PendingNodes, i
     });
 }
 
+/// [`remove_pending_node`] for a relationship created earlier in the batch.
 fn remove_pending_relationship(
-    ops: &mut Vec<WalOp>,
+    ops: &mut CountedOps,
     pending_relationships: &mut Vec<PendingRelationship>,
     id: RelId,
 ) {
     pending_relationships.retain(|(relationship_id, _, _, _, _)| *relationship_id != id);
-    ops.retain(|op| match op {
+    ops.counters.relationships_deleted += 1;
+    ops.ops.retain(|op| match op {
         WalOp::CreateRelationship {
             id: relationship_id,
             ..
@@ -3823,6 +3832,125 @@ fn remove_pending_relationship(
         } => *relationship_id != id,
         _ => true,
     });
+}
+
+/// The write operations one mutation batch emits, and the counters of every
+/// write it executes.
+///
+/// Counting happens as each write is decided, not from the final operations:
+/// a write folded into a record the batch created earlier, or removed again
+/// by a later delete in the batch, still counts once. The operations are
+/// readable through `Deref`; every change goes through a counting method.
+#[derive(Debug, Default)]
+pub(crate) struct CountedOps {
+    ops: Vec<WalOp>,
+    counters: QueryCounters,
+}
+
+impl std::ops::Deref for CountedOps {
+    type Target = Vec<WalOp>;
+
+    fn deref(&self) -> &Vec<WalOp> {
+        &self.ops
+    }
+}
+
+impl CountedOps {
+    /// Emits `op` and counts it as one executed write.
+    pub(crate) fn push(&mut self, op: WalOp) {
+        count_executed_write(&mut self.counters, &op);
+        self.ops.push(op);
+    }
+
+    pub(crate) fn extend(&mut self, ops: impl IntoIterator<Item = WalOp>) {
+        for op in ops {
+            self.push(op);
+        }
+    }
+
+    /// Emits a create whose statement gave `given_properties` properties.
+    /// The record's map may hold fewer (a MERGE pattern and its ON CREATE
+    /// SET may name the same key) or more (declared defaults).
+    pub(crate) fn push_create(&mut self, op: WalOp, given_properties: usize) {
+        let properties_before = self.counters.properties_set;
+        self.push(op);
+        self.counters.properties_set = properties_before.saturating_add(given_properties as u64);
+    }
+
+    /// Counts a property write folded into a node or relationship this batch
+    /// created earlier.
+    pub(crate) fn count_folded_property_writes(&mut self, writes: usize) {
+        self.counters.properties_set = self.counters.properties_set.saturating_add(writes as u64);
+    }
+
+    /// The emitted operations, for an in-place fold into an earlier create.
+    pub(crate) fn ops_for_fold(&mut self) -> &mut [WalOp] {
+        &mut self.ops
+    }
+
+    pub(crate) fn into_parts(self) -> (Vec<WalOp>, QueryCounters) {
+        (self.ops, self.counters)
+    }
+}
+
+/// Counts one write operation as executed by a statement.
+pub(crate) fn count_executed_write(counters: &mut QueryCounters, op: &WalOp) {
+    match op {
+        WalOp::CreateNode {
+            label, properties, ..
+        } => {
+            counters.nodes_created += 1;
+            counters.labels_added += u64::from(!label.is_empty());
+            counters.properties_set += properties.len() as u64;
+        }
+        WalOp::CreateRelationship { properties, .. } => {
+            counters.relationships_created += 1;
+            counters.properties_set += properties.len() as u64;
+        }
+        WalOp::SetNodeProperty { .. } | WalOp::SetRelationshipProperty { .. } => {
+            counters.properties_set += 1;
+        }
+        WalOp::DeleteNode { .. } => counters.nodes_deleted += 1,
+        WalOp::DeleteRelationship { .. } => counters.relationships_deleted += 1,
+        WalOp::CreateIndex { .. }
+        | WalOp::CreateCompositeIndex { .. }
+        | WalOp::CreateRangeIndex { .. }
+        | WalOp::CreateFullTextIndex { .. } => counters.indexes_added += 1,
+        WalOp::CreateUniqueConstraint { .. }
+        | WalOp::CreateNodePropertyExistsConstraint { .. }
+        | WalOp::CreateRelationshipUniqueConstraint { .. }
+        | WalOp::CreateRelationshipPropertyExistsConstraint { .. } => {
+            counters.constraints_added += 1;
+        }
+        WalOp::Batch(ops) => {
+            for op in ops {
+                count_executed_write(counters, op);
+            }
+        }
+        WalOp::CreateNodeLabel { .. }
+        | WalOp::CreateRelationshipType { .. }
+        | WalOp::CreateNodeTable { .. }
+        | WalOp::CreateRelationshipTable { .. }
+        | WalOp::CreateProperty { .. }
+        | WalOp::AlterTableState { .. }
+        | WalOp::AlterPropertyState { .. }
+        | WalOp::GcTableDescriptor { .. }
+        | WalOp::GcPropertyDescriptor { .. }
+        | WalOp::ProjectGraph { .. }
+        | WalOp::MarkInitialImportSource { .. }
+        | WalOp::Relational { .. }
+        | WalOp::RelationalSnapshot { .. }
+        | WalOp::Append { .. } => {}
+    }
+}
+
+/// Counts writes a non-batched mutation executes as these operations.
+pub(crate) fn count_executed_writes(ops: &[WalOp]) -> QueryCounters {
+    let mut counters = QueryCounters::default();
+    for op in ops {
+        count_executed_write(&mut counters, op);
+    }
+    counters
 }
 
 fn merge_relationship_row(

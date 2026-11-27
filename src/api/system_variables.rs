@@ -28,11 +28,11 @@ pub(super) fn apply_set_system_variable(
     set: &cypher::SetSystemVariable,
 ) -> Result<QueryOutput> {
     let update = hawdb_query_policy::apply_set_system_variable(variables, set)?;
-    Ok(QueryOutput {
-        rows: vec![BTreeMap::from([
+    Ok(QueryOutput::from_query_rows(
+        vec![BTreeMap::from([
             ("name".to_string(), Value::String(update.name)),
             ("value".to_string(), update.value),
         ])]
         .into(),
-    })
+    ))
 }
