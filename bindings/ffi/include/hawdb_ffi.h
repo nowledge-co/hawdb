@@ -361,8 +361,21 @@ void hawdb_close(struct HawdbDatabase *db);
  * tagged forms `{"$binary": "<base64>"}` and `{"$uuid": "<text>"}`).
  *
  * On success returns true and `result_out` receives the result envelope
- * `{"columns": [...], "rows": [[...], ...]}`; on failure returns false
- * and `err_out` receives `{"kind", "message"}`.
+ * `{"columns": [...], "rows": [[...], ...], "counters": {...}}`; on
+ * failure returns false and `err_out` receives `{"kind", "message"}`.
+ *
+ * `"counters"` holds the write operations the statement executed, as
+ * non-negative integers under every key: `nodes_created`, `nodes_deleted`,
+ * `relationships_created`, `relationships_deleted`, `properties_set`,
+ * `labels_added`, `labels_removed`, `indexes_added`, `indexes_removed`,
+ * `constraints_added` and `constraints_removed`. They count writes
+ * executed, not data changed (`SET n.p = v` counts 1 even when `n.p`
+ * already equals `v`). A read, a pattern that matches nothing, every SQL
+ * statement and a transaction commit report all zeros, but
+ * `properties_set == 0` does not imply that nothing matched.
+ * `labels_removed`, `indexes_removed` and `constraints_removed` stay 0
+ * until the Cypher dialect parses `REMOVE` and `DROP`. Hosts must ignore
+ * envelope keys they do not know.
  *
  * # Safety
  * `db` must be a live [`hawdb_open`] handle; `cypher` and `params_json`
@@ -867,7 +880,8 @@ bool hawdb_transaction_query_sql(struct HawdbDatabase *db,
  * Commit the open transaction as one durable commit.
  *
  * On success returns true and `result_out` receives the commit's result
- * envelope (`{"columns": [...], "rows": [...]}`), and every statement is
+ * envelope (`{"columns": [...], "rows": [...], "counters": {...}}`, with
+ * all-zero counters; each statement reported its own), and every statement is
  * committed, durable under the handle's `durability` option. The
  * transaction is closed after this call whether or not it succeeds. The
  * commit is all or nothing, never partial: a commit refused before

@@ -25,6 +25,43 @@ from hawdb import exceptions as exceptions
 
 __version__: str
 
+class QueryCounters:
+    """How many write operations one Cypher statement executed.
+
+    Counts write operations executed, not data changed: ``SET n.p = v`` counts
+    1 in ``properties_set`` even when ``n.p`` already equals ``v``. A read-only
+    statement or one whose pattern matched nothing reports all zeros, but
+    ``properties_set == 0`` does not imply that nothing matched. SQL
+    statements and ``Transaction.commit()`` report all zeros.
+    ``labels_removed``, ``indexes_removed`` and ``constraints_removed`` stay 0
+    until the Cypher dialect parses ``REMOVE`` and ``DROP``.
+    """
+
+    @property
+    def nodes_created(self) -> int: ...
+    @property
+    def nodes_deleted(self) -> int: ...
+    @property
+    def relationships_created(self) -> int: ...
+    @property
+    def relationships_deleted(self) -> int: ...
+    @property
+    def properties_set(self) -> int: ...
+    @property
+    def labels_added(self) -> int: ...
+    @property
+    def labels_removed(self) -> int: ...
+    @property
+    def indexes_added(self) -> int: ...
+    @property
+    def indexes_removed(self) -> int: ...
+    @property
+    def constraints_added(self) -> int: ...
+    @property
+    def constraints_removed(self) -> int: ...
+    def contains_updates(self) -> bool:
+        """Whether the statement executed any write counted here."""
+
 class QueryResult:
     """Rows of one statement result, converted to Python as they are fetched.
 
@@ -38,6 +75,9 @@ class QueryResult:
     @property
     def affected_rows(self) -> Optional[int]:
         """Rows changed by a SQL INSERT, UPDATE or DELETE; None otherwise."""
+    @property
+    def counters(self) -> QueryCounters:
+        """Write operations the Cypher statement executed; all zero for reads."""
     def fetchone(self) -> Optional[Dict[str, Any]]: ...
     def fetchmany(self, size: int = 1) -> List[Dict[str, Any]]: ...
     def fetchall(self) -> List[Dict[str, Any]]: ...

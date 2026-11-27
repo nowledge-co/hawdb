@@ -384,6 +384,22 @@ For a SQL INSERT, UPDATE or DELETE, `QueryResult.affected_rows` is the number
 of rows it changed (inside a transaction, the rows staged for commit); it is
 `None` for queries, DDL, Cypher and writes to strict append tables.
 
+For Cypher, `QueryResult.counters` is a frozen `hawdb.QueryCounters` with the
+write operations the statement executed: `nodes_created`, `nodes_deleted`,
+`relationships_created`, `relationships_deleted`, `properties_set`,
+`labels_added`, `labels_removed`, `indexes_added`, `indexes_removed`,
+`constraints_added`, `constraints_removed`, and `contains_updates()`. They
+count writes executed, not data changed: `SET n.p = v` counts 1 even when
+`n.p` already equals `v`. A read, a pattern that matches nothing, any SQL
+statement and `commit()` report all zeros; `properties_set == 0` does not mean
+nothing matched. `labels_removed`, `indexes_removed` and `constraints_removed`
+stay 0 until the dialect parses `REMOVE` and `DROP`.
+
+```python
+counters = db.execute("CREATE (:Stock {code: '603122'})").counters
+assert (counters.nodes_created, counters.properties_set) == (1, 1)
+```
+
 `db.read_transaction()` pins the committed state for a stable read scope;
 write statements on it raise the engine's read-transaction error.
 

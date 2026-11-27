@@ -32,7 +32,14 @@ do not pass native objects between workers or open a writable path independently
 in multiple app processes. Serialize requests to that owner.
 
 `query` takes a named parameter object; `querySQL` takes positional parameters.
-Results have `columns`, positional `rows` and `dicts()`. Signed int64 values
+Results have `columns`, positional `rows`, `dicts()` and `counters`, a frozen
+`QueryCounters` with the write operations a Cypher statement executed
+(`nodesCreated`, `nodesDeleted`, `relationshipsCreated`,
+`relationshipsDeleted`, `propertiesSet`, `labelsAdded`, `labelsRemoved`,
+`indexesAdded`, `indexesRemoved`, `constraintsAdded`, `constraintsRemoved`) and
+`containsUpdates()`. They count writes executed, not data changed; reads,
+patterns that match nothing and SQL report all zeros (see the
+[C ABI result envelope](../ffi/README.md#value-encoding)). Signed int64 values
 outside the safe JavaScript integer range are `bigint`; use `bigint` parameters
 for those values. Binary values use `Uint8Array`. Decimal, UUID, temporal and
 vector values retain the [C ABI tagged forms](../ffi/README.md#value-encoding).

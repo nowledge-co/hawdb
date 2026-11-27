@@ -48,10 +48,56 @@ export class HawDBError extends Error {
   readonly details: Record<string, unknown>;
   constructor(kind: string, message: string, details?: Record<string, unknown>);
 }
+/** An unsigned 64-bit count: `number` when safe, otherwise `bigint`. */
+export type Count = number | bigint;
+export type QueryCounterName =
+  | "nodesCreated"
+  | "nodesDeleted"
+  | "relationshipsCreated"
+  | "relationshipsDeleted"
+  | "propertiesSet"
+  | "labelsAdded"
+  | "labelsRemoved"
+  | "indexesAdded"
+  | "indexesRemoved"
+  | "constraintsAdded"
+  | "constraintsRemoved";
+/**
+ * How many write operations one Cypher statement executed. Counts writes
+ * executed, not data changed: `SET n.p = v` counts 1 in `propertiesSet` even
+ * when `n.p` already equals `v`. A read, a pattern that matches nothing,
+ * every SQL statement and a transaction commit report all zeros, but
+ * `propertiesSet === 0` does not imply that nothing matched.
+ * `labelsRemoved`, `indexesRemoved` and `constraintsRemoved` stay 0 until
+ * the Cypher dialect parses `REMOVE` and `DROP`.
+ */
+export class QueryCounters {
+  readonly nodesCreated: Count;
+  readonly nodesDeleted: Count;
+  readonly relationshipsCreated: Count;
+  readonly relationshipsDeleted: Count;
+  readonly propertiesSet: Count;
+  readonly labelsAdded: Count;
+  readonly labelsRemoved: Count;
+  readonly indexesAdded: Count;
+  readonly indexesRemoved: Count;
+  readonly constraintsAdded: Count;
+  readonly constraintsRemoved: Count;
+  /** Absent fields are 0; the result is frozen. */
+  constructor(values?: Partial<Record<QueryCounterName, Count>>);
+  /** Whether the statement executed any write counted here. */
+  containsUpdates(): boolean;
+}
 export class QueryResult {
   columns: string[];
   rows: HawDBValue[][];
-  constructor(columns: string[], rows: HawDBValue[][]);
+  /** The write operations the statement executed; all zero for a read. */
+  counters: QueryCounters;
+  constructor(
+    columns: string[],
+    rows: HawDBValue[][],
+    counters?: QueryCounters,
+  );
   dicts(): Record<string, HawDBValue>[];
 }
 /** Valid only during the synchronous transaction callback. */

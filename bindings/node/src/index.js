@@ -79,10 +79,49 @@ function normalize(value) {
   );
 }
 
+// The C ABI's "counters" keys, by QueryCounters field.
+const counterKeys = {
+  nodesCreated: "nodes_created",
+  nodesDeleted: "nodes_deleted",
+  relationshipsCreated: "relationships_created",
+  relationshipsDeleted: "relationships_deleted",
+  propertiesSet: "properties_set",
+  labelsAdded: "labels_added",
+  labelsRemoved: "labels_removed",
+  indexesAdded: "indexes_added",
+  indexesRemoved: "indexes_removed",
+  constraintsAdded: "constraints_added",
+  constraintsRemoved: "constraints_removed",
+};
+
+export class QueryCounters {
+  constructor(values = {}) {
+    for (const name of Object.keys(counterKeys)) this[name] = values[name] ?? 0;
+    Object.freeze(this);
+  }
+  containsUpdates() {
+    return Object.keys(counterKeys).some((name) => this[name] !== 0);
+  }
+}
+
+function counters(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    throw new TypeError("HawDB returned a malformed result envelope");
+  const values = {};
+  for (const [name, key] of Object.entries(counterKeys)) {
+    const count = value[key];
+    if (!(typeof count === "number" || typeof count === "bigint") || count < 0)
+      throw new TypeError("HawDB returned a malformed result envelope");
+    values[name] = count;
+  }
+  return new QueryCounters(values);
+}
+
 export class QueryResult {
-  constructor(columns, rows) {
+  constructor(columns, rows, counters = new QueryCounters()) {
     this.columns = columns;
     this.rows = rows;
+    this.counters = counters;
   }
   dicts() {
     return this.rows.map((row) =>
@@ -107,6 +146,7 @@ function result(json) {
   return new QueryResult(
     parsed.columns,
     parsed.rows.map((row) => row.map(normalize)),
+    counters(parsed.counters),
   );
 }
 

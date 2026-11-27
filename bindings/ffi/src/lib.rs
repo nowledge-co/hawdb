@@ -65,6 +65,8 @@ pub use transaction::*;
 #[cfg(test)]
 mod concurrency_tests;
 #[cfg(test)]
+mod counters_tests;
+#[cfg(test)]
 mod dump_tests;
 #[cfg(test)]
 mod error_tests;
@@ -467,14 +469,49 @@ fn json_to_value(value: &serde_json::Value) -> Result<Value, String> {
 }
 
 /// Materialize a [`QueryOutput`] into the result envelope:
-/// `{"columns": [...], "rows": [[...], ...]}`.
+/// `{"columns": [...], "rows": [[...], ...], "counters": {...}}`.
 fn output_to_json(output: &QueryOutput) -> serde_json::Value {
     let columns = output.schema().columns();
     let rows: Vec<serde_json::Value> = output
         .value_rows()
         .map(|row| serde_json::Value::Array(row.iter().map(value_to_json).collect()))
         .collect();
-    json!({ "columns": columns, "rows": rows })
+    json!({
+        "columns": columns,
+        "rows": rows,
+        "counters": counters_to_json(&output.counters),
+    })
+}
+
+/// The envelope's `"counters"` object: every [`hawdb::QueryCounters`] field
+/// under its Rust name, always present, so hosts never test for absent keys.
+fn counters_to_json(counters: &hawdb::QueryCounters) -> serde_json::Value {
+    let hawdb::QueryCounters {
+        nodes_created,
+        nodes_deleted,
+        relationships_created,
+        relationships_deleted,
+        properties_set,
+        labels_added,
+        labels_removed,
+        indexes_added,
+        indexes_removed,
+        constraints_added,
+        constraints_removed,
+    } = *counters;
+    json!({
+        "nodes_created": nodes_created,
+        "nodes_deleted": nodes_deleted,
+        "relationships_created": relationships_created,
+        "relationships_deleted": relationships_deleted,
+        "properties_set": properties_set,
+        "labels_added": labels_added,
+        "labels_removed": labels_removed,
+        "indexes_added": indexes_added,
+        "indexes_removed": indexes_removed,
+        "constraints_added": constraints_added,
+        "constraints_removed": constraints_removed,
+    })
 }
 
 /// Open a HawDB database at `path`, creating it if needed.
@@ -614,8 +651,21 @@ pub unsafe extern "C" fn hawdb_close(db: *mut HawdbDatabase) {
 /// tagged forms `{"$binary": "<base64>"}` and `{"$uuid": "<text>"}`).
 ///
 /// On success returns true and `result_out` receives the result envelope
-/// `{"columns": [...], "rows": [[...], ...]}`; on failure returns false
-/// and `err_out` receives `{"kind", "message"}`.
+/// `{"columns": [...], "rows": [[...], ...], "counters": {...}}`; on
+/// failure returns false and `err_out` receives `{"kind", "message"}`.
+///
+/// `"counters"` holds the write operations the statement executed, as
+/// non-negative integers under every key: `nodes_created`, `nodes_deleted`,
+/// `relationships_created`, `relationships_deleted`, `properties_set`,
+/// `labels_added`, `labels_removed`, `indexes_added`, `indexes_removed`,
+/// `constraints_added` and `constraints_removed`. They count writes
+/// executed, not data changed (`SET n.p = v` counts 1 even when `n.p`
+/// already equals `v`). A read, a pattern that matches nothing, every SQL
+/// statement and a transaction commit report all zeros, but
+/// `properties_set == 0` does not imply that nothing matched.
+/// `labels_removed`, `indexes_removed` and `constraints_removed` stay 0
+/// until the Cypher dialect parses `REMOVE` and `DROP`. Hosts must ignore
+/// envelope keys they do not know.
 ///
 /// # Safety
 /// `db` must be a live [`hawdb_open`] handle; `cypher` and `params_json`

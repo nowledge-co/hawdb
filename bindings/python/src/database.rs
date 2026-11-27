@@ -17,8 +17,8 @@ use std::path::{Path, PathBuf};
 
 use hawdb::{
     DatabaseConfig, DatabaseReadTransaction, DurabilityPolicy, EmbeddedDeploymentProfile,
-    HawDBEmbedded, HawDBEmbeddedOpenOptions, QueryOutput, QueryRowRef, QueryRows,
-    RuntimeGovernorConfig, SqlQueryRequest, SqlStatementResult, Value,
+    HawDBEmbedded, HawDBEmbeddedOpenOptions, QueryCounters as EngineQueryCounters, QueryOutput,
+    QueryRowRef, QueryRows, RuntimeGovernorConfig, SqlQueryRequest, SqlStatementResult, Value,
 };
 use pyo3::exceptions::{PyIndexError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -560,6 +560,7 @@ pub struct QueryResult {
     rows: QueryRows,
     cursor: usize,
     affected_rows: Option<usize>,
+    counters: EngineQueryCounters,
 }
 
 impl QueryResult {
@@ -568,6 +569,7 @@ impl QueryResult {
             rows: output.rows,
             cursor: 0,
             affected_rows: None,
+            counters: output.counters,
         }
     }
 
@@ -663,6 +665,16 @@ impl QueryResult {
     #[getter]
     fn affected_rows(&self) -> Option<usize> {
         self.affected_rows
+    }
+
+    /// The write operations this statement executed, as `QueryCounters`.
+    ///
+    /// All zero for a read-only statement, a statement whose pattern matched
+    /// nothing, any SQL statement (see `affected_rows`), and the result of a
+    /// transaction's `commit()`.
+    #[getter]
+    fn counters(&self) -> QueryCounters {
+        QueryCounters(self.counters)
     }
 
     /// Returns the next row as a new dict, or None when exhausted.
@@ -791,6 +803,123 @@ impl QueryResult {
             "hawdb.QueryResult(columns={:?}, rows={})",
             self.rows.schema().columns(),
             self.rows.len()
+        )
+    }
+}
+
+/// How many write operations one Cypher statement executed, in the spirit of
+/// Neo4j's `SummaryCounters`; read from `QueryResult.counters`.
+///
+/// The counters count write operations executed, not how much stored data
+/// changed: `SET n.p = v` counts 1 in `properties_set` even when `n.p`
+/// already equals `v`, and each property written by a `CREATE` counts too.
+/// A statement whose pattern matches nothing and every read-only statement
+/// report all zeros. `properties_set == 0` does not imply that the statement
+/// matched no node; use the returned rows to learn what it matched. Inside a
+/// transaction each statement reports only its own counters, and `commit()`
+/// reports none.
+///
+/// The Cypher dialect does not parse `REMOVE`, `SET n:Label`, `DROP INDEX`
+/// or `DROP CONSTRAINT` yet, so `labels_removed`, `indexes_removed` and
+/// `constraints_removed` are always 0 for now.
+#[pyclass(module = "hawdb", name = "QueryCounters", frozen, eq, hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct QueryCounters(EngineQueryCounters);
+
+#[pymethods]
+impl QueryCounters {
+    /// Nodes created.
+    #[getter]
+    fn nodes_created(&self) -> u64 {
+        self.0.nodes_created
+    }
+
+    /// Nodes deleted.
+    #[getter]
+    fn nodes_deleted(&self) -> u64 {
+        self.0.nodes_deleted
+    }
+
+    /// Relationships created.
+    #[getter]
+    fn relationships_created(&self) -> u64 {
+        self.0.relationships_created
+    }
+
+    /// Relationships deleted, including those removed by `DETACH DELETE`.
+    #[getter]
+    fn relationships_deleted(&self) -> u64 {
+        self.0.relationships_deleted
+    }
+
+    /// Property writes executed, whether or not the value changed.
+    #[getter]
+    fn properties_set(&self) -> u64 {
+        self.0.properties_set
+    }
+
+    /// Labels actually added to a node.
+    #[getter]
+    fn labels_added(&self) -> u64 {
+        self.0.labels_added
+    }
+
+    /// Labels actually removed from a node.
+    #[getter]
+    fn labels_removed(&self) -> u64 {
+        self.0.labels_removed
+    }
+
+    /// Indexes created; an index that already exists counts 0.
+    #[getter]
+    fn indexes_added(&self) -> u64 {
+        self.0.indexes_added
+    }
+
+    /// Indexes dropped.
+    #[getter]
+    fn indexes_removed(&self) -> u64 {
+        self.0.indexes_removed
+    }
+
+    /// Constraints created; a constraint that already exists counts 0.
+    #[getter]
+    fn constraints_added(&self) -> u64 {
+        self.0.constraints_added
+    }
+
+    /// Constraints dropped.
+    #[getter]
+    fn constraints_removed(&self) -> u64 {
+        self.0.constraints_removed
+    }
+
+    /// Whether the statement executed any write counted here.
+    fn contains_updates(&self) -> bool {
+        self.0.contains_updates()
+    }
+
+    fn __repr__(&self) -> String {
+        let EngineQueryCounters {
+            nodes_created,
+            nodes_deleted,
+            relationships_created,
+            relationships_deleted,
+            properties_set,
+            labels_added,
+            labels_removed,
+            indexes_added,
+            indexes_removed,
+            constraints_added,
+            constraints_removed,
+        } = self.0;
+        format!(
+            "hawdb.QueryCounters(nodes_created={nodes_created}, nodes_deleted={nodes_deleted}, \
+             relationships_created={relationships_created}, \
+             relationships_deleted={relationships_deleted}, properties_set={properties_set}, \
+             labels_added={labels_added}, labels_removed={labels_removed}, \
+             indexes_added={indexes_added}, indexes_removed={indexes_removed}, \
+             constraints_added={constraints_added}, constraints_removed={constraints_removed})"
         )
     }
 }

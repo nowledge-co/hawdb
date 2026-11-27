@@ -4,6 +4,11 @@ The ordinary API returns owned rows through JSON. `LoadLibrary` loads the
 native library using purego, with `CGO_ENABLED=0`; loaded libraries remain mapped
 for the process lifetime. `DB.Close` releases the database independently.
 
+`Result.Counters` holds the write operations a Cypher statement executed
+(`NodesCreated`, `PropertiesSet`, ... and `ContainsUpdates()`), with the
+[C ABI counting rules](../ffi/README.md#value-encoding); it is nil when the
+loaded library predates write counters.
+
 ## Experimental retained numeric views
 
 `DB.QueryRetained` uses the versioned native numeric ABI directly on 64-bit

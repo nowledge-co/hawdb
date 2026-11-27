@@ -229,6 +229,49 @@ func TestSQL(t *testing.T) {
 	}
 }
 
+func TestQueryCounters(t *testing.T) {
+	db, err := OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	counters := func(cypher string) QueryCounters {
+		t.Helper()
+		res, err := db.Query(cypher, nil)
+		if err != nil {
+			t.Fatalf("%s: %v", cypher, err)
+		}
+		if res.Counters == nil {
+			t.Fatalf("%s: the library reported no counters", cypher)
+		}
+		return *res.Counters
+	}
+
+	created := counters("CREATE (:A {k: 1, v: 5})-[:R]->(:B)")
+	want := QueryCounters{NodesCreated: 2, RelationshipsCreated: 1, LabelsAdded: 2, PropertiesSet: 2}
+	if created != want || !created.ContainsUpdates() {
+		t.Fatalf("CREATE counters = %+v, want %+v", created, want)
+	}
+	// A same-value SET still executes, and counts, one property write.
+	if got := counters("MATCH (n:A {k: 1}) SET n.v = 5"); got != (QueryCounters{PropertiesSet: 1}) {
+		t.Fatalf("same-value SET counters = %+v", got)
+	}
+	// A pattern that matches nothing and a read report all zeros.
+	for _, cypher := range []string{"MATCH (n:A {k: 2}) SET n.v = 5", "MATCH (n:A) RETURN n.v AS v"} {
+		if got := counters(cypher); got.ContainsUpdates() {
+			t.Fatalf("%s counters = %+v, want zero", cypher, got)
+		}
+	}
+	deleted := counters("MATCH (n:A) DETACH DELETE n")
+	if deleted != (QueryCounters{NodesDeleted: 1, RelationshipsDeleted: 1}) {
+		t.Fatalf("DETACH DELETE counters = %+v", deleted)
+	}
+	res, err := db.QuerySQL("SELECT 1")
+	if err != nil || res.Counters == nil || res.Counters.ContainsUpdates() {
+		t.Fatalf("SQL counters = %+v, err = %v", res, err)
+	}
+}
+
 func TestErrors(t *testing.T) {
 	dir := t.TempDir()
 	db, err := Open(filepath.Join(dir, "err"))

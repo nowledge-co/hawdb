@@ -26,6 +26,7 @@ let closeCalls = 0;
 let freeCalls = 0;
 let maintenanceCalls = 0;
 const address = 100;
+// The envelope of a library that predates write counters: no "counters" key.
 const queryPayload = '{"columns":["value"],"rows":[[1]]}';
 const reportPayload =
   '{"generation":1,"checkpoint_commit_epoch":1,"file_count":1,"total_bytes":1,"manifest_checksum":1}';
@@ -185,7 +186,9 @@ if (scenario === "open-library-close") {
   let replacement: Database | undefined;
   try {
     if (scenario === "healthy") {
-      assert.deepEqual(database.query("RETURN 1").rows, [[1]]);
+      const result = database.query("RETURN 1");
+      assert.deepEqual(result.rows, [[1]]);
+      assert.equal(result.counters, undefined);
       assert.equal(queryCalls, 1);
       assert.equal(freeCalls, 1);
       assert.throws(() => library.close(), (error) => error instanceof HawDBError);

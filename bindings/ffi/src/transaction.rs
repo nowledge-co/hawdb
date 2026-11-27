@@ -184,7 +184,8 @@ pub unsafe extern "C" fn hawdb_transaction_query_sql(
 /// Commit the open transaction as one durable commit.
 ///
 /// On success returns true and `result_out` receives the commit's result
-/// envelope (`{"columns": [...], "rows": [...]}`), and every statement is
+/// envelope (`{"columns": [...], "rows": [...], "counters": {...}}`, with
+/// all-zero counters; each statement reported its own), and every statement is
 /// committed, durable under the handle's `durability` option. The
 /// transaction is closed after this call whether or not it succeeds. The
 /// commit is all or nothing, never partial: a commit refused before

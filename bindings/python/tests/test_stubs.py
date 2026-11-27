@@ -70,6 +70,7 @@ SIGNATURES = [
     ("ReadTransaction.execute", hawdb.ReadTransaction.execute),
     ("ReadTransaction.execute_sql", hawdb.ReadTransaction.execute_sql),
     ("ReadTransaction.close", hawdb.ReadTransaction.close),
+    ("QueryCounters.contains_updates", hawdb.QueryCounters.contains_updates),
     ("QueryResult.fetchone", hawdb.QueryResult.fetchone),
     ("QueryResult.fetchmany", hawdb.QueryResult.fetchmany),
     ("QueryResult.fetchall", hawdb.QueryResult.fetchall),
