@@ -306,7 +306,16 @@ impl Default for SchedulerConfig {
 pub struct Scheduler {
     business: Arc<Pool>,
     background: Arc<Pool>,
-    workers: Mutex<Option<Vec<JoinHandle<()>>>>,
+    shutdown: Mutex<SchedulerShutdown>,
+    shutdown_complete: Condvar,
+    worker_threads: Vec<thread::ThreadId>,
+}
+
+struct SchedulerShutdown {
+    workers: Option<Vec<JoinHandle<()>>>,
+    joining: bool,
+    owner: Option<thread::ThreadId>,
+    stopped: bool,
 }
 
 impl Scheduler {
@@ -373,10 +382,18 @@ impl Scheduler {
             }
             return Err(error);
         }
+        let worker_threads = workers.iter().map(|worker| worker.thread().id()).collect();
         Ok(Self {
             business,
             background,
-            workers: Mutex::new(Some(workers)),
+            shutdown: Mutex::new(SchedulerShutdown {
+                workers: Some(workers),
+                joining: false,
+                owner: None,
+                stopped: false,
+            }),
+            shutdown_complete: Condvar::new(),
+            worker_threads,
         })
     }
 
@@ -441,16 +458,56 @@ impl Scheduler {
     /// Stop both pools and wait for their workers. Queued tasks complete with
     /// [`TaskError::Shutdown`]; a running task must cooperate to return.
     ///
-    /// Do not call this from a task dispatched by this scheduler: it joins the
-    /// calling worker and would wait for itself.
+    /// A call made on one of this scheduler's worker threads requests the stop
+    /// and returns without joining itself. External callers still wait for the
+    /// shared worker set, and concurrent callers wait for the same completion.
+    /// A reentrant call from the thread already completing shutdown, including
+    /// a queued task destructor, returns without waiting for itself.
     pub fn shutdown(&self) {
-        self.business.stop();
-        self.background.stop();
-        let workers = take(&self.workers);
-        if let Some(workers) = workers {
-            for worker in workers {
-                let _ = worker.join();
+        let current = thread::current().id();
+        if self.worker_threads.contains(&current) {
+            self.business.stop();
+            self.background.stop();
+            return;
+        }
+        let mut state = lock(&self.shutdown);
+        loop {
+            if state.stopped {
+                return;
             }
+            if state.joining {
+                if state.owner == Some(current) {
+                    // A queued task destructor may call shutdown() on the
+                    // thread already draining the queue. Waiting here would
+                    // deadlock the owner before it can publish completion.
+                    return;
+                }
+                state = self
+                    .shutdown_complete
+                    .wait(state)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                continue;
+            }
+            let workers = state.workers.take();
+            state.joining = true;
+            state.owner = Some(current);
+            drop(state);
+            // Queue drain and task teardown belong to the same completion as
+            // the worker joins. A waiting caller must not return while the
+            // joining caller is still running task destructors.
+            self.business.stop();
+            self.background.stop();
+            if let Some(workers) = workers {
+                for worker in workers {
+                    let _ = worker.join();
+                }
+            }
+            let mut state = lock(&self.shutdown);
+            state.joining = false;
+            state.owner = None;
+            state.stopped = true;
+            self.shutdown_complete.notify_all();
+            return;
         }
     }
 }
@@ -545,6 +602,48 @@ struct Pool {
     state: Mutex<PoolState>,
     available: Condvar,
     stop: Arc<AtomicBool>,
+    #[cfg(test)]
+    wait_probe: Mutex<Option<Arc<WorkerWaitProbe>>>,
+    #[cfg(test)]
+    stop_probe: Mutex<Option<Sender<()>>>,
+}
+
+#[cfg(test)]
+pub(crate) struct WorkerWaitProbe {
+    entered: Sender<()>,
+    resume: Mutex<bool>,
+    wake: Condvar,
+}
+
+#[cfg(test)]
+impl WorkerWaitProbe {
+    pub(crate) fn new() -> (Self, Receiver<()>) {
+        let (entered, receiver) = mpsc::channel();
+        (
+            Self {
+                entered,
+                resume: Mutex::new(false),
+                wake: Condvar::new(),
+            },
+            receiver,
+        )
+    }
+
+    pub(crate) fn release(&self) {
+        *lock(&self.resume) = true;
+        self.wake.notify_all();
+    }
+
+    fn pause(&self) {
+        let _ = self.entered.send(());
+        let mut resume = lock(&self.resume);
+        while !*resume {
+            resume = self
+                .wake
+                .wait(resume)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+    }
 }
 
 impl Pool {
@@ -564,7 +663,21 @@ impl Pool {
             state: Mutex::new(PoolState::new()),
             available: Condvar::new(),
             stop: Arc::new(AtomicBool::new(false)),
+            #[cfg(test)]
+            wait_probe: Mutex::new(None),
+            #[cfg(test)]
+            stop_probe: Mutex::new(None),
         }
+    }
+
+    #[cfg(test)]
+    fn set_wait_probe(&self, probe: Option<Arc<WorkerWaitProbe>>) {
+        *lock(&self.wait_probe) = probe;
+    }
+
+    #[cfg(test)]
+    fn set_stop_probe(&self, probe: Option<Sender<()>>) {
+        *lock(&self.stop_probe) = probe;
     }
 
     fn spawn<T: Task>(
@@ -627,10 +740,16 @@ impl Pool {
     }
 
     fn stop(&self) {
-        self.stop.store(true, Ordering::Release);
-        self.available.notify_all();
+        #[cfg(test)]
+        if let Some(probe) = lock(&self.stop_probe).take() {
+            let _ = probe.send(());
+        }
         let tasks = {
+            // Set the stop predicate under the same mutex used by the worker's
+            // wait predicate. The notification below cannot race an idle
+            // worker between its flag check and `wait_timeout`.
             let mut state = lock(&self.state);
+            self.stop.store(true, Ordering::Release);
             let mut tasks = Vec::new();
             for level in 0..LEVELS {
                 tasks.extend(state.levels[level].drain(..));
@@ -638,6 +757,7 @@ impl Pool {
             state.queued = 0;
             tasks
         };
+        self.available.notify_all();
         for mut task in tasks {
             task.task.fail(TaskError::Shutdown);
             drop_task(task);
@@ -655,6 +775,10 @@ impl Pool {
                     promote_aged(&mut state, Instant::now(), self.aging_interval);
                     if let Some(task) = pop_locked(&mut state) {
                         break Some(task);
+                    }
+                    #[cfg(test)]
+                    if let Some(probe) = lock(&self.wait_probe).take() {
+                        probe.pause();
                     }
                     let (next, _) = self
                         .available
@@ -838,10 +962,6 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
-fn take<T>(mutex: &Mutex<Option<T>>) -> Option<T> {
-    lock(mutex).take()
 }
 
 #[cfg(test)]

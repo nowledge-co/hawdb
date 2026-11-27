@@ -547,6 +547,320 @@ impl Drop for PanicOnDropOutput {
 }
 
 #[test]
+fn shutdown_wakes_an_idle_worker_before_the_aging_interval() {
+    let scheduler = Arc::new(
+        Scheduler::new(SchedulerConfig {
+            business_workers: 1,
+            background_workers: 1,
+            queue_capacity: 8,
+            quantum: Duration::from_millis(5),
+            aging_interval: Duration::from_secs(2),
+        })
+        .unwrap(),
+    );
+    let gate = Arc::new(Gate::new());
+    let (started_tx, started_rx) = mpsc::channel();
+    let blocker_gate = Arc::clone(&gate);
+    let blocker = scheduler
+        .spawn(TaskKey::new(1), Priority::High, move || {
+            started_tx.send(()).unwrap();
+            blocker_gate.wait();
+        })
+        .unwrap();
+    started_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("blocker must start");
+
+    let (probe, entered_rx) = WorkerWaitProbe::new();
+    let probe = Arc::new(probe);
+    scheduler.business.set_wait_probe(Some(Arc::clone(&probe)));
+    let (stop_tx, stop_rx) = mpsc::channel();
+    scheduler.business.set_stop_probe(Some(stop_tx));
+    gate.open();
+    blocker.join().unwrap();
+    entered_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("worker must enter its idle wait probe");
+
+    let (done_tx, done_rx) = mpsc::channel();
+    let shutdown_scheduler = Arc::clone(&scheduler);
+    let shutdown = std::thread::spawn(move || {
+        shutdown_scheduler.shutdown();
+        let _ = done_tx.send(());
+    });
+    stop_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("shutdown must reach the pool stop");
+    let started = Instant::now();
+    probe.release();
+    let completed = done_rx.recv_timeout(Duration::from_secs(1));
+    let elapsed = started.elapsed();
+    if completed.is_err() {
+        // Let the old lost-notification path finish before reporting it.
+        let _ = done_rx.recv_timeout(Duration::from_secs(5));
+    }
+    shutdown.join().unwrap();
+    assert!(
+        completed.is_ok(),
+        "shutdown waited for the aging interval instead of waking the idle worker"
+    );
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "idle-worker shutdown took {elapsed:?}"
+    );
+}
+
+#[test]
+fn concurrent_shutdown_callers_wait_for_the_same_workers() {
+    let scheduler = Arc::new(Scheduler::new(config(1, 1, 8)).unwrap());
+    let gate = Arc::new(Gate::new());
+    let (started_tx, started_rx) = mpsc::channel();
+    let blocker_gate = Arc::clone(&gate);
+    let blocker = scheduler
+        .spawn(TaskKey::new(1), Priority::High, move || {
+            started_tx.send(()).unwrap();
+            blocker_gate.wait();
+        })
+        .unwrap();
+    started_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("blocker must start");
+
+    let (first_tx, first_rx) = mpsc::channel();
+    let first_scheduler = Arc::clone(&scheduler);
+    let first = std::thread::spawn(move || {
+        first_scheduler.shutdown();
+        let _ = first_tx.send(());
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while lock(&scheduler.shutdown).workers.is_some() {
+        assert!(
+            Instant::now() < deadline,
+            "first shutdown caller did not take the worker handles"
+        );
+        std::thread::yield_now();
+    }
+
+    let (second_tx, second_rx) = mpsc::channel();
+    let second_scheduler = Arc::clone(&scheduler);
+    let second = std::thread::spawn(move || {
+        second_scheduler.shutdown();
+        let _ = second_tx.send(());
+    });
+    let early_return = second_rx.recv_timeout(Duration::from_millis(100)).is_ok();
+    gate.open();
+    let first_done = first_rx.recv_timeout(Duration::from_secs(5));
+    let second_done = second_rx.recv_timeout(Duration::from_secs(5));
+    first.join().unwrap();
+    second.join().unwrap();
+    assert!(
+        !early_return,
+        "a concurrent shutdown caller returned before the worker exited"
+    );
+    assert!(first_done.is_ok());
+    assert!(second_done.is_ok());
+    assert!(matches!(blocker.join(), Err(TaskError::Shutdown)));
+}
+
+struct BlockingDropTask {
+    started: mpsc::Sender<()>,
+    release: Arc<Gate>,
+}
+
+impl Task for BlockingDropTask {
+    type Output = ();
+
+    fn run(&mut self, _: &TaskContext) -> TaskProgress<()> {
+        TaskProgress::Done(())
+    }
+}
+
+impl Drop for BlockingDropTask {
+    fn drop(&mut self) {
+        let _ = self.started.send(());
+        self.release.wait();
+    }
+}
+
+#[test]
+fn concurrent_shutdown_waits_for_queue_teardown() {
+    let scheduler = Arc::new(Scheduler::new(config(1, 1, 8)).unwrap());
+    let blocker_gate = Arc::new(Gate::new());
+    let (started_tx, started_rx) = mpsc::channel();
+    let blocker_wait = Arc::clone(&blocker_gate);
+    let blocker = scheduler
+        .spawn(TaskKey::new(1), Priority::High, move || {
+            started_tx.send(()).unwrap();
+            blocker_wait.wait();
+        })
+        .unwrap();
+    started_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("blocker must start");
+
+    let drop_gate = Arc::new(Gate::new());
+    let (drop_started_tx, drop_started_rx) = mpsc::channel();
+    let queued = scheduler
+        .spawn_task(
+            TaskKey::new(2),
+            Priority::Normal,
+            BlockingDropTask {
+                started: drop_started_tx,
+                release: Arc::clone(&drop_gate),
+            },
+        )
+        .unwrap();
+
+    let (first_done_tx, first_done_rx) = mpsc::channel();
+    let first_scheduler = Arc::clone(&scheduler);
+    let first = std::thread::spawn(move || {
+        first_scheduler.shutdown();
+        let _ = first_done_tx.send(());
+    });
+    drop_started_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("first shutdown must drain the queued task");
+
+    let (second_entered_tx, second_entered_rx) = mpsc::channel();
+    let (second_done_tx, second_done_rx) = mpsc::channel();
+    let second_scheduler = Arc::clone(&scheduler);
+    let second = std::thread::spawn(move || {
+        let _ = second_entered_tx.send(());
+        second_scheduler.shutdown();
+        let _ = second_done_tx.send(());
+    });
+    second_entered_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("second shutdown caller must start");
+
+    // Let the worker exit, but keep the first caller inside the queued task's
+    // destructor. A second caller that only waits for worker joins would
+    // return here while the destructor is still running.
+    blocker_gate.open();
+    let early_return = second_done_rx
+        .recv_timeout(Duration::from_millis(200))
+        .is_ok();
+    drop_gate.open();
+    let first_done = first_done_rx.recv_timeout(Duration::from_secs(5));
+    let second_done = second_done_rx.recv_timeout(Duration::from_secs(5));
+    first.join().unwrap();
+    second.join().unwrap();
+    assert!(
+        !early_return,
+        "a concurrent shutdown caller returned before queue teardown finished"
+    );
+    assert!(first_done.is_ok());
+    assert!(second_done.is_ok());
+    assert!(matches!(blocker.join(), Err(TaskError::Shutdown)));
+    assert!(matches!(queued.join(), Err(TaskError::Shutdown)));
+}
+
+struct ReentrantShutdownTask {
+    scheduler: Arc<Scheduler>,
+    entered: mpsc::Sender<()>,
+    returned: mpsc::Sender<()>,
+}
+
+impl Task for ReentrantShutdownTask {
+    type Output = ();
+
+    fn run(&mut self, _: &TaskContext) -> TaskProgress<()> {
+        TaskProgress::Done(())
+    }
+}
+
+impl Drop for ReentrantShutdownTask {
+    fn drop(&mut self) {
+        let _ = self.entered.send(());
+        self.scheduler.shutdown();
+        let _ = self.returned.send(());
+    }
+}
+
+#[test]
+fn reentrant_shutdown_from_queue_teardown_does_not_deadlock() {
+    let scheduler = Arc::new(Scheduler::new(config(1, 1, 8)).unwrap());
+    let blocker_gate = Arc::new(Gate::new());
+    let (started_tx, started_rx) = mpsc::channel();
+    let blocker_wait = Arc::clone(&blocker_gate);
+    let blocker = scheduler
+        .spawn(TaskKey::new(1), Priority::High, move || {
+            started_tx.send(()).unwrap();
+            blocker_wait.wait();
+        })
+        .unwrap();
+    started_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("blocker must start");
+
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (returned_tx, returned_rx) = mpsc::channel();
+    let queued = scheduler
+        .spawn_task(
+            TaskKey::new(2),
+            Priority::Normal,
+            ReentrantShutdownTask {
+                scheduler: Arc::clone(&scheduler),
+                entered: entered_tx,
+                returned: returned_tx,
+            },
+        )
+        .unwrap();
+
+    let (done_tx, done_rx) = mpsc::channel();
+    let shutdown_scheduler = Arc::clone(&scheduler);
+    let shutdown = std::thread::spawn(move || {
+        shutdown_scheduler.shutdown();
+        let _ = done_tx.send(());
+    });
+    entered_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("queued task teardown must begin");
+    let returned = returned_rx.recv_timeout(Duration::from_secs(2));
+    blocker_gate.open();
+    let done = done_rx.recv_timeout(Duration::from_secs(2));
+    if done.is_ok() {
+        shutdown.join().unwrap();
+    }
+    assert!(
+        returned.is_ok(),
+        "reentrant shutdown from a task destructor deadlocked"
+    );
+    assert!(
+        done.is_ok(),
+        "the original shutdown did not complete after reentrant teardown"
+    );
+    assert!(matches!(blocker.join(), Err(TaskError::Shutdown)));
+    assert!(matches!(queued.join(), Err(TaskError::Shutdown)));
+}
+
+#[test]
+fn scheduler_drop_on_its_worker_does_not_self_join() {
+    let scheduler = Arc::new(Scheduler::new(config(1, 1, 8)).unwrap());
+    let gate = Arc::new(Gate::new());
+    let (started_tx, started_rx) = mpsc::channel();
+    let worker_scheduler = Arc::clone(&scheduler);
+    let blocker_gate = Arc::clone(&gate);
+    let handle = scheduler
+        .spawn(TaskKey::new(1), Priority::High, move || {
+            started_tx.send(()).unwrap();
+            blocker_gate.wait();
+            drop(worker_scheduler);
+        })
+        .unwrap();
+    started_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("task must start");
+    drop(scheduler);
+    gate.open();
+    let result = handle
+        .receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("worker-originated scheduler drop must not self-join");
+    assert!(matches!(result, Err(TaskError::Shutdown)));
+}
+
+#[test]
 fn output_teardown_panic_does_not_retire_the_worker() {
     let scheduler = Scheduler::new(config(1, 1, 8)).unwrap();
     let (dropped_tx, dropped_rx) = mpsc::channel();
