@@ -80,7 +80,21 @@ impl DurableStore {
         if oldest_reader_commit_epoch.is_none() {
             return 0;
         }
-        let retain_from = self.checkpoint_epoch.saturating_sub(1);
+        let retain_from = if self.checkpoint_generation_retention.retains_previous() {
+            self.checkpoint_epoch.saturating_sub(1)
+        } else {
+            self.checkpoint_epoch
+        };
+        let previous_graph = self
+            .checkpoint_generation_retention
+            .retains_previous()
+            .then_some(self.previous_graph_generation)
+            .flatten();
+        let previous_adjacency = self
+            .checkpoint_generation_retention
+            .retains_previous()
+            .then_some(self.previous_adjacency_generation)
+            .flatten();
         fs::read_dir(&self.root_path)
             .into_iter()
             .flatten()
@@ -93,11 +107,10 @@ impl DurableStore {
                     crate::artifact_files::parse_adjacency_generation_file(name)
                 {
                     adjacency == self.adjacency_generation()
-                        || Some(adjacency) == self.previous_adjacency_generation
+                        || Some(adjacency) == previous_adjacency
                 } else {
                     crate::artifact_files::parse_graph_generation_file(name).is_some_and(|graph| {
-                        graph == self.graph_generation()
-                            || Some(graph) == self.previous_graph_generation
+                        graph == self.graph_generation() || Some(graph) == previous_graph
                     })
                 };
                 (generation < retain_from && !retained_graph)
@@ -231,17 +244,19 @@ impl DurableStore {
             .map(|pins| pins.graph_generations().clone())
             .unwrap_or_default();
         retained_graph_generations.insert(self.graph_generation());
-        retained_graph_generations.extend(self.previous_graph_generation);
         let mut retained_adjacencies = pinned_reader_generations
             .map(|pins| pins.adjacency_generations().clone())
             .unwrap_or_default();
         retained_adjacencies.insert(self.adjacency_generation());
-        retained_adjacencies.extend(self.previous_adjacency_generation);
         retained_generations.insert(current_generation);
-        // WAL rotations share the namespace and may leave gaps between
-        // checkpoints. Preserve the actual preceding recovery generation.
-        if previous_checkpoint_generation > 0 {
-            retained_generations.insert(previous_checkpoint_generation);
+        if self.checkpoint_generation_retention.retains_previous() {
+            retained_graph_generations.extend(self.previous_graph_generation);
+            retained_adjacencies.extend(self.previous_adjacency_generation);
+            // WAL rotations share the namespace and may leave gaps between
+            // checkpoints. Preserve the actual preceding recovery generation.
+            if previous_checkpoint_generation > 0 {
+                retained_generations.insert(previous_checkpoint_generation);
+            }
         }
         let (retained_row_page_generations, retained_overflow_extent_generations) =
             match self.retained_relational_physical_generations(&retained_generations) {

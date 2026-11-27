@@ -58,7 +58,7 @@ use hawdb_storage::{
     cache::{ManifestGeneration, SegmentCache, StoreId},
     canonical::CanonicalSegmentReader,
     canonical_adjacency::{CanonicalAdjacencyGenerationArtifacts, CanonicalAdjacencyReader},
-    config::{DurabilityPolicy, WalReplayConfig},
+    config::{CheckpointGenerationRetention, DurabilityPolicy, WalReplayConfig},
     durability::WalSyncGroupState,
     graph_descriptor_tree::GraphDescriptorTreeBuildConfig,
     ownership::DatabaseDirectoryLease,
@@ -157,6 +157,7 @@ pub(super) struct DurableStore {
     pub(super) source_scan_reader: FileSegmentRangeReader,
     durability: DurabilityPolicy,
     pub(super) read_only: bool,
+    checkpoint_generation_retention: CheckpointGenerationRetention,
     max_record_bytes: Option<usize>,
     max_batch_operations: Option<usize>,
     pub(super) telemetry: Option<Arc<dyn StorageTelemetrySink>>,
@@ -258,6 +259,7 @@ struct DurableStoreOpenOptions {
     max_wal_bytes: Option<u64>,
     max_record_bytes: Option<usize>,
     max_batch_operations: Option<usize>,
+    checkpoint_generation_retention: CheckpointGenerationRetention,
     automatic_tail_repair: Option<WalReplayConfig>,
 }
 
@@ -372,6 +374,7 @@ impl DurableStore {
                 max_wal_bytes: replay_config.max_bytes,
                 max_record_bytes: replay_config.max_record_bytes,
                 max_batch_operations: replay_config.max_batch_operations,
+                checkpoint_generation_retention: replay_config.checkpoint_generation_retention,
                 automatic_tail_repair: (replay_config.recovery_mode
                     == hawdb_storage::config::RecoveryMode::AutoRepairTornTail)
                     .then_some(replay_config),
@@ -402,6 +405,7 @@ impl DurableStore {
                 max_wal_bytes,
                 max_record_bytes,
                 max_batch_operations,
+                checkpoint_generation_retention: CheckpointGenerationRetention::default(),
             },
         )
     }
@@ -450,6 +454,7 @@ impl DurableStore {
                 max_wal_bytes,
                 max_record_bytes,
                 max_batch_operations,
+                checkpoint_generation_retention: CheckpointGenerationRetention::default(),
             },
         )
     }
@@ -483,6 +488,7 @@ impl DurableStore {
                 max_wal_bytes: replay_config.max_bytes,
                 max_record_bytes: replay_config.max_record_bytes,
                 max_batch_operations: replay_config.max_batch_operations,
+                checkpoint_generation_retention: replay_config.checkpoint_generation_retention,
                 automatic_tail_repair: None,
             },
         )?;
@@ -505,6 +511,7 @@ impl DurableStore {
             max_wal_bytes,
             max_record_bytes,
             max_batch_operations,
+            checkpoint_generation_retention,
             automatic_tail_repair,
         } = options;
         if max_graph_manifest_open_bytes == 0 {
@@ -675,6 +682,7 @@ impl DurableStore {
             source_scan_reader,
             durability,
             read_only,
+            checkpoint_generation_retention,
             max_record_bytes,
             max_batch_operations,
             telemetry: None,

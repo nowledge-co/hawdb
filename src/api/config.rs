@@ -112,6 +112,12 @@ pub struct DatabaseConfig {
     /// Controls whether the canonical graph is materialized or read on demand.
     /// Defaults to `Auto`.
     pub storage_residency_mode: hawdb_storage::config::StorageResidencyMode,
+    /// Physical checkpoint generations retained after a successful publication.
+    /// The default `CurrentAndPrevious` keeps the immediately previous
+    /// generation as a rollback and damage-recovery fallback.
+    /// `CurrentOnly` reclaims every unpinned generation below the selected one
+    /// at the next checkpoint; reader pins still protect live snapshots.
+    pub checkpoint_generation_retention: hawdb_storage::config::CheckpointGenerationRetention,
     /// Size threshold for graph materialization under `Auto`. Defaults to
     /// 64 MiB. Explicit residency modes do not consult this threshold.
     pub auto_materialize_checkpoint_bytes: u64,
@@ -246,6 +252,7 @@ impl DatabaseConfig {
             max_out_of_core_delta_bytes: self.max_out_of_core_delta_bytes,
             graph_columnar_shadow_checkpoint: self.graph_columnar_shadow_checkpoint,
             relational_index_mode: self.relational_index_mode,
+            checkpoint_generation_retention: self.checkpoint_generation_retention,
         }
     }
 }
@@ -295,6 +302,8 @@ impl Default for DatabaseConfig {
             )
             .expect("default relational hydration byte budget is non-zero"),
             storage_residency_mode: hawdb_storage::config::StorageResidencyMode::Auto,
+            checkpoint_generation_retention:
+                hawdb_storage::config::CheckpointGenerationRetention::default(),
             auto_materialize_checkpoint_bytes:
                 hawdb_storage::config::DEFAULT_AUTO_MATERIALIZE_CHECKPOINT_BYTES,
             max_out_of_core_delta_bytes: Some(

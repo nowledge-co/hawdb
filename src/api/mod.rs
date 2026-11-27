@@ -394,6 +394,7 @@ pub(crate) struct DatabaseCheckpointSource {
     catalog: Catalog,
     store: GraphStore,
     suspension: Option<automatic_checkpoint::Suspension>,
+    discard_cached_source: bool,
 }
 
 pub(crate) struct PreparedDatabaseCheckpoint {
@@ -403,13 +404,21 @@ pub(crate) struct PreparedDatabaseCheckpoint {
 
 impl DatabaseCheckpointSource {
     pub(crate) fn prepare(self) -> Result<Option<PreparedDatabaseCheckpoint>> {
-        Ok(self
-            .store
-            .prepare_checkpoint(&self.catalog)?
-            .map(|checkpoint| PreparedDatabaseCheckpoint {
-                checkpoint,
-                _suspension: self.suspension,
-            }))
+        let prepared = self.store.prepare_checkpoint(&self.catalog)?;
+        if prepared.is_some()
+            && self.discard_cached_source
+            && let Some(suspension) = &self.suspension
+        {
+            // Current-only retention has no rollback use for the superseded
+            // immutable root. Drop the automatic owner's parked source clone
+            // before publishing so its root pin cannot keep that closure
+            // reachable through the post-publication sweep.
+            suspension.discard_cached_source()?;
+        }
+        Ok(prepared.map(|checkpoint| PreparedDatabaseCheckpoint {
+            checkpoint,
+            _suspension: self.suspension,
+        }))
     }
 }
 

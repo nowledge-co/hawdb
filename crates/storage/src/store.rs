@@ -324,8 +324,8 @@ pub use hawdb_storage::{
         CanonicalAdjacencyReadReport, CanonicalAdjacencyReader, CanonicalAdjacencyWriter,
     },
     config::{
-        DurabilityPolicy, DurableCompression, RecoveryMode, RelationalIndexMode,
-        StorageResidencyMode, WalReplayConfig,
+        CheckpointGenerationRetention, DurabilityPolicy, DurableCompression, RecoveryMode,
+        RelationalIndexMode, StorageResidencyMode, WalReplayConfig,
     },
     mutation::{
         ConnectedNodesCreate, EntityPropertyUpdate, GraphMutation, MatchedRelationshipCopyMerge,

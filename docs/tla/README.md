@@ -522,8 +522,14 @@ terminal cleanup, and eventual success or failure over the bounded instance.
 `HawDBGenerationReclamation.tla` models immutable checkpoint generations and the
 coarse reader-pin policy used by `DurableStore::reclaim_old_generations`.
 Publication requires the target generation to be durable. A pinned reader's
-generation remains available, reclamation is disabled while any reader exists,
-and the current and immediately previous generations remain after reclamation.
+generation remains available and reclamation is disabled while any reader
+exists. The model fixes one retention policy per run: the default keeps the
+current and immediately previous generations, while `CurrentOnly` keeps the
+selected generation. The checked safety invariant requires the selected
+generation and every pinned reader generation to remain available, and only
+requires the previous generation under the default policy. The [inductive
+argument, source mapping, parked-source refinement and proof
+limits](GENERATION_RECLAMATION_PROOF.md) are recorded separately.
 
 Reader actions map to `Database::begin_read_transaction` and `ReaderPin::drop`.
 Publication and reclamation map to `DurableStore::publish_checkpoint_manifest`
