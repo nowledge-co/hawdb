@@ -266,6 +266,10 @@ impl<T> TaskHandle<T> {
 
     /// Wait for the task to finish. A dropped scheduler or drained queue
     /// reports [`TaskError::Shutdown`].
+    ///
+    /// This blocks until the task reaches a terminal state. A task that never
+    /// observes shutdown or cancellation can block this call indefinitely;
+    /// hosts that need a deadline must apply one around the library call.
     pub fn join(self) -> Result<T, TaskError> {
         self.receiver.recv().unwrap_or(Err(TaskError::Shutdown))
     }
@@ -436,6 +440,9 @@ impl Scheduler {
 
     /// Stop both pools and wait for their workers. Queued tasks complete with
     /// [`TaskError::Shutdown`]; a running task must cooperate to return.
+    ///
+    /// Do not call this from a task dispatched by this scheduler: it joins the
+    /// calling worker and would wait for itself.
     pub fn shutdown(&self) {
         self.business.stop();
         self.background.stop();
@@ -494,7 +501,11 @@ impl<T: Task> ErasedTask for TypedTask<T> {
 
     fn publish(&mut self) {
         if let Some(result) = self.completion.take() {
-            let _ = self.sender.send(result);
+            // A closed receiver drops the output here. Its destructor is
+            // task-owned cleanup too and must not retire the worker.
+            let _ = catch_unwind(AssertUnwindSafe(|| {
+                let _ = self.sender.send(result);
+            }));
         }
     }
 }
@@ -678,6 +689,11 @@ impl Pool {
             let elapsed = started.elapsed();
             if self.stop.load(Ordering::Acquire) {
                 task.task.fail(TaskError::Shutdown);
+                drop_task(task);
+                continue;
+            }
+            if task.cancelled.load(Ordering::Acquire) {
+                task.task.fail(TaskError::Cancelled);
                 drop_task(task);
                 continue;
             }

@@ -495,3 +495,78 @@ fn task_teardown_panic_does_not_retire_the_worker() {
     assert_eq!(result, 7);
     scheduler.shutdown();
 }
+
+struct CancelAwareTask {
+    started: mpsc::Sender<()>,
+}
+
+impl Task for CancelAwareTask {
+    type Output = ();
+
+    fn run(&mut self, context: &TaskContext) -> TaskProgress<()> {
+        self.started.send(()).unwrap();
+        loop {
+            if context.checkpoint().is_err() {
+                return TaskProgress::Done(());
+            }
+            std::thread::yield_now();
+        }
+    }
+}
+
+#[test]
+fn cancellation_interrupts_a_running_dispatch() {
+    let scheduler = Scheduler::new(config(1, 1, 8)).unwrap();
+    let (started_tx, started_rx) = mpsc::channel();
+    let handle = scheduler
+        .spawn_task(
+            TaskKey::new(1),
+            Priority::High,
+            CancelAwareTask {
+                started: started_tx,
+            },
+        )
+        .unwrap();
+    started_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("task must enter its dispatch");
+    handle.cancel();
+    assert!(matches!(handle.join(), Err(TaskError::Cancelled)));
+    scheduler.shutdown();
+}
+
+struct PanicOnDropOutput {
+    dropped: mpsc::Sender<()>,
+}
+
+impl Drop for PanicOnDropOutput {
+    fn drop(&mut self) {
+        let _ = self.dropped.send(());
+        panic!("intentional output teardown panic");
+    }
+}
+
+#[test]
+fn output_teardown_panic_does_not_retire_the_worker() {
+    let scheduler = Scheduler::new(config(1, 1, 8)).unwrap();
+    let (dropped_tx, dropped_rx) = mpsc::channel();
+    let handle = scheduler
+        .spawn(TaskKey::new(1), Priority::High, move || PanicOnDropOutput {
+            dropped: dropped_tx,
+        })
+        .unwrap();
+    drop(handle);
+    dropped_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("the output must be dropped by the worker");
+    let second = scheduler
+        .spawn(TaskKey::new(2), Priority::Normal, || 7)
+        .unwrap();
+    let result = second
+        .receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("the worker must survive output teardown")
+        .expect("the second task must complete");
+    assert_eq!(result, 7);
+    scheduler.shutdown();
+}
