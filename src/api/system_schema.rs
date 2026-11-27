@@ -36,12 +36,52 @@ struct SystemSchemaPlan<'a> {
     pending: Vec<&'a SystemSchemaMigration>,
 }
 
+/// Validates the Cypher section of every migration: graph schema DDL only.
+///
+/// Registries carry durable, versioned schema; data-modifying, transaction
+/// control or read statements would make an upgrade depend on graph contents.
+fn validate_system_schema_cypher(registry: &SystemSchemaRegistry) -> Result<()> {
+    use hawdb_cypher::ast::Statement;
+    for migration in registry.migrations() {
+        for statement in migration.cypher_statements() {
+            let parsed = hawdb_cypher::parse(statement)?;
+            let parsed = match parsed {
+                Statement::CypherQuery(query) if query.system_variables.is_empty() => {
+                    query.statement
+                }
+                other => other,
+            };
+            let allowed = matches!(
+                parsed,
+                Statement::CreateIndex(_)
+                    | Statement::CreateCompositeIndex(_)
+                    | Statement::CreateRangeIndex(_)
+                    | Statement::CreateFullTextIndex(_)
+                    | Statement::CreateUniqueConstraint(_)
+                    | Statement::CreateNodePropertyExistsConstraint(_)
+                    | Statement::CreateRelationshipUniqueConstraint(_)
+                    | Statement::CreateRelationshipPropertyExistsConstraint(_)
+            );
+            if !allowed {
+                return Err(HawDBError::Semantic(format!(
+                    "system schema {} migration {} Cypher statements must create graph \
+                     indexes or constraints: {statement}",
+                    registry.owner(),
+                    migration.version()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Validates a set of registries a host supplied together.
 pub(crate) fn validate_system_schema_registries(registries: &[SystemSchemaRegistry]) -> Result<()> {
     let engine_registry = engine_system_schema_registry();
     let mut owners = std::collections::BTreeSet::new();
     for registry in registries {
         validate_system_schema_registry(registry)?;
+        validate_system_schema_cypher(registry)?;
         if registry.owner() == ENGINE_SYSTEM_SCHEMA_OWNER && registry != &engine_registry {
             return Err(HawDBError::Semantic(format!(
                 "system schema owner {ENGINE_SYSTEM_SCHEMA_OWNER} is reserved by the engine"
@@ -343,6 +383,9 @@ impl Database {
                             transaction.query_sql(statement)?;
                         }
                     }
+                    for statement in migration.cypher_statements() {
+                        transaction.query(statement)?;
+                    }
                     insert_migration_record(
                         &mut transaction,
                         registry.owner(),
@@ -391,6 +434,7 @@ impl Database {
         registry: &'a SystemSchemaRegistry,
     ) -> Result<SystemSchemaPlan<'a>> {
         validate_system_schema_registry(registry)?;
+        validate_system_schema_cypher(registry)?;
         let registry_table_present = self.system_schema_registry_table_present()?;
 
         if registry_table_present {
