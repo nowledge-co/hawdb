@@ -466,6 +466,14 @@ pub use hawdb_storage::projection_generation::{
     ProjectionGenerationSeal, ProjectionGenerationState, ProjectionGenerationStatus,
     ProjectionGenerationStore, ProjectionGenerationWriter, SealedProjectionGeneration,
 };
+/// Default admission envelopes of the relational live overlays: a commit
+/// whose row or index changes would exceed them must wait for a checkpoint
+/// to drain the overlay. Hosts that page large writes size their pages from
+/// these (#11616 in nowledge-co/mem).
+pub use hawdb_storage::relational::{
+    DEFAULT_MAX_RELATIONAL_INDEX_CHANGES, DEFAULT_MAX_RELATIONAL_INDEX_CHANGE_BYTES,
+    DEFAULT_MAX_RELATIONAL_ROW_CHANGES, DEFAULT_MAX_RELATIONAL_ROW_CHANGE_BYTES,
+};
 pub use hawdb_storage::scan::ScanPredicate;
 #[cfg(feature = "vector-search")]
 pub use hawdb_vector_projection::{
