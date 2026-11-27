@@ -355,3 +355,98 @@ fn materialized_base_node_is_found_by_its_indexed_value() {
     drop(db);
     std::fs::remove_dir_all(path).unwrap();
 }
+
+/// MERGE by an indexed key finds a canonical node materialized into the delta
+/// by a write to another property instead of creating a duplicate.
+#[test]
+fn merge_finds_a_materialized_base_node_by_its_indexed_value() {
+    let path = unique_test_dir("ooc_index_projection_merge");
+    let mut db = Database::open_with_config(&path, config(false)).unwrap();
+    create_memories(&mut db, 0..300);
+    db.checkpoint().unwrap();
+    db.query("CREATE INDEX ON :Memory(id)").unwrap();
+    db.checkpoint().unwrap();
+    assert!(db.storage_residency_report().unwrap().out_of_core);
+    assert!(unserved(&db).is_empty());
+    // Materializes canonical node id 7 without touching `id`.
+    db.query("MATCH (m:Memory {id: 7}) SET m.v = 10").unwrap();
+    db.query("MERGE (m:Memory {id: 7}) SET m.v = m.v + 1")
+        .unwrap();
+    let rows = |db: &mut Database| {
+        db.query("MATCH (m:Memory) WHERE m.id = 7 RETURN m.v AS v")
+            .unwrap()
+            .rows
+            .into_rows()
+            .into_iter()
+            .map(|row| row.values().cloned().collect::<Vec<_>>())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(rows(&mut db), vec![vec![Value::Int(11)]]);
+    db.checkpoint().unwrap();
+    drop(db);
+    let mut db = Database::open_with_config(&path, config(false)).unwrap();
+    assert_eq!(rows(&mut db), vec![vec![Value::Int(11)]]);
+    drop(db);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+/// A projection build refused by its budget is reported, the index stays
+/// listed as unserved, and a later automatic checkpoint (here the age
+/// trigger) still builds the projection.
+#[test]
+fn refused_projection_build_is_retried_by_a_later_automatic_checkpoint() {
+    let path = unique_test_dir("ooc_index_projection_refused");
+    let mut db = Database::open_with_config(&path, config(false)).unwrap();
+    create_memories(&mut db, 0..300);
+    db.checkpoint().unwrap();
+    drop(db);
+    let mut db = Database::open_with_config(
+        &path,
+        DatabaseConfig {
+            automatic_checkpoint_max_age: Duration::from_secs(2),
+            ..config(true)
+        },
+    )
+    .unwrap();
+    assert!(db.storage_residency_report().unwrap().out_of_core);
+    db.runtime
+        .get()
+        .unwrap()
+        .store
+        .force_property_projection_budget_refusals(1);
+    db.query("CREATE INDEX ON :Memory(k)").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut seen_refusal = false;
+    loop {
+        let report = db.storage_residency_report().unwrap();
+        if report.persistent_property_projection_budget_refusals > 0 {
+            seen_refusal = true;
+        }
+        if seen_refusal && report.unserved_graph_property_indexes.is_empty() {
+            assert_eq!(report.persistent_property_projection_budget_refusals, 1);
+            assert!(
+                report
+                    .last_persistent_property_projection_budget_refusal
+                    .as_deref()
+                    .is_some_and(|reason| reason.contains("definitions")),
+                "{report:?}"
+            );
+            assert!(
+                report.persistent_property_projection_artifact_bytes > 24,
+                "{report:?}"
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "projection not rebuilt after a refusal: {report:?}, {:?}",
+            db.automatic_checkpoint_report().unwrap()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let before = targets(&db);
+    set_k(&mut db, "k3");
+    assert_eq!(targets(&db).1, before.1 + 1);
+    drop(db);
+    std::fs::remove_dir_all(path).unwrap();
+}

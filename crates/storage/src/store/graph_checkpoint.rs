@@ -273,6 +273,11 @@ fn push_property_projection_definition(
     definition: PersistentPropertyProjectionDefinition,
     work: &crate::background::CheckpointDecodeContext,
 ) -> Result<()> {
+    #[cfg(any(test, feature = "test-support", debug_assertions))]
+    if let Some(error) = admission.refusals.take_forced() {
+        admission.refusals.record(&error);
+        return Err(HawDBError::from_storage_error(error));
+    }
     admission.admission.admit(&definition).map_err(|error| {
         admission.refusals.record(&error);
         HawDBError::from_storage_error(error)
@@ -1953,6 +1958,17 @@ impl GraphStore {
                 },
             )
             .collect()
+    }
+
+    /// Refuses the next `builds` persistent property projection builds as if
+    /// they exceeded the definition budget, so tests can observe the refusal
+    /// report and the retry (#2019). Shared by checkpoint-source clones.
+    #[cfg(any(test, feature = "test-support", debug_assertions))]
+    #[doc(hidden)]
+    pub fn force_property_projection_budget_refusals(&self, builds: u64) {
+        if let Some(durable) = &self.durable {
+            durable.property_projection_budget_refusals.force(builds);
+        }
     }
 
     pub fn persistent_property_projection_manifest(

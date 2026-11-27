@@ -264,6 +264,9 @@ pub(super) struct ReadOnlyBranchMount {
 pub(super) struct PropertyProjectionBudgetRefusals {
     count: std::sync::atomic::AtomicU64,
     last_reason: std::sync::Mutex<Option<String>>,
+    /// Builds still to refuse as if over the definition budget (tests only).
+    #[cfg(any(test, feature = "test-support", debug_assertions))]
+    forced: std::sync::atomic::AtomicU64,
 }
 
 impl PropertyProjectionBudgetRefusals {
@@ -289,6 +292,30 @@ impl PropertyProjectionBudgetRefusals {
                 .lock()
                 .unwrap_or_else(|error| error.into_inner()) = Some(error.to_string());
         }
+    }
+
+    /// Takes one forced refusal armed by
+    /// `GraphStore::force_property_projection_budget_refusals`.
+    #[cfg(any(test, feature = "test-support", debug_assertions))]
+    pub(super) fn take_forced(
+        &self,
+    ) -> Option<hawdb_storage::property_projection::PersistentPropertyProjectionError> {
+        use std::sync::atomic::Ordering;
+        self.forced
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |left| left.checked_sub(1))
+            .ok()
+            .map(|_| {
+                hawdb_storage::property_projection::PersistentPropertyProjectionError::DefinitionCountBudgetExceeded {
+                    required_definitions: 1,
+                    max_definitions: 0,
+                }
+            })
+    }
+
+    #[cfg(any(test, feature = "test-support", debug_assertions))]
+    pub(super) fn force(&self, builds: u64) {
+        self.forced
+            .store(builds, std::sync::atomic::Ordering::Release);
     }
 
     pub(super) fn snapshot(&self) -> (u64, Option<String>) {
