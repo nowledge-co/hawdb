@@ -601,3 +601,91 @@ fn concurrent_database_statements_carry_counters() {
         QueryCounters::default()
     );
 }
+
+/// One batch that creates a node pair with a relationship and then detach
+/// deletes one of the new nodes counts every executed write, although the
+/// deleted records never reach the write-ahead log.
+#[test]
+fn batch_that_creates_then_deletes_counts_both() {
+    on_both("create_then_delete", |db| {
+        let summary = {
+            let mut guard = db.runtime.get_mut().unwrap();
+            let runtime = &mut *guard;
+            runtime
+                .store
+                .commit_mutations_with_limits(
+                    &mut runtime.catalog,
+                    vec![
+                        GraphMutation::MergeConnectedNodes(
+                            hawdb_storage::mutation::ConnectedNodesCreate {
+                                source_label: "P".into(),
+                                source_properties: BTreeMap::from([("id".into(), Value::Int(9))]),
+                                rel_type: "PR".into(),
+                                rel_properties: BTreeMap::new(),
+                                target_label: "Q".into(),
+                                target_properties: BTreeMap::from([("id".into(), Value::Int(10))]),
+                            },
+                        ),
+                        GraphMutation::DeleteNode {
+                            label: "P".into(),
+                            filter: Some(PropertyFilter::Eq {
+                                property: "id".into(),
+                                value: Value::Int(9),
+                            }),
+                            detach: true,
+                        },
+                    ],
+                    MutationLimits::default(),
+                )
+                .unwrap()
+        };
+        let counters = summary.counters;
+        assert_eq!(
+            (
+                counters.nodes_created,
+                counters.nodes_deleted,
+                counters.relationships_created,
+                counters.relationships_deleted,
+            ),
+            (2, 1, 1, 1),
+            "{counters:?}"
+        );
+        assert_eq!(
+            db.query("MATCH (n:P) RETURN count(n) AS c")
+                .unwrap()
+                .rows
+                .value(0, 0)
+                .unwrap()
+                .to_owned_value(),
+            Value::Int(0)
+        );
+        assert_eq!(
+            db.query("MATCH (n:Q) RETURN count(n) AS c")
+                .unwrap()
+                .rows
+                .value(0, 0)
+                .unwrap()
+                .to_owned_value(),
+            Value::Int(1)
+        );
+    });
+}
+
+/// SQL writes are not graph writes: their outputs report all-zero counters.
+#[test]
+fn sql_statements_report_zero_counters() {
+    on_both("sql", |db| {
+        for statement in [
+            "CREATE TABLE records (id BIGINT PRIMARY KEY, value BIGINT)",
+            "INSERT INTO records VALUES (1, 1)",
+            "UPDATE records SET value = 2 WHERE id = 1",
+            "DELETE FROM records WHERE id = 1",
+        ] {
+            assert_eq!(
+                db.query_sql(statement).unwrap().counters,
+                QueryCounters::default(),
+                "{statement}"
+            );
+        }
+    });
+}

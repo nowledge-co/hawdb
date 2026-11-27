@@ -22,3 +22,9 @@ own counters; failed statements return errors. `SET n += {}`, `SET n:L` and
 `REMOVE` are not parsed yet: the test pins their parse errors and checks that
 the mutation layer's empty assignment list matches a node with
 `properties_set == 0`. No new lane, profile or timeout.
+
+`batch_that_creates_then_deletes_counts_both` pins counting of records created
+and then deleted within one mutation batch (their writes never reach the WAL):
+`nodes_created 2, nodes_deleted 1, relationships_created 1,
+relationships_deleted 1`. `sql_statements_report_zero_counters` pins that SQL
+writes report all-zero counters; SQL callers use `affected_rows`.

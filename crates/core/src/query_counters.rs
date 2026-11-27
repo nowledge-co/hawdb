@@ -49,6 +49,9 @@
 /// - Inside an explicit transaction, each statement's output carries only
 ///   that statement's counters; the output of the transaction's `commit()`
 ///   carries none. A statement that fails returns its error and no counters.
+/// - Only Cypher graph writes are counted. SQL statements (`query_sql`,
+///   relational tables) always report all zeros here; use the SQL result's
+///   `affected_rows` to learn how many rows a SQL write matched.
 ///
 /// `properties_set == 0` does **not** imply that the statement matched no
 /// node: a `SET n += {}` with an empty map, a label-only write, or a `MERGE`
