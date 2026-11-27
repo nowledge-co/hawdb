@@ -411,12 +411,9 @@ impl Database {
         // label. The check also runs when nothing is pending, so a checkpoint
         // that failed after an earlier commit is retried on the next apply.
         if !self.config.read_only && self.registry_graph_indexes_await_checkpoint(registries)? {
-            self.checkpoint().map_err(|error| {
-                HawDBError::Storage(format!(
-                    "system schema graph indexes are recorded but not yet usable: \
-                     checkpoint failed: {error}"
-                ))
-            })?;
+            // The migration is already recorded; a failure here propagates
+            // unchanged and the next apply retries the checkpoint.
+            self.checkpoint()?;
         }
 
         let commit_epoch_after = self.commit_epoch()?;
