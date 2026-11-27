@@ -56,9 +56,7 @@ impl Database {
                     .with_output_limits(max_rows, None),
                 executor::ExecutionResources::new(&mut catalog, &mut store, &mut external),
             )?;
-            Ok(QueryOutput {
-                rows: profiled.rows,
-            })
+            Ok(QueryOutput::from_query_rows(profiled.rows))
         })();
         self.runtime
             .get()?
@@ -193,9 +191,7 @@ impl Database {
         self.runtime.get()?.store.poison_on_storage_error(&profiled);
         let profiled = profiled?;
         Ok(ExplainAnalyzeOutput {
-            output: QueryOutput {
-                rows: profiled.rows,
-            },
+            output: QueryOutput::from_query_rows(profiled.rows),
             execution_profile: profiled.profile,
             physical_plan: optimized.physical_plan,
             trace: optimized.trace,

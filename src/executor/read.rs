@@ -183,7 +183,8 @@ pub(super) fn execute_bindings_with_limit(
                 hawdb_executor::result_delivery::OutputLimits::default(),
                 context.memory,
                 context.task_context,
-            )?;
+            )?
+            .rows;
             Ok(rows.into_iter().map(Binding::values).collect())
         }
     }

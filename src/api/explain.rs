@@ -103,9 +103,9 @@ pub(super) fn admit_explain_output(
     accumulator.bind_output_schema(hawdb_explain::json::explain_output_columns(analyze))?;
     accumulator.emit(Binding::values(row))?;
     query_runtime_checkpoint(options.task_context)?;
-    Ok(QueryOutput {
-        rows: accumulator
+    Ok(QueryOutput::from_query_rows(
+        accumulator
             .take_owned_rows()
             .expect("owned diagnostic rows"),
-    })
+    ))
 }

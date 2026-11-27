@@ -95,7 +95,8 @@ pub(crate) fn resolve_match_set<S: ExecutionStore>(
 }
 
 /// Executes a row-evaluated SET and commits it atomically. Returns its
-/// RETURN rows, or the committed entity ids without RETURN.
+/// RETURN rows, or the committed entity ids without RETURN, and the counters
+/// of the writes it executed.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_match_set<S: ExecutionStore>(
     set: &hawdb_plan_cypher::MatchSet<PhysicalPlan>,
@@ -106,8 +107,8 @@ pub(crate) fn execute_match_set<S: ExecutionStore>(
     output_limits: hawdb_executor::result_delivery::OutputLimits,
     memory: &ExecutionMemoryConfig,
     task_context: Option<&RuntimeTaskContext>,
-) -> Result<Vec<Row>> {
-    let outcome = resolve_match_set(
+) -> Result<hawdb_executor::mutation::MutationExecution> {
+    let mut outcome = resolve_match_set(
         set,
         parameters,
         catalog,
@@ -118,8 +119,9 @@ pub(crate) fn execute_match_set<S: ExecutionStore>(
         task_context,
     )?;
     runtime_checkpoint(task_context)?;
-    let committed = if outcome.mutations.is_empty() {
-        Vec::new()
+    let mutations = std::mem::take(&mut outcome.mutations);
+    let committed = if mutations.is_empty() {
+        hawdb_storage::mutation::MutationSummary::default()
     } else {
         let staging_limits = if set.returns.is_some() {
             hawdb_executor::mutation::mutation_return_staging_limits(limits)
@@ -129,14 +131,17 @@ pub(crate) fn execute_match_set<S: ExecutionStore>(
         hawdb_executor::store::GraphExecutionWrite::commit_mutations_with_limits(
             store,
             catalog,
-            outcome.mutations,
+            mutations,
             staging_limits,
         )?
-        .rows
     };
-    Ok(if set.returns.is_some() {
-        outcome.rows
-    } else {
-        committed
+    let counters = outcome.counters(committed.counters);
+    Ok(hawdb_executor::mutation::MutationExecution {
+        rows: if set.returns.is_some() {
+            outcome.rows
+        } else {
+            committed.rows
+        },
+        counters,
     })
 }

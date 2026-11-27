@@ -454,7 +454,7 @@ pub(crate) fn system_runtime_snapshot(
     )
 }
 
-pub use hawdb_executor::QueryOutput;
+pub use hawdb_executor::{QueryCounters, QueryOutput};
 
 /// Deterministic outcome for one relational INSERT, UPDATE, or DELETE statement.
 ///
@@ -1139,7 +1139,7 @@ fn schema_maintenance_actions_output(actions: Vec<SchemaMaintenanceAction>) -> Q
             ])
         })
         .collect();
-    QueryOutput { rows }
+    QueryOutput::from_query_rows(rows)
 }
 
 fn property_index_projection_rebuild_output(
@@ -1166,7 +1166,7 @@ fn property_index_projection_rebuild_output(
             ])
         })
         .collect();
-    QueryOutput { rows }
+    QueryOutput::from_query_rows(rows)
 }
 
 fn optional_u64_value(value: Option<u64>) -> Value {

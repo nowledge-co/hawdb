@@ -47,9 +47,7 @@ impl PreparedReadExecution {
         )?;
         query_runtime::query_runtime_checkpoint(options.task_context)?;
         Ok((
-            QueryOutput {
-                rows: profiled.rows,
-            },
+            QueryOutput::from_query_rows(profiled.rows),
             QueryExecutionTrace {
                 statement,
                 optimizer_cardinality_estimate_scope: options

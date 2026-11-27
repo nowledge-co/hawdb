@@ -15,15 +15,33 @@
 //! Query result envelope shared by execution and embedded adapters.
 
 use crate::{QueryRows, QuerySchema, QueryValueRows, Row};
+pub use hawdb_core::QueryCounters;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryOutput {
     pub rows: QueryRows,
+    /// The write operations this statement executed; all zero for a read.
+    /// See [`QueryCounters`] for the exact counting rules.
+    pub counters: QueryCounters,
 }
 
 impl QueryOutput {
     pub fn from_rows(rows: Vec<Row>) -> Self {
-        Self { rows: rows.into() }
+        Self::from_query_rows(rows.into())
+    }
+
+    /// An output with `rows` and no counted writes.
+    pub fn from_query_rows(rows: QueryRows) -> Self {
+        Self {
+            rows,
+            counters: QueryCounters::default(),
+        }
+    }
+
+    /// Replaces the counters, for the statement that executed the writes.
+    pub fn with_counters(mut self, counters: QueryCounters) -> Self {
+        self.counters = counters;
+        self
     }
 
     pub fn schema(&self) -> &QuerySchema {
@@ -53,9 +71,7 @@ mod tests {
         let mut rows = QueryRowsBuilder::with_schema(schema.clone(), 1);
         rows.push_values([Value::String("bytes".to_string()), Value::Int(7)])
             .unwrap();
-        let output = QueryOutput {
-            rows: rows.finish(),
-        };
+        let output = QueryOutput::from_query_rows(rows.finish());
         assert_eq!(output.schema(), &schema);
         assert_eq!(output.rows.value(0, 0), Some(ValueRef::String("bytes")));
         assert_eq!(output.value_rows().count(), 1);

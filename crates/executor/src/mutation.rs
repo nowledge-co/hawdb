@@ -41,10 +41,12 @@ pub use match_set::{
     MatchSetOutcome, MatchSetRecord,
 };
 pub use preflight::{
-    commit_staged_mutations, commit_staged_mutations_with_output, execute_mutation_with_store,
+    commit_staged_mutations, commit_staged_mutations_counted, commit_staged_mutations_with_output,
+    execute_mutation_counted, execute_mutation_with_store,
     execute_mutation_with_store_output_limits, materialize_load_csv_mutations,
     materialize_node_mutation, materialize_unwind_mutations, project_staged_mutation_return_rows,
     resolve_relationship_merge_endpoints, stage_row_mutations, stage_unwind_mutations,
+    MutationExecution,
 };
 pub use returns::{
     mutation_return_command, mutation_return_staging_limits, project_mutation_return_rows,

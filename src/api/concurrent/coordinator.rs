@@ -1436,11 +1436,7 @@ mod group_commit_tests {
     }
 
     fn successful_task() -> CommitTask {
-        Box::new(|_| {
-            Ok(QueryOutput {
-                rows: Vec::new().into(),
-            })
-        })
+        Box::new(|_| Ok(QueryOutput::from_query_rows(Vec::new().into())))
     }
 
     #[test]
@@ -1477,9 +1473,7 @@ mod group_commit_tests {
         // is no longer owned at that point, but the next loop iteration can
         // still consume its result and must not report an inconsistency.
         request
-            .complete(Ok(QueryOutput {
-                rows: Vec::new().into(),
-            }))
+            .complete(Ok(QueryOutput::from_query_rows(Vec::new().into())))
             .unwrap();
         assert!(state.assert_commit_is_accounted_for(&request).is_ok());
         assert!(request

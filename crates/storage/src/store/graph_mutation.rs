@@ -754,21 +754,37 @@ impl GraphStore {
         assignments: &[NodeSetAssignment],
         limits: MutationLimits,
     ) -> Result<Vec<NodeId>> {
+        self.set_node_properties_by_ids_counted(catalog, ids, assignments, limits)?;
+        Ok(ids.to_vec())
+    }
+
+    /// [`Self::set_node_properties_by_ids_with_limits`], returning the
+    /// counters of the writes it executed: one property set per assignment
+    /// and node, whether or not the value changes.
+    #[doc(hidden)]
+    pub fn set_node_properties_by_ids_counted(
+        &mut self,
+        catalog: &mut Catalog,
+        ids: &[NodeId],
+        assignments: &[NodeSetAssignment],
+        limits: MutationLimits,
+    ) -> Result<QueryCounters> {
         if ids.is_empty() {
-            return Ok(Vec::new());
+            return Ok(QueryCounters::default());
         }
         let operation_count = ids.len().checked_mul(assignments.len()).ok_or_else(|| {
             HawDBError::Execution("mutation operation count overflow".to_string())
         })?;
         ensure_additional_mutation_limits(0, 0, operation_count, ids.len(), limits)?;
         let ops = self.node_set_property_ops(ids, assignments)?;
+        let counters = count_executed_writes(&ops);
         self.validate_constraints_for_ops(catalog, &ops)?;
         self.append_graph_wal_and_capture(catalog, &ops, false)?;
         for op in ops {
             self.apply_wal_op(catalog, op)?;
         }
         self.finish_non_relational_commit();
-        Ok(ids.to_vec())
+        Ok(counters)
     }
 
     pub(super) fn node_set_property_ops(
@@ -830,18 +846,33 @@ impl GraphStore {
         detach: bool,
         limits: MutationLimits,
     ) -> Result<Vec<NodeId>> {
+        self.delete_node_ids_counted(catalog, ids, detach, limits)?;
+        Ok(ids.to_vec())
+    }
+
+    /// [`Self::delete_node_ids_with_limits`], returning the counters of the
+    /// writes it executed, including relationships a detach deletes.
+    #[doc(hidden)]
+    pub fn delete_node_ids_counted(
+        &mut self,
+        catalog: &mut Catalog,
+        ids: &[NodeId],
+        detach: bool,
+        limits: MutationLimits,
+    ) -> Result<QueryCounters> {
         if ids.is_empty() {
-            return Ok(Vec::new());
+            return Ok(QueryCounters::default());
         }
         ensure_additional_mutation_limits(0, 0, 0, ids.len(), limits)?;
         let ops = self.delete_node_ops_bounded(ids, detach, limits.max_operations.get())?;
+        let counters = count_executed_writes(&ops);
         self.ensure_out_of_core_delta_admission(&ops)?;
         self.append_graph_wal_and_capture(catalog, &ops, false)?;
         for op in ops {
             self.apply_wal_op(catalog, op)?;
         }
         self.finish_non_relational_commit();
-        Ok(ids.to_vec())
+        Ok(counters)
     }
 
     pub fn delete_relationships(

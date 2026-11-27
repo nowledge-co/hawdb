@@ -335,7 +335,9 @@ impl ConcurrentDatabase {
             let output = if returns_rows {
                 outcome.output
             } else {
-                committed
+                // The commit publishes the staged statement; its writes were
+                // counted when the statement executed.
+                committed.with_counters(outcome.output.counters)
             };
             Ok((output, prepared.into_trace(capture_trace)))
         })();

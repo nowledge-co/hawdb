@@ -1073,12 +1073,10 @@ impl CompatibilityShadowEngine for SlightlyDifferentFloatShadowEngine {
 
     fn execute(&mut self, statement: &CypherFixtureStatement) -> Result<QueryOutput> {
         if !statement.cypher.contains("page_rank") {
-            return Ok(QueryOutput {
-                rows: Vec::new().into(),
-            });
+            return Ok(QueryOutput::from_query_rows(Vec::new().into()));
         }
-        Ok(QueryOutput {
-            rows: vec![
+        Ok(QueryOutput::from_query_rows(
+            vec![
                 row([
                     ("node", Value::Int(1)),
                     ("pagerank_score", Value::Float(0.6491233)),
@@ -1089,7 +1087,7 @@ impl CompatibilityShadowEngine for SlightlyDifferentFloatShadowEngine {
                 ]),
             ]
             .into(),
-        })
+        ))
     }
 }
 
@@ -1103,17 +1101,15 @@ impl CompatibilityShadowEngine for MismatchingShadowEngine {
 
     fn execute(&mut self, statement: &CypherFixtureStatement) -> Result<QueryOutput> {
         if statement.cypher.starts_with("MATCH") {
-            Ok(QueryOutput {
-                rows: vec![row([(
+            Ok(QueryOutput::from_query_rows(
+                vec![row([(
                     "title",
                     Value::String("Runtime strategy".to_string()),
                 )])]
                 .into(),
-            })
+            ))
         } else {
-            Ok(QueryOutput {
-                rows: Vec::new().into(),
-            })
+            Ok(QueryOutput::from_query_rows(Vec::new().into()))
         }
     }
 }

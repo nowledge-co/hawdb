@@ -176,6 +176,7 @@ mod projection_generations;
 mod property_defaults;
 mod published_object_verification;
 mod qos_admission_refusals;
+mod query_counters;
 mod query_execution;
 mod query_observability;
 mod race;

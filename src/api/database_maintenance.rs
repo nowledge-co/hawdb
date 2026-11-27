@@ -1571,7 +1571,7 @@ impl Database {
                     ])
                 })
                 .collect();
-            QueryOutput { rows: rows.into() }
+            QueryOutput::from_query_rows(rows.into())
         })
     }
 

@@ -23,7 +23,10 @@ node). A projection build refused by its budget (forced through
 `GraphStore::force_property_projection_budget_refusals`) is reported in
 `persistent_property_projection_budget_refusals`, and a later automatic
 checkpoint driven by the age trigger still builds it.
-Resident stores report no unserved indexes. `api::tests::mutation_index_seek`
+Resident stores report no unserved indexes. Without any graph property
+index, 50 small node and SQL commits on a reopened out-of-core database with
+background maintenance start no automatic checkpoint and report no unserved
+index; a following `CREATE INDEX` does start one (positive control). `api::tests::mutation_index_seek`
 now requires zero label scans for every indexed case. No new lane, profile or
 timeout.
 
