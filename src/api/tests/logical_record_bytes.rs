@@ -181,8 +181,25 @@ fn maintained_estimate_matches_full_walk_through_mutations_rollback_and_reopen()
 
         // Crash: drop without a checkpoint, then recover from the WAL.
         drop(db);
-        let reopened = Database::open_with_config(&path, config(mode)).unwrap();
+        let mut reopened = Database::open_with_config(&path, config(mode)).unwrap();
         assert_eq!(verified_bytes(&reopened), committed);
+
+        // Hand-off between the canonical base and the maintained delta sums:
+        // after another checkpoint folds the delta into a new base, and after
+        // further writes on top of that base, the maintained value still
+        // equals the walk (the out-of-core run is on its second checkpoint).
+        reopened.checkpoint().unwrap();
+        verified_bytes(&reopened);
+        reopened
+            .query("MATCH (a:A) WHERE a.id < 10 SET a.after = 'written after the checkpoint'")
+            .unwrap();
+        reopened
+            .query("MATCH (a:A {id: 11}) DETACH DELETE a")
+            .unwrap();
+        let after_checkpoint = verified_bytes(&reopened);
+        drop(reopened);
+        let reopened = Database::open_with_config(&path, config(mode)).unwrap();
+        assert_eq!(verified_bytes(&reopened), after_checkpoint);
         drop(reopened);
         std::fs::remove_dir_all(path).unwrap();
     }
