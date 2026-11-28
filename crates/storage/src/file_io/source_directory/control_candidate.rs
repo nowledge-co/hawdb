@@ -6,7 +6,7 @@ use std::io::Write;
 use std::sync::Arc;
 
 #[derive(Debug)]
-enum DirectoryOwner<'a> {
+pub(super) enum DirectoryOwner<'a> {
     Borrowed(&'a SourceDirectory),
     Shared(Arc<SourceDirectory>),
 }
