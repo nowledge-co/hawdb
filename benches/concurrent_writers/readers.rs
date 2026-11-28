@@ -130,10 +130,11 @@ pub fn report(
         .count();
     // A successful finite workload alone would allow all reads to run before
     // or after the writes. Reject that as missing mixed-workload coverage.
-    assert!(writes_during_reads > 0 && reads_during_writes > 0);
     assert!(
-        intermediate_reads > 0,
-        "readers must observe write progress"
+        writes_during_reads > 0 && reads_during_writes > 0 && intermediate_reads > 0,
+        "mixed workload lacked coverage: writes_during_reads={writes_during_reads}, \
+         reads_during_writes={reads_during_writes}, intermediate_reads={intermediate_reads}, \
+         writer_phase_ns={write_start}..{write_end}, reader_phase_ns={read_start}..{read_end}"
     );
     let samples = measurements
         .iter()

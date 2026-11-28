@@ -103,6 +103,10 @@ def main():
     build_record = {"baseline": baseline_revision,
                     "candidate": subprocess.check_output(
                         ["git", "rev-parse", "HEAD"], cwd=source, text=True).strip(),
+                    "candidate_diff_sha256": hashlib.sha256(subprocess.check_output(
+                        ["git", "diff", "HEAD"], cwd=source)).hexdigest(),
+                    "toolchain": subprocess.check_output(
+                        ["rustc", "--version"], cwd=source, text=True).strip(),
                     "harness_sha256": hashlib.sha256(
                         (source / "benches/concurrent_writers.rs").read_bytes()).hexdigest(),
                     "reader_harness_sha256": hashlib.sha256(
@@ -116,6 +120,11 @@ def main():
     for label, manifest in [("baseline", manifest), ("candidate", source / "Cargo.toml")]:
         print(f"Building {label}", flush=True)
         binaries[label] = build(source, manifest, work / f"{label}-target", label, output)
+    build_record["binary_sha256"] = {
+        label: hashlib.sha256(binary.read_bytes()).hexdigest()
+        for label, binary in binaries.items()
+    }
+    (output / "build-protocol.json").write_text(json.dumps(build_record, indent=2) + "\n")
     profiles = [("measurement", False)]
     if args.include_captured_wal:
         profiles.append(("captured-measurement", True))

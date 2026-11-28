@@ -46,6 +46,7 @@ mod value;
 pub(crate) use key::with_legacy_map_keys;
 pub(crate) use key::{
     group_key_memory_bytes, group_output_binding, GroupKeyValue, KeyMemory, PreparedKey,
+    SortKeyValues,
 };
 pub use predicate::*;
 pub(crate) use projection::{
