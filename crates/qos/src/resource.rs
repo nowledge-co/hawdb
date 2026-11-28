@@ -16,7 +16,7 @@
 
 use crate::{StorageDeviceProfile, StorageMediaKind};
 #[cfg(any(target_os = "linux", test))]
-use hawdb_cgroup::{LinuxCgroupSnapshot, LinuxCgroupValue, LinuxCgroupVersion};
+use hawdb_util::cgroup::{LinuxCgroupSnapshot, LinuxCgroupValue, LinuxCgroupVersion};
 use std::num::NonZeroUsize;
 use sysinfo::System;
 

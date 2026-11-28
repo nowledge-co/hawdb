@@ -78,15 +78,15 @@ HawDB follows a RisingWave/Chryso-style workspace-and-facade layout. The root
 crate remains the stable embedded facade, while implementation crates are split
 out as interfaces harden and dependency direction becomes acyclic. The current
 crate split includes `hawdb-core` for common graph primitives,
-`hawdb-cypher` for syntax-only Cypher AST/parser support, `hawdb-qos` for
+`hawdb-cypher` for syntax-only Cypher AST/parser support, `hawdb-util` for
+shared platform utilities including cgroup detection, `hawdb-qos` for
 local resource classes, background admission, and expected-value ranking,
 `hawdb-sql-syntax` for dependency-free PostgreSQL token/span ownership and the
 SQL/PGQ syntax AST, `hawdb-sql` for semantic relational/SQL/PGQ lowering,
 `hawdb-relational` for storage-neutral RowPage DDL/DML compilation,
 strict-append statement/access planning, and shared scalar binding,
 `hawdb-plan-cypher` for Cypher logical/physical IR, typed phase roots, deterministic
-fingerprints, explain rendering, and plan-node metadata. `hawdb-plan-core` owns
-the shared vector plan IR without parser or optimizer dependencies.
+fingerprints, explain rendering, and plan-node metadata. `hawdb-vector-planning` owns the shared vector plan IR and vector planning without parser dependencies.
 `hawdb-cascades` owns domain-neutral memo, rule, stage, cost, property and context
 contracts. Graph, relational, predicate and vector planning belong to their
 respective `hawdb-optimizer-*` crates; `hawdb-optimizer` preserves the original
@@ -146,8 +146,9 @@ crates/
   compat/              fixtures, comparison, migration gates, shadow protocols
   evidence/            release identity, recovery, redacted diagnostic evidence
   plan-cypher/         Cypher logical/physical IR, phase roots, explain, fingerprints
-  plan-core/           shared vector plan IR, independent of parsers and optimizers
+  vector-planning/     shared vector plan IR and bounded vector planning
   qos/                 work classes, local admission, background ranking
+  util/                shared platform utilities including cgroup detection
   cascades/            generic memo, rules, stages, cost, properties and context
   optimizer/           compatibility facade over the framework and rule families
   optimizer-graph/     graph catalog, rewrites, costing, lowering and typed traces
@@ -288,7 +289,7 @@ tests remain at the root integration boundary.
 
 `src/cypher.rs`, `src/planner.rs`, and `src/optimizer.rs` are compatibility
 re-export facades over their owning crates. `hawdb-plan-cypher` depends inward on
-`hawdb-core`, `hawdb-cypher`, `hawdb-ddl`, `hawdb-expression` and `hawdb-plan-core`.
+`hawdb-core`, `hawdb-cypher`, `hawdb-ddl`, `hawdb-expression` and `hawdb-vector-planning`.
 The optimizer families remain free of executor and storage implementations.
 Search imports predicate/vector helpers directly, plan-cache's tests import the
 graph optimizer, and root SQL planning imports the relational optimizer. The
@@ -842,13 +843,12 @@ to justify it.
 The optimizer boundary is:
 
 ```text
-crates/plan-core/              shared vector IR without domain syntax
+crates/vector-planning/        shared vector IR and bounded planning
 crates/plan-cypher/            Cypher logical/physical IR and typed phase roots
 crates/cascades/               generic framework and optimizer context
 crates/optimizer-graph/        graph catalog, costing, rules, lowering and traces
 crates/optimizer-relational/   relational join/access/sargability toolkit
 crates/optimizer-predicate/    search predicate normalization and pushdown
-crates/optimizer-vector/       vector backend selection and bounded planning
 crates/optimizer/              original public module/type compatibility facade
 src/optimizer.rs              embedded facade re-exports
 ```

@@ -13,4 +13,4 @@ hawdb-cascades = { path = "../cascades", version = "0.41.0" }
 hawdb-optimizer-graph = { path = "../optimizer-graph", version = "0.41.0" }
 hawdb-optimizer-relational = { path = "../optimizer-relational", version = "0.41.0" }
 hawdb-optimizer-predicate = { path = "../optimizer-predicate", version = "0.41.0" }
-hawdb-optimizer-vector = { path = "../optimizer-vector", version = "0.41.0" }
+hawdb-vector-planning = { path = "../vector-planning", version = "0.41.0" }

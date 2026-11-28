@@ -24,8 +24,8 @@ use hawdb_executor::{
     VectorCandidateScanRequest, VectorExecutionReport, VectorExecutionSource,
     VectorRawRerankRequest, VectorRawScore, VectorResidualFilterRequest, VectorScoreSource,
 };
-use hawdb_optimizer_vector::plan_vector_search;
-use hawdb_plan_core::VectorSearchLogicalPlan;
+use hawdb_vector_planning::plan_vector_search;
+use hawdb_vector_planning::VectorSearchLogicalPlan;
 use std::collections::BTreeMap;
 #[cfg(feature = "qualification")]
 use std::collections::BTreeSet;

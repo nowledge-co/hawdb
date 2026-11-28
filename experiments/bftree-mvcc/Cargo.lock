@@ -278,10 +278,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hawdb-cgroup"
-version = "0.41.0"
-
-[[package]]
 name = "hawdb-core"
 version = "0.41.0"
 dependencies = [
@@ -306,8 +302,8 @@ dependencies = [
 name = "hawdb-qos"
 version = "0.41.0"
 dependencies = [
- "hawdb-cgroup",
  "hawdb-core",
+ "hawdb-util",
  "libc",
  "sysinfo",
  "windows-sys 0.61.2",
@@ -337,6 +333,10 @@ version = "0.41.0"
 dependencies = [
  "hawdb-qos",
 ]
+
+[[package]]
+name = "hawdb-util"
+version = "0.41.0"
 
 [[package]]
 name = "hybrid-array"

@@ -10,7 +10,7 @@ test_suite(
         "//crates/optimizer-graph:presubmit_tests",
         "//crates/optimizer-relational:presubmit_tests",
         "//crates/optimizer-predicate:presubmit_tests",
-        "//crates/optimizer-vector:presubmit_tests",
+        "//crates/vector-planning:presubmit_tests",
     ],
 )
 
@@ -26,7 +26,7 @@ rust_library(
         "//crates/optimizer-graph:hawdb_optimizer_graph",
         "//crates/optimizer-relational:hawdb_optimizer_relational",
         "//crates/optimizer-predicate:hawdb_optimizer_predicate",
-        "//crates/optimizer-vector:hawdb_optimizer_vector",
+        "//crates/vector-planning:hawdb_vector_planning",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )

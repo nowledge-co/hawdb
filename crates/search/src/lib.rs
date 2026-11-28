@@ -36,11 +36,6 @@ use hawdb_optimizer_predicate::{
     normalize_search_enum_value, search_field_is_enum_like, SearchPredicate, SearchPredicateOp,
     SearchPredicateSet, SearchScalarValue,
 };
-use hawdb_optimizer_vector::{
-    select_adaptive_vector_backend, AdaptiveVectorBackend, AdaptiveVectorBackendDecision,
-    AdaptiveVectorBackendInput, AdaptiveVectorBackendPolicy, VectorCompressionPreference,
-};
-use hawdb_plan_core::{VectorBackendSelectionReason, VectorCandidateSource};
 use hawdb_qos::{
     BackgroundWorkHint, BackgroundWorkPlan, LocalQosPolicy, LocalQosScheduler, LocalQosState,
     WorkClass, WorkRequest,
@@ -55,6 +50,11 @@ use hawdb_storage::{
 };
 use hawdb_storage::{NodeId, NodeRecord};
 use hawdb_telemetry::{KernelTelemetry, KernelTelemetryOperation, TelemetrySink};
+use hawdb_vector_planning::{
+    select_adaptive_vector_backend, AdaptiveVectorBackend, AdaptiveVectorBackendDecision,
+    AdaptiveVectorBackendInput, AdaptiveVectorBackendPolicy, VectorCompressionPreference,
+};
+use hawdb_vector_planning::{VectorBackendSelectionReason, VectorCandidateSource};
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};

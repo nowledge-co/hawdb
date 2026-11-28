@@ -48,7 +48,7 @@ jobs:
         run: cargo test -p hawdb-qos resource::tests
 
       - name: Test cgroup v2 detection
-        run: cargo test -p hawdb-cgroup
+        run: cargo test -p hawdb-util cgroup::tests
 
       - name: Test expression IR
         run: cargo test -p hawdb-expression
