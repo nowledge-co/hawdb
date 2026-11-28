@@ -17,8 +17,8 @@ use hawdb_optimizer_graph::{
     CascadesOptimizer, LogicalPlanRoot, OptimizerCatalog, OptimizerCatalogIndexes,
     OptimizerCatalogStatistics, OptimizerConfig, OptimizerContext, QueryFamily, ResourceHints,
 };
-use hawdb_optimizer_vector::plan_vector_search;
 use hawdb_plan_cypher::{plan, VectorCandidateSource, VectorSearchLogicalPlan};
+use hawdb_vector_planning::plan_vector_search;
 
 const QUERY: &str = "MATCH (m:Memory) WHERE m.id = 7 RETURN m.title AS title";
 const EXPECTED: &str = include_str!("testdata/indexed_memory_lookup.golden");

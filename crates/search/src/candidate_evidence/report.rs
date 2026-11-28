@@ -19,7 +19,7 @@ use crate::{
     VectorSearchExecutionOptions, VECTOR_RECALL_VALIDATION_PROTOCOL,
 };
 use hawdb_core::{HawDBError, Result};
-use hawdb_optimizer_vector::AdaptiveVectorBackendPolicy;
+use hawdb_vector_planning::AdaptiveVectorBackendPolicy;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

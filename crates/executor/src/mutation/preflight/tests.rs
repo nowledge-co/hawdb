@@ -435,8 +435,7 @@ impl GraphExecutionWrite for RecordingStore {
         }
         Ok(MutationSummary {
             rows: vec![BTreeMap::from([("committed".into(), Value::Bool(true))])],
-            relational_mutation_outcomes: vec![],
-            append_mutation_outcomes: vec![],
+            ..MutationSummary::default()
         })
     }
 
@@ -452,8 +451,7 @@ impl GraphExecutionWrite for RecordingStore {
         }
         Ok(MutationSummary {
             rows: vec![BTreeMap::from([("committed".into(), Value::Bool(true))])],
-            relational_mutation_outcomes: vec![],
-            append_mutation_outcomes: vec![],
+            ..MutationSummary::default()
         })
     }
 
@@ -463,13 +461,13 @@ impl GraphExecutionWrite for RecordingStore {
         ids: &[NodeId],
         assignments: &[NodeSetAssignment],
         limits: MutationLimits,
-    ) -> Result<Vec<NodeId>> {
+    ) -> Result<hawdb_core::QueryCounters> {
         self.writes
             .push((Write::Set(ids.to_vec(), assignments.to_vec()), limits));
         if self.write_error {
             return Err(sentinel());
         }
-        Ok(ids.to_vec())
+        Ok(hawdb_core::QueryCounters::default())
     }
 
     fn delete_node_ids_with_limits(
@@ -478,13 +476,13 @@ impl GraphExecutionWrite for RecordingStore {
         ids: &[NodeId],
         detach: bool,
         limits: MutationLimits,
-    ) -> Result<Vec<NodeId>> {
+    ) -> Result<hawdb_core::QueryCounters> {
         self.writes
             .push((Write::Delete(ids.to_vec(), detach), limits));
         if self.write_error {
             return Err(sentinel());
         }
-        Ok(ids.to_vec())
+        Ok(hawdb_core::QueryCounters::default())
     }
 
     fn commit_mutation_with_output(
@@ -493,8 +491,9 @@ impl GraphExecutionWrite for RecordingStore {
         mutation: GraphMutation,
         limits: MutationLimits,
         project: &mut crate::store::MutationOutputProjector<'_>,
-    ) -> Result<Vec<crate::Row>> {
+    ) -> Result<(Vec<crate::Row>, hawdb_core::QueryCounters)> {
         let summary = self.commit_mutation_with_limits(catalog, mutation, limits)?;
+        let counters = summary.counters;
         project(
             catalog,
             crate::store::MutationReturnStores {
@@ -503,6 +502,7 @@ impl GraphExecutionWrite for RecordingStore {
             },
             &summary,
         )
+        .map(|rows| (rows, counters))
     }
 }
 

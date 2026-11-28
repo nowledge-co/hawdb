@@ -86,9 +86,12 @@
   Keep preparation-only results separate from synchronized commit throughput
   and p99; the workload and existing CI regression owners are in TEST_INDEX.
 
-- Maintain [docs/TEST_INDEX.md](docs/TEST_INDEX.md) as the test-family index:
-  purpose/failure mode, owning target and execution lane, exact feature or
-  fixture scope, known slow paths/issues and local replay entry points.
+- Maintain the test-family index: one file per family under
+  [docs/test-index/](docs/test-index/README.md) (purpose/failure mode, owning
+  target and execution lane, exact feature or fixture scope, known slow
+  paths/issues and local replay entry points; `Owner:`/`Lane:`/`Replay:` fields
+  are checked by `prek`). [docs/TEST_INDEX.md](docs/TEST_INDEX.md) keeps lanes,
+  shared owners and slow-path evidence; do not append family entries to it.
 - Update the index in the same change when adding, moving, optimizing or
   changing the scope, profile, isolation, timeout or execution lane of tests.
   Keep detailed component specifications linked from the index rather than

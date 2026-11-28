@@ -898,9 +898,7 @@ impl Database {
             }
             self.checkpoint()?;
             return Ok((
-                QueryOutput {
-                    rows: Vec::new().into(),
-                },
+                QueryOutput::from_query_rows(Vec::new().into()),
                 QueryExecutionTrace::uncached(statement),
             ));
         }
@@ -924,7 +922,7 @@ impl Database {
             if is_mutation {
                 self.ensure_writable()?;
             }
-            let (rows, execution_profile) = if is_mutation {
+            let (rows, counters, execution_profile) = if is_mutation {
                 query_runtime_checkpoint(task_context)?;
                 let mut mutation_limits = self.config.mutation_limits;
                 // Graph mutation payloads use MutationLimits, checked by the
@@ -964,55 +962,57 @@ impl Database {
                         })
                         .transpose()
                     })?;
+                let execution = {
+                    let mut branch_runtime_access = self.runtime.get_mut()?;
+                    let branch_runtime = &mut *branch_runtime_access;
+                    hawdb_core::temporal::with_statement_clock(statement_clock, || {
+                        let output_limits = hawdb_executor::result_delivery::OutputLimits {
+                            max_rows: restrictive_query_limit(
+                                self.config.read_result_row_limit(),
+                                output_limits.max_rows,
+                            ),
+                            max_payload_bytes: restrictive_query_limit(
+                                self.config.max_read_result_payload_bytes,
+                                output_limits.max_payload_bytes,
+                            ),
+                        };
+                        if let PhysicalPlan::MatchSetExec(set) = &optimized.physical_plan {
+                            executor::execute_match_set(
+                                set,
+                                parameters,
+                                &mut branch_runtime.catalog,
+                                &mut branch_runtime.store,
+                                mutation_limits,
+                                output_limits,
+                                &self.config.execution_memory,
+                                task_context,
+                            )
+                        } else if let Some(staged) = staged_mutations {
+                            executor::commit_staged_mutations_counted(
+                                &optimized.physical_plan,
+                                staged,
+                                &mut branch_runtime.catalog,
+                                &mut branch_runtime.store,
+                                mutation_limits,
+                                output_limits,
+                                task_context,
+                            )
+                        } else {
+                            executor::execute_mutation_counted(
+                                &optimized.physical_plan,
+                                &mut branch_runtime.catalog,
+                                &mut branch_runtime.store,
+                                mutation_limits,
+                                output_limits,
+                                &self.config.execution_memory,
+                                task_context,
+                            )
+                        }
+                    })
+                }?;
                 (
-                    optimized.collect_named_rows({
-                        let mut branch_runtime_access = self.runtime.get_mut()?;
-                        let branch_runtime = &mut *branch_runtime_access;
-                        hawdb_core::temporal::with_statement_clock(statement_clock, || {
-                            let output_limits = hawdb_executor::result_delivery::OutputLimits {
-                                max_rows: restrictive_query_limit(
-                                    self.config.read_result_row_limit(),
-                                    output_limits.max_rows,
-                                ),
-                                max_payload_bytes: restrictive_query_limit(
-                                    self.config.max_read_result_payload_bytes,
-                                    output_limits.max_payload_bytes,
-                                ),
-                            };
-                            if let PhysicalPlan::MatchSetExec(set) = &optimized.physical_plan {
-                                executor::execute_match_set(
-                                    set,
-                                    parameters,
-                                    &mut branch_runtime.catalog,
-                                    &mut branch_runtime.store,
-                                    mutation_limits,
-                                    output_limits,
-                                    &self.config.execution_memory,
-                                    task_context,
-                                )
-                            } else if let Some(staged) = staged_mutations {
-                                executor::commit_staged_mutations_with_output(
-                                    &optimized.physical_plan,
-                                    staged,
-                                    &mut branch_runtime.catalog,
-                                    &mut branch_runtime.store,
-                                    mutation_limits,
-                                    output_limits,
-                                    task_context,
-                                )
-                            } else {
-                                executor::execute_mutation_with_store_output_limits(
-                                    &optimized.physical_plan,
-                                    &mut branch_runtime.catalog,
-                                    &mut branch_runtime.store,
-                                    mutation_limits,
-                                    output_limits,
-                                    &self.config.execution_memory,
-                                    task_context,
-                                )
-                            }
-                        })
-                    }?)?,
+                    optimized.collect_named_rows(execution.rows)?,
+                    execution.counters,
                     None,
                 )
             } else {
@@ -1053,13 +1053,17 @@ impl Database {
                 } else {
                     self.runtime.get_read()?.execute(request, external)?
                 };
-                (profiled.rows, Some(profiled.profile))
+                (
+                    profiled.rows,
+                    executor::QueryCounters::default(),
+                    Some(profiled.profile),
+                )
             };
             if !is_mutation {
                 query_runtime_checkpoint(task_context)?;
             }
             Ok((
-                QueryOutput { rows },
+                QueryOutput::from_query_rows(rows).with_counters(counters),
                 QueryExecutionTrace {
                     statement,
                     optimizer_cardinality_estimate_scope: capture_trace

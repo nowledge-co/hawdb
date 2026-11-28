@@ -16,7 +16,7 @@ mod logical;
 mod physical;
 mod root;
 
-pub use hawdb_plan_core::vector::*;
+pub use hawdb_vector_planning::vector::*;
 pub use logical::*;
 pub use physical::*;
 pub use root::*;

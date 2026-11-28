@@ -331,10 +331,9 @@ impl DerivedArtifactJobQueue {
                 job.last_output = None;
                 DerivedArtifactJobReport {
                     job: job.clone(),
-                    output: QueryOutput {
-                        rows: vec![derived_artifact_job_failure_row(job, &error.to_string())]
-                            .into(),
-                    },
+                    output: QueryOutput::from_query_rows(
+                        vec![derived_artifact_job_failure_row(job, &error.to_string())].into(),
+                    ),
                 }
             }
         }
@@ -558,9 +557,9 @@ pub fn external_content_artifact_completion_output(
     job: &DerivedArtifactJob,
     completion: ExternalContentArtifactJobCompletion,
 ) -> QueryOutput {
-    QueryOutput {
-        rows: vec![external_content_artifact_completion_row(job, completion)].into(),
-    }
+    QueryOutput::from_query_rows(
+        vec![external_content_artifact_completion_row(job, completion)].into(),
+    )
 }
 
 #[doc(hidden)]

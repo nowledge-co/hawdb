@@ -21,7 +21,7 @@ use crate::schema::{
 };
 use crate::telemetry::TelemetrySink;
 use crate::value::Value;
-use hawdb_core::{DeclaredPropertyDefault, PropertyDefault, RuntimeTaskContext};
+use hawdb_core::{DeclaredPropertyDefault, PropertyDefault, QueryCounters, RuntimeTaskContext};
 use hawdb_integrity::{checksum_u64, Sha256Digest};
 use hawdb_storage::mutation::compact_transaction_graph_ops;
 use hawdb_storage::projection::projection_document_id_for_node as search_projection_document_id_for_node;
@@ -938,6 +938,30 @@ pub use hawdb_storage::consistency::{
     DistinctValueStatisticsConsistencyReport, PropertyIndexConsistencyReport,
 };
 
+/// Largest resident graph, in committed nodes plus relationships, whose planner
+/// statistics are recomputed exactly on every planning request.
+///
+/// Below this bound a full recompute costs about 1-2 ms, which stays bounded
+/// and independent of database growth, and tiny in-memory databases keep exact
+/// statistics. Larger graphs plan from cached distributions that commits,
+/// background maintenance and checkpoints refresh (#2017).
+pub const SYNC_STATISTICS_MAX_RECORDS: u64 = 1_000;
+
+/// Smallest number of committed graph mutation operations since the last
+/// refresh that makes cached optimizer statistics due for a refresh.
+const MIN_STATISTICS_REFRESH_DIRTY_OPERATIONS: u64 = 1_000;
+
+/// Dirty operations above which cached statistics of a graph with `records`
+/// committed records are refreshed: `max(1000, 10% of records)`.
+pub(crate) const fn statistics_refresh_dirty_operation_threshold(records: u64) -> u64 {
+    let proportional = records / 10;
+    if proportional > MIN_STATISTICS_REFRESH_DIRTY_OPERATIONS {
+        proportional
+    } else {
+        MIN_STATISTICS_REFRESH_DIRTY_OPERATIONS
+    }
+}
+
 /// Mutation domains that invalidate an out-of-core advanced-statistics snapshot.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[doc(hidden)]
@@ -984,6 +1008,80 @@ impl AdvancedStatisticsDirtyState {
     }
 }
 
+/// Caller sites of a full optimizer-statistics recomputation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StatisticsRecomputeSite {
+    Planning,
+    Commit,
+    Background,
+    Checkpoint,
+    Forced,
+}
+
+/// Per-database counts of full statistics recomputations. Snapshots and
+/// transaction workspaces share the owning database's counters.
+#[derive(Debug, Default)]
+struct StatisticsRecomputeCounters {
+    planning: AtomicU64,
+    commit: AtomicU64,
+    background: AtomicU64,
+    checkpoint: AtomicU64,
+    forced: AtomicU64,
+    background_refresh_refused: AtomicU64,
+    background_refresh_skipped: AtomicU64,
+    /// Nanoseconds plus one, so zero means no refresh has run.
+    last_refresh_write_guard_hold_nanos: AtomicU64,
+    max_refresh_write_guard_hold_nanos: AtomicU64,
+}
+
+impl StatisticsRecomputeCounters {
+    fn record(&self, site: StatisticsRecomputeSite) {
+        let counter = match site {
+            StatisticsRecomputeSite::Planning => &self.planning,
+            StatisticsRecomputeSite::Commit => &self.commit,
+            StatisticsRecomputeSite::Background => &self.background,
+            StatisticsRecomputeSite::Checkpoint => &self.checkpoint,
+            StatisticsRecomputeSite::Forced => &self.forced,
+        };
+        counter.fetch_add(1, AtomicOrdering::Relaxed);
+    }
+
+    fn record_write_guard_hold(&self, hold: std::time::Duration) {
+        let nanos = u64::try_from(hold.as_nanos()).unwrap_or(u64::MAX - 1);
+        self.last_refresh_write_guard_hold_nanos
+            .store(nanos.saturating_add(1), AtomicOrdering::Relaxed);
+        self.max_refresh_write_guard_hold_nanos
+            .fetch_max(nanos, AtomicOrdering::Relaxed);
+    }
+
+    fn last_write_guard_hold(&self) -> Option<std::time::Duration> {
+        match self
+            .last_refresh_write_guard_hold_nanos
+            .load(AtomicOrdering::Relaxed)
+        {
+            0 => None,
+            nanos => Some(std::time::Duration::from_nanos(nanos - 1)),
+        }
+    }
+
+    fn max_write_guard_hold(&self) -> std::time::Duration {
+        std::time::Duration::from_nanos(
+            self.max_refresh_write_guard_hold_nanos
+                .load(AtomicOrdering::Relaxed),
+        )
+    }
+
+    fn snapshot(&self) -> OptimizerStatisticsRecomputeCounts {
+        OptimizerStatisticsRecomputeCounts {
+            planning: self.planning.load(AtomicOrdering::Relaxed),
+            commit: self.commit.load(AtomicOrdering::Relaxed),
+            background: self.background.load(AtomicOrdering::Relaxed),
+            checkpoint: self.checkpoint.load(AtomicOrdering::Relaxed),
+            forced: self.forced.load(AtomicOrdering::Relaxed),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct SnapshotResidencyObserver {
     segment_cache: Arc<SegmentCache>,
@@ -1017,11 +1115,14 @@ pub struct GraphStore {
     read_dependency_readers: Arc<AtomicUsize>,
     read_dependency_validation_failures: Arc<read_dependencies::ValidationFailureCounters>,
     read_summary_collapses: Arc<AtomicU64>,
+    /// Full logical-record byte walks; shared by snapshots (#2032).
+    logical_record_byte_walks: Arc<AtomicU64>,
     nodes: crate::cow::CowNodeMap,
     relationships: crate::cow::CowRelMap,
     basic_statistics: BasicStatisticsState,
     checkpoint_statistics: CheckpointStatisticsState,
     advanced_statistics_dirty: AdvancedStatisticsDirtyState,
+    statistics_recomputes: Arc<StatisticsRecomputeCounters>,
     outgoing: CowSegmentedMap<(NodeId, RelTypeId), AdjacencyPostingList>,
     incoming: CowSegmentedMap<(NodeId, RelTypeId), AdjacencyPostingList>,
     property_index: NodePropertyIndex,
@@ -1278,7 +1379,11 @@ pub use hawdb_storage::relational::{
 };
 pub use hawdb_storage::{
     relational_index_view::RelationalIndexStorageResidencyReport,
-    residency::{RelationalRowStorageResidencyReport, StorageResidencyReport},
+    residency::{
+        OptimizerStatisticsMaintenanceReport, OptimizerStatisticsPath,
+        OptimizerStatisticsRecomputeCounts, RelationalRowStorageResidencyReport,
+        StorageResidencyReport, UnservedGraphPropertyIndex,
+    },
 };
 
 pub use hawdb_storage::graph_overlay::{GraphNodeIterator, GraphRelationshipIterator};
@@ -1538,11 +1643,7 @@ impl GraphMutationTransaction {
         retain_commit_rows: bool,
     ) -> Result<MutationSummary> {
         if mutations.is_empty() {
-            return Ok(MutationSummary {
-                rows: Vec::new(),
-                relational_mutation_outcomes: Vec::new(),
-                append_mutation_outcomes: Vec::new(),
-            });
+            return Ok(MutationSummary::default());
         }
         let mut captured_ops = Vec::new();
         let summary = self.store.commit_mutations_internal(
@@ -1903,9 +2004,9 @@ impl GraphStore {
         if matches!(mode, DurableOpenMode::ExistingOnly)
             && replay_config.recovery_mode == RecoveryMode::AutoRepairTornTail
         {
-            return Err(HawDBError::Storage(
-                "automatic WAL tail repair requires a writable database open".to_string(),
-            ));
+            return Err(HawDBError::ReadOnly {
+                operation: "automatic WAL tail repair (open read-only with RecoveryMode::Strict)",
+            });
         }
         let total_open_started = std::time::Instant::now();
         if replay_config.max_graph_manifest_open_bytes == 0 {
@@ -2050,11 +2151,13 @@ impl GraphStore {
             read_dependency_readers: Arc::new(AtomicUsize::new(0)),
             read_dependency_validation_failures: Arc::new(Default::default()),
             read_summary_collapses: Arc::new(AtomicU64::new(0)),
+            logical_record_byte_walks: Arc::new(AtomicU64::new(0)),
             nodes: crate::cow::CowNodeMap::default(),
             relationships: crate::cow::CowRelMap::default(),
             basic_statistics: BasicStatisticsState::default(),
             checkpoint_statistics: CheckpointStatisticsState::default(),
             advanced_statistics_dirty: AdvancedStatisticsDirtyState::default(),
+            statistics_recomputes: Arc::default(),
             outgoing: CowSegmentedMap::default(),
             incoming: CowSegmentedMap::default(),
             property_index: CowSegmentedMap::default(),
@@ -2587,11 +2690,13 @@ impl GraphStore {
                 &self.read_dependency_validation_failures,
             ),
             read_summary_collapses: Arc::clone(&self.read_summary_collapses),
+            logical_record_byte_walks: Arc::clone(&self.logical_record_byte_walks),
             nodes: self.nodes.clone(),
             relationships: self.relationships.clone(),
             basic_statistics: self.basic_statistics.clone(),
             checkpoint_statistics: self.checkpoint_statistics.clone(),
             advanced_statistics_dirty: self.advanced_statistics_dirty,
+            statistics_recomputes: Arc::clone(&self.statistics_recomputes),
             outgoing: self.outgoing.clone(),
             incoming: self.incoming.clone(),
             property_index: self.property_index.clone(),
@@ -3419,7 +3524,7 @@ fn pending_node_index(pending_nodes: &[PendingNode], id: NodeId) -> Option<usize
 fn apply_set_relationship_properties_mutation(
     store: &GraphStore,
     catalog: &Catalog,
-    ops: &mut Vec<WalOp>,
+    ops: &mut CountedOps,
     rows: &mut Vec<BTreeMap<String, Value>>,
     pending_nodes: &[PendingNode],
     pending_relationships: &mut [PendingRelationship],
@@ -3659,8 +3764,16 @@ fn node_matches_optional_label_and_filter_checked(
         }))
 }
 
-fn apply_pending_relationship_property(ops: &mut [WalOp], id: RelId, property: &str, value: Value) {
-    for op in ops {
+/// Folds a property write into a relationship created earlier in the batch.
+/// The folded write is counted as executed.
+fn apply_pending_relationship_property(
+    ops: &mut CountedOps,
+    id: RelId,
+    property: &str,
+    value: Value,
+) {
+    ops.counters.properties_set += 1;
+    for op in &mut ops.ops {
         if let WalOp::CreateRelationship {
             id: create_id,
             properties,
@@ -3687,9 +3800,12 @@ fn pending_relationship_ids_for_nodes(
         .collect()
 }
 
-fn remove_pending_node(ops: &mut Vec<WalOp>, pending_nodes: &mut PendingNodes, id: NodeId) {
+/// Deletes a node created earlier in the same batch: its writes leave the
+/// batch, and the delete is counted like any other executed node delete.
+fn remove_pending_node(ops: &mut CountedOps, pending_nodes: &mut PendingNodes, id: NodeId) {
     pending_nodes.remove(id);
-    ops.retain(|op| match op {
+    ops.counters.nodes_deleted += 1;
+    ops.ops.retain(|op| match op {
         WalOp::CreateNode { id: node_id, .. } | WalOp::SetNodeProperty { id: node_id, .. } => {
             *node_id != id
         }
@@ -3697,13 +3813,15 @@ fn remove_pending_node(ops: &mut Vec<WalOp>, pending_nodes: &mut PendingNodes, i
     });
 }
 
+/// [`remove_pending_node`] for a relationship created earlier in the batch.
 fn remove_pending_relationship(
-    ops: &mut Vec<WalOp>,
+    ops: &mut CountedOps,
     pending_relationships: &mut Vec<PendingRelationship>,
     id: RelId,
 ) {
     pending_relationships.retain(|(relationship_id, _, _, _, _)| *relationship_id != id);
-    ops.retain(|op| match op {
+    ops.counters.relationships_deleted += 1;
+    ops.ops.retain(|op| match op {
         WalOp::CreateRelationship {
             id: relationship_id,
             ..
@@ -3714,6 +3832,125 @@ fn remove_pending_relationship(
         } => *relationship_id != id,
         _ => true,
     });
+}
+
+/// The write operations one mutation batch emits, and the counters of every
+/// write it executes.
+///
+/// Counting happens as each write is decided, not from the final operations:
+/// a write folded into a record the batch created earlier, or removed again
+/// by a later delete in the batch, still counts once. The operations are
+/// readable through `Deref`; every change goes through a counting method.
+#[derive(Debug, Default)]
+pub(crate) struct CountedOps {
+    ops: Vec<WalOp>,
+    counters: QueryCounters,
+}
+
+impl std::ops::Deref for CountedOps {
+    type Target = Vec<WalOp>;
+
+    fn deref(&self) -> &Vec<WalOp> {
+        &self.ops
+    }
+}
+
+impl CountedOps {
+    /// Emits `op` and counts it as one executed write.
+    pub(crate) fn push(&mut self, op: WalOp) {
+        count_executed_write(&mut self.counters, &op);
+        self.ops.push(op);
+    }
+
+    pub(crate) fn extend(&mut self, ops: impl IntoIterator<Item = WalOp>) {
+        for op in ops {
+            self.push(op);
+        }
+    }
+
+    /// Emits a create whose statement gave `given_properties` properties.
+    /// The record's map may hold fewer (a MERGE pattern and its ON CREATE
+    /// SET may name the same key) or more (declared defaults).
+    pub(crate) fn push_create(&mut self, op: WalOp, given_properties: usize) {
+        let properties_before = self.counters.properties_set;
+        self.push(op);
+        self.counters.properties_set = properties_before.saturating_add(given_properties as u64);
+    }
+
+    /// Counts a property write folded into a node or relationship this batch
+    /// created earlier.
+    pub(crate) fn count_folded_property_writes(&mut self, writes: usize) {
+        self.counters.properties_set = self.counters.properties_set.saturating_add(writes as u64);
+    }
+
+    /// The emitted operations, for an in-place fold into an earlier create.
+    pub(crate) fn ops_for_fold(&mut self) -> &mut [WalOp] {
+        &mut self.ops
+    }
+
+    pub(crate) fn into_parts(self) -> (Vec<WalOp>, QueryCounters) {
+        (self.ops, self.counters)
+    }
+}
+
+/// Counts one write operation as executed by a statement.
+pub(crate) fn count_executed_write(counters: &mut QueryCounters, op: &WalOp) {
+    match op {
+        WalOp::CreateNode {
+            label, properties, ..
+        } => {
+            counters.nodes_created += 1;
+            counters.labels_added += u64::from(!label.is_empty());
+            counters.properties_set += properties.len() as u64;
+        }
+        WalOp::CreateRelationship { properties, .. } => {
+            counters.relationships_created += 1;
+            counters.properties_set += properties.len() as u64;
+        }
+        WalOp::SetNodeProperty { .. } | WalOp::SetRelationshipProperty { .. } => {
+            counters.properties_set += 1;
+        }
+        WalOp::DeleteNode { .. } => counters.nodes_deleted += 1,
+        WalOp::DeleteRelationship { .. } => counters.relationships_deleted += 1,
+        WalOp::CreateIndex { .. }
+        | WalOp::CreateCompositeIndex { .. }
+        | WalOp::CreateRangeIndex { .. }
+        | WalOp::CreateFullTextIndex { .. } => counters.indexes_added += 1,
+        WalOp::CreateUniqueConstraint { .. }
+        | WalOp::CreateNodePropertyExistsConstraint { .. }
+        | WalOp::CreateRelationshipUniqueConstraint { .. }
+        | WalOp::CreateRelationshipPropertyExistsConstraint { .. } => {
+            counters.constraints_added += 1;
+        }
+        WalOp::Batch(ops) => {
+            for op in ops {
+                count_executed_write(counters, op);
+            }
+        }
+        WalOp::CreateNodeLabel { .. }
+        | WalOp::CreateRelationshipType { .. }
+        | WalOp::CreateNodeTable { .. }
+        | WalOp::CreateRelationshipTable { .. }
+        | WalOp::CreateProperty { .. }
+        | WalOp::AlterTableState { .. }
+        | WalOp::AlterPropertyState { .. }
+        | WalOp::GcTableDescriptor { .. }
+        | WalOp::GcPropertyDescriptor { .. }
+        | WalOp::ProjectGraph { .. }
+        | WalOp::MarkInitialImportSource { .. }
+        | WalOp::Relational { .. }
+        | WalOp::RelationalSnapshot { .. }
+        | WalOp::Append { .. } => {}
+    }
+}
+
+/// Counts writes a non-batched mutation executes as these operations.
+pub(crate) fn count_executed_writes(ops: &[WalOp]) -> QueryCounters {
+    let mut counters = QueryCounters::default();
+    for op in ops {
+        count_executed_write(&mut counters, op);
+    }
+    counters
 }
 
 fn merge_relationship_row(
@@ -4790,6 +5027,7 @@ mod tests {
 
     include!("store/tests/graph_store_cases_1.rs");
     include!("store/tests/graph_store_cases_2.rs");
+    include!("store/tests/logical_record_bytes.rs");
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

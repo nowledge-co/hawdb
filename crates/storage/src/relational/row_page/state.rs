@@ -54,6 +54,14 @@ pub struct RelationalRowPageState {
     /// instead, so it stays incremental; the WAL stays authoritative until it
     /// publishes (#1942).
     pub schema_checkpoint_can_wait: bool,
+    /// Set when a read-only handle recovered commits after the checkpoint
+    /// that no writer has published as a row delta. Building that delta
+    /// would write under the database root, so relational row reads refuse
+    /// with a typed read-only error instead (#2029).
+    pub read_only_unpublished_row_delta: bool,
+    /// The checkpoint read view advanced by each replayed commit during
+    /// read-only recovery, held until recovery finishes (#2029).
+    pub read_only_replay_view: Option<Arc<RelationalRowPageReadView>>,
     pub monotonic_append_fast_path_enabled: bool,
     pub monotonic_append_metrics: Arc<RelationalMonotonicAppendMetrics>,
 }
@@ -171,6 +179,8 @@ impl RelationalRowPageState {
                 .clone()
                 .filter(|rewrite| rewrite.view.identity().visible_commit_epoch == commit_epoch),
             schema_checkpoint_can_wait: self.schema_checkpoint_can_wait,
+            read_only_unpublished_row_delta: self.read_only_unpublished_row_delta,
+            read_only_replay_view: None,
             monotonic_append_fast_path_enabled: self.monotonic_append_fast_path_enabled,
             monotonic_append_metrics: Arc::clone(&self.monotonic_append_metrics),
         }

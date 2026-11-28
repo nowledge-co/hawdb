@@ -785,7 +785,10 @@ WAL. Reader pins always override the policy, and unpinned intermediate
 generations are reclaimed even while an older reader remains active.
 Reclamation also follows retained row-page, overflow-extent, and append
 manifests so shared physical artifacts outlive every reader that can still
-reference them.
+reference them. The proposed block-level COW layout that would let current and
+previous graph generations share unchanged canonical/adjacency/property blocks
+is specified in [`BLOCK_COW_CHECKPOINT_SPEC.md`](specs/BLOCK_COW_CHECKPOINT_SPEC.md)
+and tracked by [#2020](https://github.com/nowledge-co/hawdb/issues/2020).
 
 An admitted branch keeps its private WAL beside `branch.head`
 (`branches/<id>/wal.<generation>.hawdb`), outside the data root. Each

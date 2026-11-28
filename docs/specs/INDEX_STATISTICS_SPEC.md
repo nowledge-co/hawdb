@@ -88,9 +88,37 @@ only catalog and resident sample metadata. A candidate exists only for a
 writable, durable, out-of-core store with at least one supported index whose
 sample is missing or stale. Full-text descriptors remain excluded.
 
-The candidate uses the `Projection` QoS lane. Its estimated operation count is
-the current canonical node plus relationship count, clamped to at least one so
-an empty indexed database still publishes an exact zero sample. Missing sample
+A writable, durable resident store above `SYNC_STATISTICS_MAX_RECORDS` (1,000
+committed nodes plus relationships) is also a candidate when a supported sample
+is missing or stale, its distributions are unavailable, or graph mutation
+operations committed since the last refresh exceed `max(1000, 10% of records)`
+(#2017). Its refresh recomputes from resident records under the same
+`max_input_records` bound, publishes without a checkpoint (a resident
+checkpoint recomputes statistics itself), and reports
+`checkpoint_persisted = false`. A resident store at or below the bound
+recomputes exact statistics for every plan and has no candidate. A resident
+store without durable storage has no background task: the commit that crosses
+the bound, and any commit after which dirty operations exceed the same
+threshold, refreshes synchronously. Writes staged in an explicit transaction
+count only when it commits. `StorageResidencyReport::optimizer_statistics`
+reports the active path, commit lag, dirty operations and full recomputations
+by caller site.
+
+The candidate uses the `Projection` QoS lane. Its record allowance is the
+current node plus relationship count, at least one so an empty indexed database
+still publishes an exact zero sample. A refresh is one whole-graph maintenance
+pass bounded by its own allowance (`max_input_records`, the refresh memory
+budget), so its QoS charge is that record count clamped to the policy's
+per-task cap (`max_background_operations`): the default policy admits a refresh
+of any size as one full task slot without host configuration. Background
+enablement and the total and per-class budgets still apply (#2017). When the
+database has a runtime governor, the refresh also tries, without waiting, to
+admit `memory_budget_bytes` as background maintenance memory; if that is
+unavailable the refresh returns `None`, increments
+`optimizer_statistics.background_refresh_skipped`, and a later pass retries. A
+QoS refusal remains an error and increments `background_refresh_refused`. Each
+refresh records its database write-guard hold time
+(`last_refresh_write_guard_hold`, `max_refresh_write_guard_hold`). Missing sample
 count and stale `updates_since_sample` contribute to the recent-delta hint; the
 gap between the current commit epoch and published statistics epoch contributes
 to the source-commit-lag hint. This estimate does not replace the refresh's hard

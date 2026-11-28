@@ -21,7 +21,7 @@ pub use hawdb_optimizer_relational::{
     relational, relational_join, relational_join_hypergraph, relational_join_rewrite,
     relational_planning, relational_profile, relational_sargability,
 };
-pub use hawdb_optimizer_vector::vector;
+pub use hawdb_vector_planning::optimizer as vector;
 
 pub use context::{
     ExplainMode, OptimizerContext, QueryFamily, ResourceHints, StatementClass, TraceSink,

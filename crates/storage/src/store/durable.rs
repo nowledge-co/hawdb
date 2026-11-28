@@ -171,6 +171,8 @@ pub(super) struct DurableStore {
     // maintenance result. A checkpoint-source clone must not hide a failed
     // reclamation from admission, pressure reports, or the next retry.
     generation_reclamation_debt: Arc<std::sync::Mutex<GenerationReclamationDebt>>,
+    /// Persistent property projection builds refused by a budget (#2019).
+    pub(super) property_projection_budget_refusals: Arc<PropertyProjectionBudgetRefusals>,
     wal_free_space_probe: WalFreeSpaceProbeState,
 }
 
@@ -248,6 +250,84 @@ pub struct PreparedCheckpoint {
 }
 
 pub(super) use hawdb_storage::derived_repair::DerivedArtifactBuildConfig;
+
+/// What a read-only branch admission supplies instead of a mounted runtime.
+pub(super) struct ReadOnlyBranchMount {
+    pub(super) manifest: DurableManifest,
+    pub(super) branch_lease: Arc<DatabaseDirectoryLease>,
+}
+
+/// Persistent property projection builds a checkpoint refused because a
+/// projection budget was exceeded. The checkpoint fails and its indexes stay
+/// served by canonical scans; hosts see the count and the last reason (#2019).
+#[derive(Debug, Default)]
+pub(super) struct PropertyProjectionBudgetRefusals {
+    count: std::sync::atomic::AtomicU64,
+    last_reason: std::sync::Mutex<Option<String>>,
+    /// Builds still to refuse as if over the definition budget (tests only).
+    #[cfg(any(test, feature = "test-support", debug_assertions))]
+    forced: std::sync::atomic::AtomicU64,
+}
+
+impl PropertyProjectionBudgetRefusals {
+    /// Records `error` if it is a budget refusal.
+    pub(super) fn record(
+        &self,
+        error: &hawdb_storage::property_projection::PersistentPropertyProjectionError,
+    ) {
+        use hawdb_storage::property_projection::PersistentPropertyProjectionError as Error;
+        if matches!(
+            error,
+            Error::MemoryBudgetExceeded { .. }
+                | Error::SpillBudgetExceeded { .. }
+                | Error::SpillRunBudgetExceeded { .. }
+                | Error::GeneratedEntryBudgetExceeded { .. }
+                | Error::DefinitionCountBudgetExceeded { .. }
+                | Error::DefinitionBytesBudgetExceeded { .. }
+        ) {
+            self.count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            *self
+                .last_reason
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = Some(error.to_string());
+        }
+    }
+
+    /// Takes one forced refusal armed by
+    /// `GraphStore::force_property_projection_budget_refusals`.
+    #[cfg(any(test, feature = "test-support", debug_assertions))]
+    pub(super) fn take_forced(
+        &self,
+    ) -> Option<hawdb_storage::property_projection::PersistentPropertyProjectionError> {
+        use std::sync::atomic::Ordering;
+        self.forced
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |left| left.checked_sub(1))
+            .ok()
+            .map(|_| {
+                hawdb_storage::property_projection::PersistentPropertyProjectionError::DefinitionCountBudgetExceeded {
+                    required_definitions: 1,
+                    max_definitions: 0,
+                }
+            })
+    }
+
+    #[cfg(any(test, feature = "test-support", debug_assertions))]
+    pub(super) fn force(&self, builds: u64) {
+        self.forced
+            .store(builds, std::sync::atomic::Ordering::Release);
+    }
+
+    pub(super) fn snapshot(&self) -> (u64, Option<String>) {
+        (
+            self.count.load(std::sync::atomic::Ordering::Relaxed),
+            self.last_reason
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone(),
+        )
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 struct DurableStoreOpenOptions {
@@ -464,7 +544,7 @@ impl DurableStore {
         durability: DurabilityPolicy,
         options: DurableStoreOpenOptions,
     ) -> Result<Self> {
-        Self::open_existing_with_artifacts(path, path, durability, options)
+        Self::open_existing_with_artifacts(path, path, durability, options, None)
     }
 
     pub(super) fn open_branch_runtime(
@@ -479,21 +559,55 @@ impl DurableStore {
             runtime_path,
             artifact_path,
             durability,
-            DurableStoreOpenOptions {
-                read_only,
-                initialize_if_empty: false,
-                load_rebuildable_artifacts,
-                segment_cache_capacity_bytes: replay_config.segment_cache_capacity_bytes,
-                max_graph_manifest_open_bytes: replay_config.max_graph_manifest_open_bytes,
-                max_wal_bytes: replay_config.max_bytes,
-                max_record_bytes: replay_config.max_record_bytes,
-                max_batch_operations: replay_config.max_batch_operations,
-                checkpoint_generation_retention: replay_config.checkpoint_generation_retention,
-                automatic_tail_repair: None,
-            },
+            Self::branch_runtime_open_options(read_only, load_rebuildable_artifacts, replay_config),
+            None,
         )?;
-        store.recovery_artifact_writes_allowed = true;
+        // Recovery may persist row-delta artifacts only for a writable owner;
+        // a read-only admission keeps recovered state in memory (#2029).
+        store.recovery_artifact_writes_allowed = !read_only;
         Ok(store)
+    }
+
+    /// Opens a read-only branch runtime without mounting it on disk (#2029).
+    ///
+    /// The sealed root's manifest is supplied from the immutable object store
+    /// and the admission's branch lease excludes every other owner, so the
+    /// disposable `runtime/` directory is neither recreated nor locked, and
+    /// recovery never persists artifacts: replayed state stays in memory.
+    pub(super) fn open_branch_runtime_read_only(
+        runtime_path: &Path,
+        artifact_path: &Path,
+        durability: DurabilityPolicy,
+        replay_config: WalReplayConfig,
+        load_rebuildable_artifacts: bool,
+        mount: ReadOnlyBranchMount,
+    ) -> Result<Self> {
+        Self::open_existing_with_artifacts(
+            runtime_path,
+            artifact_path,
+            durability,
+            Self::branch_runtime_open_options(true, load_rebuildable_artifacts, replay_config),
+            Some(mount),
+        )
+    }
+
+    fn branch_runtime_open_options(
+        read_only: bool,
+        load_rebuildable_artifacts: bool,
+        replay_config: WalReplayConfig,
+    ) -> DurableStoreOpenOptions {
+        DurableStoreOpenOptions {
+            read_only,
+            initialize_if_empty: false,
+            load_rebuildable_artifacts,
+            segment_cache_capacity_bytes: replay_config.segment_cache_capacity_bytes,
+            max_graph_manifest_open_bytes: replay_config.max_graph_manifest_open_bytes,
+            max_wal_bytes: replay_config.max_bytes,
+            max_record_bytes: replay_config.max_record_bytes,
+            max_batch_operations: replay_config.max_batch_operations,
+            checkpoint_generation_retention: replay_config.checkpoint_generation_retention,
+            automatic_tail_repair: None,
+        }
     }
 
     fn open_existing_with_artifacts(
@@ -501,6 +615,7 @@ impl DurableStore {
         artifact_path: &Path,
         durability: DurabilityPolicy,
         options: DurableStoreOpenOptions,
+        read_only_mount: Option<ReadOnlyBranchMount>,
     ) -> Result<Self> {
         let DurableStoreOpenOptions {
             read_only,
@@ -520,20 +635,30 @@ impl DurableStore {
             ));
         }
         let project_files = crate::file_descriptors::ProjectFileDescriptors::registered(path)?;
-        let directory_lease =
-            DatabaseDirectoryLease::acquire(path).map_err(HawDBError::from_storage_error)?;
-        if load_rebuildable_artifacts {
-            derived_repair::reject_pending_derived_artifact_repair(path)?;
-        }
+        let manifest_path = path.join(MANIFEST_FILE);
+        let (directory_lease, preloaded_manifest) = match read_only_mount {
+            // An unmounted read-only runtime has no private files to inspect.
+            Some(mount) => (mount.branch_lease, Some(mount.manifest)),
+            None => {
+                let lease = DatabaseDirectoryLease::acquire(path)
+                    .map_err(HawDBError::from_storage_error)?;
+                if load_rebuildable_artifacts {
+                    derived_repair::reject_pending_derived_artifact_repair(path)?;
+                }
+                (Arc::new(lease), None)
+            }
+        };
         let wal_tail_repair = match automatic_tail_repair {
             Some(config) => doctor::resume_automatic_wal_tail_repair_locked(path, config)?,
+            None if preloaded_manifest.is_some() => None,
             None => {
                 doctor::reject_pending_wal_doctor_repair(path)?;
                 None
             }
         };
-        let manifest_path = path.join(MANIFEST_FILE);
-        let manifest = if fs::try_exists(&manifest_path)? {
+        let manifest = if let Some(manifest) = preloaded_manifest {
+            manifest
+        } else if fs::try_exists(&manifest_path)? {
             DurableManifest::load(&manifest_path)?
         } else if has_storage_artifacts(path)? {
             return Err(HawDBError::Storage(
@@ -609,7 +734,7 @@ impl DurableStore {
         );
         Ok(Self {
             project_files,
-            _directory_lease: Arc::new(directory_lease),
+            _directory_lease: directory_lease,
             branch_runtime: None,
             allocation_project: None,
             recovery_artifact_writes_allowed: !read_only,
@@ -692,6 +817,7 @@ impl DurableStore {
             generation_reclamation_debt: Arc::new(std::sync::Mutex::new(
                 GenerationReclamationDebt::default(),
             )),
+            property_projection_budget_refusals: Arc::default(),
             wal_free_space_probe: WalFreeSpaceProbeState::default(),
         })
     }

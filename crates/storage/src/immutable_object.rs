@@ -44,7 +44,7 @@ pub use published::{record_verified_file, verified_file_unchanged, VerifiedFileS
 const OBJECTS_DIRECTORY: &str = "objects";
 const STAGING_DIRECTORY: &str = ".staging";
 const IDENTITY_DOMAIN: &[u8] = b"HAWDB-IMMUTABLE-OBJECT-V1\0";
-const DEFAULT_MAX_OBJECT_BYTES: u64 = 128 * 1024 * 1024;
+pub(crate) const DEFAULT_MAX_OBJECT_BYTES: u64 = 128 * 1024 * 1024;
 /// Checkpoint data and artifacts are only ever streamed (published, verified
 /// and mounted in bounded buffers), so their size is bounded by the
 /// checkpoint encoding limit rather than by the in-memory object bound.
@@ -117,6 +117,7 @@ pub enum ObjectKind {
     SealedRoot = 3,
     CheckpointArtifact = 4,
     DurableManifest = 5,
+    CheckpointBlock = 6,
 }
 
 impl ObjectKind {
@@ -126,7 +127,8 @@ impl ObjectKind {
             Self::Checkpoint
             | Self::SealedWal
             | Self::CheckpointArtifact
-            | Self::DurableManifest => 1,
+            | Self::DurableManifest
+            | Self::CheckpointBlock => 1,
         }
     }
 
@@ -137,6 +139,7 @@ impl ObjectKind {
             Self::SealedRoot => "sealed-root",
             Self::CheckpointArtifact => "checkpoint-artifact",
             Self::DurableManifest => "durable-manifest",
+            Self::CheckpointBlock => "checkpoint-block",
         }
     }
 }
@@ -513,9 +516,9 @@ impl ImmutableObjectStore {
     /// paths. Buffered APIs (`publish`, `read`) always use the in-memory bound.
     fn streamed_limit(&self, kind: ObjectKind) -> u64 {
         match kind {
-            ObjectKind::Checkpoint | ObjectKind::CheckpointArtifact => {
-                self.max_streamed_object_bytes
-            }
+            ObjectKind::Checkpoint
+            | ObjectKind::CheckpointArtifact
+            | ObjectKind::CheckpointBlock => self.max_streamed_object_bytes,
             ObjectKind::SealedWal | ObjectKind::SealedRoot | ObjectKind::DurableManifest => {
                 self.max_object_bytes
             }
@@ -573,6 +576,7 @@ impl ImmutableObjectStore {
             ObjectKind::SealedRoot,
             ObjectKind::CheckpointArtifact,
             ObjectKind::DurableManifest,
+            ObjectKind::CheckpointBlock,
         ]
         .into_iter()
         .map(|kind| (kind.directory(), Some(kind)))
@@ -1012,6 +1016,7 @@ impl ImmutableObjectStore {
                 ObjectKind::SealedRoot,
                 ObjectKind::CheckpointArtifact,
                 ObjectKind::DurableManifest,
+                ObjectKind::CheckpointBlock,
             ]
             .into_iter()
             .map(|kind| (kind.directory(), Some(kind)))

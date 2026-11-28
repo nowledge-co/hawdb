@@ -48,6 +48,7 @@ mkdir -p "$FAKE_NATIVE_ROOT/testlogs/$relative"
 printf '%s\n' "$name" >"$FAKE_NATIVE_ROOT/testlogs/$relative/test.xml"
 printf '%s\n' "$name" >"$FAKE_NATIVE_ROOT/testlogs/$relative/test.log"
 if [[ "$name" == go ]]; then echo '--- PASS: TestNative (0.00s)'; exit 0; fi
+if [[ "${FAKE_NATIVE_MODE:-}" == incomplete ]]; then echo 'running 19 tests'; exit 0; fi
 count=1
 case "$name" in
   *branch_project_open) count=2 ;;
@@ -124,3 +125,22 @@ if POWER_LOSS_TEST_THREADS=3 bash "$root/scripts/run-windows-native-bazel.sh" ab
   echo 'native runner accepted unsupported fault concurrency' >&2; exit 1
 fi
 printf 'PASS | native shard selections and negative controls\n'
+
+# A zero-exit Bazel invocation without a terminal Rust summary is still a
+# failure. Diagnostic launch failures must be retained rather than waived.
+export WINDOWS_NATIVE_RESULTS="$fixture/refuse-incomplete"
+if FAKE_NATIVE_MODE=incomplete bash "$root/scripts/run-windows-native-bazel.sh" bindings >"$fixture/refuse-incomplete.log" 2>&1; then
+  echo 'native runner accepted incomplete Rust output' >&2; exit 1
+fi
+if ! grep -q 'without a complete positive Rust test summary' "$fixture/refuse-incomplete.log" ||
+   [[ ! -s "$WINDOWS_NATIVE_RESULTS/retained-ffi-diagnostic/parallel.json" ]] ||
+   [[ ! -s "$WINDOWS_NATIVE_RESULTS/retained-ffi-diagnostic/serial.json" ]]; then
+  cat "$fixture/refuse-incomplete.log" >&2
+  echo 'incomplete-output diagnostic did not produce the expected evidence' >&2
+  exit 1
+fi
+diagnostic_test="$root/scripts/diagnose-retained-ffi.test.py"
+if command -v cygpath >/dev/null 2>&1; then
+  diagnostic_test="$(cygpath -m "$diagnostic_test")"
+fi
+python3 "$diagnostic_test"

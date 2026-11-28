@@ -17,7 +17,20 @@ The protocol follows the useful local subset of TiDB bootstrap upgrades:
 
 1. Each owner has an append-only migration list, contiguous from version 1.
 2. A migration identity includes owner, version, name, and the ordered SQL
-   statement bytes. HawDB persists its SHA-256 checksum.
+   statement bytes. HawDB persists its SHA-256 checksum. A migration may also
+   carry Cypher graph schema DDL (`SystemSchemaMigration::with_cypher`): index
+   and constraint creation only, applied after the migration's SQL in the same
+   transaction. A non-empty Cypher section is hashed after a
+   `hawdb-system-schema-cypher-v1` tag, so SQL-only checksums are unchanged
+   and a Cypher statement never hashes like SQL of the same text. Any other
+   Cypher (data writes, reads, transaction control, `CHECKPOINT`) is refused
+   before any write. Creating an index that already exists with the same
+   label, property and kind is a no-op and the migration is still recorded; an
+   index of another kind is a separate index. On an out-of-core handle the
+   apply checkpoints after the commit when a registry index is not yet served
+   by the persistent projection (#2019), so the host's first write seeks it. A
+   failed checkpoint is returned as an error after the migration is recorded;
+   the next apply retries it.
 3. Existing migration identities and checksums are verified before any write.
 4. All pending DDL and migration records for one owner are staged in one mixed
    graph/relational transaction and published by one WAL commit.
@@ -141,6 +154,9 @@ Focused HawDB tests must prove:
 - restart idempotency without an extra commit;
 - checksum and future-version rejection;
 - failed DDL does not publish a migration version;
+- a Cypher graph index migration backfills existing nodes, applies once and is
+  used by reads and writes; a failing Cypher statement publishes no owner;
+  non-DDL Cypher is refused; SQL-only checksums match a golden value;
 - read-only open rejects pending upgrades;
 - ordinary SQL and application migrations cannot modify the engine registry;
 - logical dump import restores application records, installed and pending,

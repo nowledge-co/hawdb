@@ -406,6 +406,7 @@ impl GraphStore {
     }
 
     fn inherit_live_checkpoint_ownership(&mut self, source: &mut Self) {
+        self.logical_record_byte_walks = Arc::clone(&source.logical_record_byte_walks);
         self.checkpoint_capture_started = source.checkpoint_capture_started;
         self.version_index = source.version_index.clone();
         self.version_snapshot_pins = source.version_snapshot_pins.clone();
@@ -419,6 +420,7 @@ impl GraphStore {
             source.search_projection_change_log_retained_bytes;
         self.checkpoint_statistics = source.checkpoint_statistics.clone();
         self.advanced_statistics_dirty = source.advanced_statistics_dirty;
+        self.statistics_recomputes = Arc::clone(&source.statistics_recomputes);
         self.runtime_governor = source.runtime_governor.clone();
         self.projection_generations = source.projection_generations.take();
         self.snapshot_file_context = source.snapshot_file_context.clone();

@@ -44,6 +44,7 @@ pub struct SystemSchemaMigration {
     version: u64,
     name: String,
     statements: Vec<String>,
+    cypher_statements: Vec<String>,
 }
 
 impl SystemSchemaMigration {
@@ -56,7 +57,18 @@ impl SystemSchemaMigration {
             version,
             name: name.into(),
             statements: statements.into_iter().map(Into::into).collect(),
+            cypher_statements: Vec::new(),
         }
+    }
+
+    /// Adds Cypher graph schema DDL (index and constraint creation) to this
+    /// migration. It runs after the migration's SQL statements, in the same
+    /// transaction as every other pending migration and the registry records.
+    #[must_use]
+    pub fn with_cypher(mut self, statements: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.cypher_statements
+            .extend(statements.into_iter().map(Into::into));
+        self
     }
 
     pub const fn version(&self) -> u64 {
@@ -67,8 +79,14 @@ impl SystemSchemaMigration {
         &self.name
     }
 
+    /// The migration's SQL statements.
     pub fn statements(&self) -> &[String] {
         &self.statements
+    }
+
+    /// The migration's Cypher graph schema statements, applied after its SQL.
+    pub fn cypher_statements(&self) -> &[String] {
+        &self.cypher_statements
     }
 
     pub fn checksum(&self, owner: &str) -> String {
@@ -79,6 +97,14 @@ impl SystemSchemaMigration {
         hash_component(&mut hasher, self.name.as_bytes());
         for statement in &self.statements {
             hash_component(&mut hasher, statement.as_bytes());
+        }
+        // SQL-only migrations keep their original checksum; a Cypher section
+        // is tagged so it cannot collide with an SQL statement of the same text.
+        if !self.cypher_statements.is_empty() {
+            hash_component(&mut hasher, b"hawdb-system-schema-cypher-v1");
+            for statement in &self.cypher_statements {
+                hash_component(&mut hasher, statement.as_bytes());
+            }
         }
         hasher.finish().sha256.to_string()
     }
@@ -346,10 +372,11 @@ pub fn validate_system_schema_registry(registry: &SystemSchemaRegistry) -> Resul
                 registry.owner, migration.version
             )));
         }
-        if migration.statements.is_empty()
+        if (migration.statements.is_empty() && migration.cypher_statements.is_empty())
             || migration
                 .statements
                 .iter()
+                .chain(&migration.cypher_statements)
                 .any(|statement| statement.trim().is_empty())
         {
             return Err(HawDBError::Semantic(format!(
@@ -681,6 +708,65 @@ mod tests {
         ENGINE_SYSTEM_SCHEMA_OWNER,
     };
     use hawdb_storage::relational::RelationalState;
+
+    /// Checksums recorded by earlier releases must keep verifying: an
+    /// SQL-only migration hashes exactly as before Cypher sections existed.
+    /// The literal was computed on main before this change (d0f843719).
+    #[test]
+    fn sql_only_migration_checksum_is_unchanged_and_cypher_is_bound() {
+        let sql_only = SystemSchemaMigration::new(
+            3,
+            "create_documents",
+            [
+                "CREATE TABLE documents (id TEXT PRIMARY KEY)",
+                "CREATE INDEX documents_id ON documents (id)",
+            ],
+        );
+        assert_eq!(
+            sql_only.checksum("nowledge.content_store"),
+            "49f206e403a6f05cf9bc6d09d6dc30634ecf1a6781bb2f9f4e68de951fcedc32"
+        );
+        assert_eq!(
+            sql_only
+                .clone()
+                .with_cypher(Vec::<String>::new())
+                .checksum("nowledge.content_store"),
+            sql_only.checksum("nowledge.content_store")
+        );
+        let with_cypher = sql_only
+            .clone()
+            .with_cypher(["CREATE INDEX ON :Memory(id)"]);
+        assert_ne!(
+            with_cypher.checksum("nowledge.content_store"),
+            sql_only.checksum("nowledge.content_store")
+        );
+        // A Cypher statement never hashes like an SQL statement of the same text.
+        let as_sql = SystemSchemaMigration::new(
+            3,
+            "create_documents",
+            [
+                "CREATE TABLE documents (id TEXT PRIMARY KEY)",
+                "CREATE INDEX documents_id ON documents (id)",
+                "CREATE INDEX ON :Memory(id)",
+            ],
+        );
+        assert_ne!(
+            with_cypher.checksum("nowledge.content_store"),
+            as_sql.checksum("nowledge.content_store")
+        );
+        // A Cypher-only migration is valid; empty Cypher text is not.
+        let cypher_only = SystemSchemaRegistry::new(
+            "nowledge.graph",
+            [SystemSchemaMigration::new(1, "index", Vec::<String>::new())
+                .with_cypher(["CREATE INDEX ON :Memory(id)"])],
+        );
+        validate_system_schema_registry(&cypher_only).unwrap();
+        let blank = SystemSchemaRegistry::new(
+            "nowledge.graph",
+            [SystemSchemaMigration::new(1, "index", Vec::<String>::new()).with_cypher([" "])],
+        );
+        assert!(validate_system_schema_registry(&blank).is_err());
+    }
 
     #[test]
     fn migration_checksum_binds_owner_order_and_statement_boundaries() {

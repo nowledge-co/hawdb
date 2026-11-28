@@ -218,9 +218,7 @@ fn concurrent_cache_stats(database: &ConcurrentDatabase) -> PlanCacheStats {
     database
         .with_autocommit_exclusive(|owner| {
             stats = Some(owner.plan_cache_stats()?);
-            Ok(QueryOutput {
-                rows: Vec::new().into(),
-            })
+            Ok(QueryOutput::from_query_rows(Vec::new().into()))
         })
         .unwrap();
     stats.unwrap()

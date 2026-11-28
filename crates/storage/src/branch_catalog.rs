@@ -1811,13 +1811,7 @@ pub struct CatalogMetadataLease {
 
 impl CatalogMetadataLease {
     pub fn acquire(project_directory: &Path) -> io::Result<Self> {
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(project_directory.join(METADATA_LOCK_FILE))?;
-        Self::try_lock_file(file)
+        Self::try_lock_file(open_metadata_lock_file(project_directory)?)
     }
 
     pub(crate) fn acquire_captured(
@@ -1838,15 +1832,29 @@ impl CatalogMetadataLease {
     }
 
     pub fn acquire_blocking(project_directory: &Path) -> io::Result<Self> {
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(project_directory.join(METADATA_LOCK_FILE))?;
+        let file = open_metadata_lock_file(project_directory)?;
         file.lock()?;
         Ok(Self { file })
     }
+}
+
+/// Opens the metadata lock read-write, or an existing one read-only on
+/// read-only media: locking never needs write access (#2029).
+fn open_metadata_lock_file(project_directory: &Path) -> io::Result<File> {
+    let path = project_directory.join(METADATA_LOCK_FILE);
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .or_else(|error| {
+            if crate::file_io::lock_requires_read_only_open(&error) {
+                OpenOptions::new().read(true).open(&path)
+            } else {
+                Err(error)
+            }
+        })
 }
 
 impl Drop for CatalogMetadataLease {

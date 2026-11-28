@@ -643,9 +643,9 @@ pub fn query_sql_with_params<Store: SystemSqlStore>(
             ),
         ));
     }
-    Ok(QueryOutput {
-        rows: QueryRows::try_from_named_rows(schema, rows)?,
-    })
+    Ok(QueryOutput::from_query_rows(
+        QueryRows::try_from_named_rows(schema, rows)?,
+    ))
 }
 
 fn plan_sql(sql_text: &str, parameters: &[Value]) -> Result<SqlLogicalPlan> {

@@ -30,7 +30,7 @@ use crate::result_delivery::OutputLimits;
 use crate::store::{GraphExecutionRead, GraphExecutionWrite, ScanControl};
 use crate::Row;
 use crate::{ExecutionMemoryConfig, QueryMemoryLedger};
-use hawdb_core::{Catalog, HawDBError, Result, RuntimeTaskContext, Value};
+use hawdb_core::{Catalog, HawDBError, QueryCounters, Result, RuntimeTaskContext, Value};
 use hawdb_plan_cypher::{
     BatchMutationOperation, BatchMutationValue, PhysicalPlan, Predicate,
     SetNodePropertiesReturnMode,
@@ -65,6 +65,23 @@ pub fn execute_mutation_with_store(
     )
 }
 
+/// The rows of one committed mutation statement and the counters of the
+/// writes it executed (see [`QueryCounters`]).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MutationExecution {
+    pub rows: Vec<Row>,
+    pub counters: QueryCounters,
+}
+
+impl MutationExecution {
+    fn from_summary(summary: hawdb_storage::mutation::MutationSummary) -> Self {
+        Self {
+            rows: summary.rows,
+            counters: summary.counters,
+        }
+    }
+}
+
 /// Applies query output limits to explicit RETURN rows before committing.
 /// Storage mutation summaries remain governed by `MutationLimits`. A staged
 /// `UNWIND` batch charges its endpoint resolution to a statement ledger built
@@ -78,6 +95,29 @@ pub fn execute_mutation_with_store_output_limits(
     memory: &ExecutionMemoryConfig,
     task_context: Option<&RuntimeTaskContext>,
 ) -> Result<Vec<Row>> {
+    execute_mutation_counted(
+        plan,
+        catalog,
+        store,
+        limits,
+        output_limits,
+        memory,
+        task_context,
+    )
+    .map(|execution| execution.rows)
+}
+
+/// [`execute_mutation_with_store_output_limits`], also returning the
+/// counters of the writes the statement executed.
+pub fn execute_mutation_counted(
+    plan: &PhysicalPlan,
+    catalog: &mut Catalog,
+    store: &mut dyn GraphExecutionWrite,
+    limits: MutationLimits,
+    output_limits: OutputLimits,
+    memory: &ExecutionMemoryConfig,
+    task_context: Option<&RuntimeTaskContext>,
+) -> Result<MutationExecution> {
     runtime_checkpoint(task_context)?;
     if let PhysicalPlan::UnwindMutation {
         rows,
@@ -91,7 +131,7 @@ pub fn execute_mutation_with_store_output_limits(
         let mut staged =
             stage_unwind_mutations(rows, variable, operation, limits, &ledger, task_context)?;
         staged.resolve_endpoints(catalog, &*store, limits, memory, task_context)?;
-        return commit_staged_mutations_with_output(
+        return commit_staged_mutations_counted(
             plan,
             staged,
             catalog,
@@ -118,7 +158,7 @@ pub fn execute_mutation_with_store_output_limits(
             task_context,
         )?;
         runtime_checkpoint(task_context)?;
-        return store.commit_mutation_with_output(
+        let (rows, counters) = store.commit_mutation_with_output(
             catalog,
             command,
             super::mutation_return_staging_limits(limits),
@@ -133,7 +173,8 @@ pub fn execute_mutation_with_store_output_limits(
                     task_context,
                 )
             },
-        );
+        )?;
+        return Ok(MutationExecution { rows, counters });
     }
     if let PhysicalPlan::SetNodePropertiesReturn {
         variable,
@@ -160,12 +201,12 @@ pub fn execute_mutation_with_store_output_limits(
     match mutation_command(plan) {
         Ok(Some(mutation)) => store
             .commit_mutation_with_limits(catalog, mutation, limits)
-            .map(|summary| summary.rows),
+            .map(MutationExecution::from_summary),
         Ok(None) => Err(HawDBError::Execution(
             "physical plan is not an executable mutation".to_string(),
         )),
         Err(error) => {
-            if let Some(rows) = execute_node_mutation_with_limits(
+            if let Some(execution) = execute_node_mutation_with_limits(
                 plan,
                 catalog,
                 store,
@@ -173,7 +214,7 @@ pub fn execute_mutation_with_store_output_limits(
                 memory,
                 task_context,
             )? {
-                Ok(rows)
+                Ok(execution)
             } else {
                 Err(error)
             }
@@ -226,13 +267,22 @@ pub fn commit_staged_mutations(
     store: &mut dyn GraphExecutionWrite,
     limits: MutationLimits,
 ) -> Result<Vec<Row>> {
+    commit_staged_mutation_batch(staged, catalog, store, limits).map(|execution| execution.rows)
+}
+
+fn commit_staged_mutation_batch(
+    staged: StagedMutations,
+    catalog: &mut Catalog,
+    store: &mut dyn GraphExecutionWrite,
+    limits: MutationLimits,
+) -> Result<MutationExecution> {
     if staged.is_empty() {
-        return Ok(Vec::new());
+        return Ok(MutationExecution::default());
     }
     let (mutations, _charge) = staged.into_parts();
     store
         .commit_mutations_with_limits(catalog, mutations, limits)
-        .map(|summary| summary.rows)
+        .map(MutationExecution::from_summary)
 }
 
 /// [`commit_staged_mutations`] for a host that also applies query output
@@ -247,6 +297,29 @@ pub fn commit_staged_mutations_with_output(
     output_limits: OutputLimits,
     task_context: Option<&RuntimeTaskContext>,
 ) -> Result<Vec<Row>> {
+    commit_staged_mutations_counted(
+        plan,
+        staged,
+        catalog,
+        store,
+        limits,
+        output_limits,
+        task_context,
+    )
+    .map(|execution| execution.rows)
+}
+
+/// [`commit_staged_mutations_with_output`], also returning the counters of
+/// the writes the batch executed.
+pub fn commit_staged_mutations_counted(
+    plan: &PhysicalPlan,
+    staged: StagedMutations,
+    catalog: &mut Catalog,
+    store: &mut dyn GraphExecutionWrite,
+    limits: MutationLimits,
+    output_limits: OutputLimits,
+    task_context: Option<&RuntimeTaskContext>,
+) -> Result<MutationExecution> {
     let output = match plan {
         PhysicalPlan::UnwindMutation {
             operation: BatchMutationOperation::MergeRelationship(merge),
@@ -263,8 +336,11 @@ pub fn commit_staged_mutations_with_output(
         _ => None,
     };
     runtime_checkpoint(task_context)?;
-    let rows = commit_staged_mutations(staged, catalog, store, limits)?;
-    Ok(output.unwrap_or(rows))
+    let committed = commit_staged_mutation_batch(staged, catalog, store, limits)?;
+    Ok(MutationExecution {
+        rows: output.unwrap_or(committed.rows),
+        counters: committed.counters,
+    })
 }
 
 /// Resolves every bounded `UNWIND` row before any graph state is changed.
@@ -709,7 +785,7 @@ fn execute_node_mutation_with_limits(
     limits: MutationLimits,
     memory: &ExecutionMemoryConfig,
     task_context: Option<&RuntimeTaskContext>,
-) -> Result<Option<Vec<Row>>> {
+) -> Result<Option<MutationExecution>> {
     let Some((ids, action)) =
         node_mutation_targets(plan, catalog, store, limits, memory, task_context)?
     else {
@@ -728,15 +804,18 @@ fn execute_node_mutation_with_limits(
             limits.max_result_payload_bytes
         )));
     }
-    match action {
+    let counters = match action {
         NodeMutationPreflightAction::Set(assignments) => {
-            store.set_node_properties_by_ids_with_limits(catalog, &ids, &assignments, limits)?;
+            store.set_node_properties_by_ids_with_limits(catalog, &ids, &assignments, limits)?
         }
         NodeMutationPreflightAction::Delete { detach } => {
-            store.delete_node_ids_with_limits(catalog, &ids, detach, limits)?;
+            store.delete_node_ids_with_limits(catalog, &ids, detach, limits)?
         }
-    }
-    Ok(Some(output))
+    };
+    Ok(Some(MutationExecution {
+        rows: output,
+        counters,
+    }))
 }
 
 /// Resolve node predicates before staging, preserving the ordinary executor's
@@ -930,7 +1009,7 @@ fn execute_set_node_properties_return_with_limits(
     output_limits: OutputLimits,
     memory: &ExecutionMemoryConfig,
     task_context: Option<&RuntimeTaskContext>,
-) -> Result<Vec<Row>> {
+) -> Result<MutationExecution> {
     let assignments = assignments
         .iter()
         .map(node_set_assignment)
@@ -1041,8 +1120,12 @@ fn execute_set_node_properties_return_with_limits(
         )));
     }
     runtime_checkpoint(task_context)?;
-    store.set_node_properties_by_ids_with_limits(catalog, &ids, &assignments, limits)?;
-    Ok(output)
+    let counters =
+        store.set_node_properties_by_ids_with_limits(catalog, &ids, &assignments, limits)?;
+    Ok(MutationExecution {
+        rows: output,
+        counters,
+    })
 }
 
 #[cfg(test)]

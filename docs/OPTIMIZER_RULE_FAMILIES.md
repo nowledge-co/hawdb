@@ -9,11 +9,10 @@ re-exports; existing hosts need no import migration.
 | Owner | Contract | Direct first-party dependencies |
 | --- | --- | --- |
 | `hawdb-cascades` | Memo, rules, stages, cost/properties, diagnostics and optimizer context/config | None |
-| `hawdb-plan-core` | Vector logical/physical IR and resource profile | None |
-| `hawdb-optimizer-graph` | Graph catalog, cardinality, rewrites, lowering and typed graph traces | Cascades, core, Cypher, expression, plan-cypher, optimizer-vector |
+| `hawdb-vector-planning` | Vector logical/physical IR, resource profile, backend selection and bounded planning | Cascades |
+| `hawdb-optimizer-graph` | Graph catalog, cardinality, rewrites, lowering and typed graph traces | Cascades, core, Cypher, expression, plan-cypher, vector-planning |
 | `hawdb-optimizer-relational` | Access costing, join enumeration, planning diagnostics and sargability | Cascades, expression; core for tests |
 | `hawdb-optimizer-predicate` | Search predicate normalization, parsing and pushdown | Cascades |
-| `hawdb-optimizer-vector` | Adaptive vector backend selection and bounded plan construction | Cascades, plan-core |
 | `hawdb-optimizer` | Compatibility facade | Cascades and the four families |
 
 Predicate parsing retains its existing `serde_json` dependency. The other new
@@ -44,7 +43,7 @@ activation behavior changes as part of this extraction.
 Unit tests move with their implementations. Graph planner golden tests and their
 unchanged fixture contents move into `optimizer-graph/tests/testdata/`, with
 compile-time inputs declared on the consuming Bazel test. Generic context tests
-move into Cascades and the vector IR test moves into plan-core. Database/host
+move into Cascades and the vector IR and planning tests are owned by vector-planning. Database/host
 integration tests remain at the embedded facade.
 The existing graph cardinality differential campaign also checks relational
 join fallback estimates. Its test-only dependency points to the relational

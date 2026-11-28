@@ -99,13 +99,13 @@ pub(crate) use hawdb_executor::memory::{
 };
 pub(crate) use hawdb_executor::mutation::execute_mutation_with_store_output_limits;
 pub(crate) use hawdb_executor::mutation::{
-    commit_staged_mutations_with_output, stage_row_mutations,
+    commit_staged_mutations_counted, execute_mutation_counted, stage_row_mutations,
 };
 use hawdb_executor::pipeline::{runtime_checkpoint, BatchControl};
 use hawdb_executor::QueryMemoryLedger;
 #[cfg(test)]
 use hawdb_executor::{pipeline::BindingBatch, QueryMemoryClass};
-pub use hawdb_executor::{ExecutionMemoryConfig, SpillPoolSnapshot};
+pub use hawdb_executor::{ExecutionMemoryConfig, QueryCounters, SpillPoolSnapshot};
 pub use hawdb_executor::{
     ExternalReadOperator, ExternalReadResourceContract, ExternalReadResultBudget,
     GroupedEvidenceExecutionReport, OperatorCardinalityProfile, TextSeedExecutionOutput,

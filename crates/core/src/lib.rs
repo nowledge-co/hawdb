@@ -28,6 +28,7 @@ pub mod logical_type;
 pub mod numeric;
 pub mod numeric_function;
 pub mod projection;
+pub mod query_counters;
 pub mod regex;
 mod retained_heap;
 pub mod schema;
@@ -84,6 +85,7 @@ pub use list_function::{
 };
 pub use logical_type::{LogicalType, VectorDimension};
 pub use numeric_function::NumericFunction;
+pub use query_counters::QueryCounters;
 pub use regex::ValidatedRegex;
 #[doc(hidden)]
 pub use retained_heap::{checked_retained_heap_sum, RetainedHeapBytes};

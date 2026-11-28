@@ -14,8 +14,6 @@
 
 //! Typed, fail-closed Linux cgroup v2 resource discovery.
 
-#![forbid(unsafe_code)]
-
 use std::num::NonZeroUsize;
 use std::path::{Component, Path, PathBuf};
 

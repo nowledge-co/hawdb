@@ -24,9 +24,7 @@ fn artifact_job_facade_reexports_owner_contracts() {
 
     let owner_report: hawdb_artifact::DerivedArtifactJobReport = db
         .run_next_external_content_artifact_job_with(|_| {
-            Ok(QueryOutput {
-                rows: Vec::new().into(),
-            })
+            Ok(QueryOutput::from_query_rows(Vec::new().into()))
         })
         .unwrap()
         .unwrap();
@@ -98,13 +96,13 @@ fn pending_external_content_artifact_jobs_are_bounded_and_filtered() {
 
     let report = db
         .run_next_external_content_artifact_job_with(|job| {
-            Ok(QueryOutput {
-                rows: vec![BTreeMap::from([(
+            Ok(QueryOutput::from_query_rows(
+                vec![BTreeMap::from([(
                     "job_id".to_string(),
                     Value::Int(job.id as i64),
                 )])]
                 .into(),
-            })
+            ))
         })
         .unwrap()
         .unwrap();
@@ -248,8 +246,8 @@ fn succeeded_external_content_artifact_jobs_are_bounded_and_filtered() {
 
     let parse_report = db
         .run_next_external_content_artifact_job_with(|job| {
-            Ok(QueryOutput {
-                rows: vec![BTreeMap::from([
+            Ok(QueryOutput::from_query_rows(
+                vec![BTreeMap::from([
                     ("job_id".to_string(), Value::Int(job.id as i64)),
                     (
                         "projection_ref".to_string(),
@@ -257,7 +255,7 @@ fn succeeded_external_content_artifact_jobs_are_bounded_and_filtered() {
                     ),
                 ])]
                 .into(),
-            })
+            ))
         })
         .unwrap()
         .unwrap();
@@ -265,8 +263,8 @@ fn succeeded_external_content_artifact_jobs_are_bounded_and_filtered() {
 
     let crawl_report = db
         .run_next_external_content_artifact_job_with(|job| {
-            Ok(QueryOutput {
-                rows: vec![BTreeMap::from([
+            Ok(QueryOutput::from_query_rows(
+                vec![BTreeMap::from([
                     ("job_id".to_string(), Value::Int(job.id as i64)),
                     (
                         "projection_ref".to_string(),
@@ -274,7 +272,7 @@ fn succeeded_external_content_artifact_jobs_are_bounded_and_filtered() {
                     ),
                 ])]
                 .into(),
-            })
+            ))
         })
         .unwrap()
         .unwrap();
@@ -362,13 +360,13 @@ fn external_content_artifact_job_summary_counts_runtime_work_only() {
     assert_eq!(failed.job.status, DerivedArtifactJobStatus::Failed);
     let succeeded = db
         .run_external_content_artifact_job_with(second.id, |job| {
-            Ok(QueryOutput {
-                rows: vec![BTreeMap::from([(
+            Ok(QueryOutput::from_query_rows(
+                vec![BTreeMap::from([(
                     "job_id".to_string(),
                     Value::Int(job.id as i64),
                 )])]
                 .into(),
-            })
+            ))
         })
         .unwrap()
         .unwrap();
@@ -622,8 +620,8 @@ fn external_content_runtime_manifest_runs_only_claimable_jobs() {
         .run_next_external_content_artifact_job_for_runtime_with(&manifest, |job| {
             assert_eq!(job.id, parse.id);
             assert_eq!(job.action, "parse");
-            Ok(QueryOutput {
-                rows: vec![BTreeMap::from([
+            Ok(QueryOutput::from_query_rows(
+                vec![BTreeMap::from([
                     ("job_id".to_string(), Value::Int(job.id as i64)),
                     (
                         "runtime_name".to_string(),
@@ -631,7 +629,7 @@ fn external_content_runtime_manifest_runs_only_claimable_jobs() {
                     ),
                 ])]
                 .into(),
-            })
+            ))
         })
         .unwrap()
         .unwrap();
@@ -689,13 +687,13 @@ fn failed_external_content_artifact_jobs_can_be_retried() {
 
     let succeeded = db
         .run_next_external_content_artifact_job_with(|job| {
-            Ok(QueryOutput {
-                rows: vec![BTreeMap::from([
+            Ok(QueryOutput::from_query_rows(
+                vec![BTreeMap::from([
                     ("job_id".to_string(), Value::Int(job.id as i64)),
                     ("attempts".to_string(), Value::Int(job.attempts as i64)),
                 ])]
                 .into(),
-            })
+            ))
         })
         .unwrap()
         .unwrap();
@@ -837,8 +835,8 @@ fn caller_owned_content_artifact_runtime_can_complete_external_jobs() {
                 job.payload.get("sha256"),
                 Some(&Value::String("abc123".to_string()))
             );
-            Ok(QueryOutput {
-                rows: vec![BTreeMap::from([
+            Ok(QueryOutput::from_query_rows(
+                vec![BTreeMap::from([
                     ("job_id".to_string(), Value::Int(job.id as i64)),
                     (
                         "artifact_type".to_string(),
@@ -856,7 +854,7 @@ fn caller_owned_content_artifact_runtime_can_complete_external_jobs() {
                     ("parsed_chunks".to_string(), Value::Int(2)),
                 ])]
                 .into(),
-            })
+            ))
         })
         .unwrap()
         .unwrap();
@@ -879,8 +877,8 @@ fn caller_owned_content_artifact_runtime_can_complete_external_jobs() {
     );
     assert_eq!(
         db.derived_artifact_jobs()[0].last_output,
-        Some(QueryOutput {
-            rows: vec![BTreeMap::from([
+        Some(QueryOutput::from_query_rows(
+            vec![BTreeMap::from([
                 ("job_id".to_string(), Value::Int(job.id as i64)),
                 (
                     "artifact_type".to_string(),
@@ -894,8 +892,8 @@ fn caller_owned_content_artifact_runtime_can_complete_external_jobs() {
                 ),
                 ("parsed_chunks".to_string(), Value::Int(2)),
             ])]
-            .into(),
-        })
+            .into()
+        ))
     );
     assert!(db
         .run_next_external_content_artifact_job_with(|_| unreachable!())
@@ -943,13 +941,13 @@ fn background_external_content_artifact_job_can_run_next_job_for_action() {
                 assert_eq!(job.action, "crawl");
                 assert_eq!(job.status, DerivedArtifactJobStatus::Running);
                 assert_eq!(job.attempts, 1);
-                Ok(QueryOutput {
-                    rows: vec![BTreeMap::from([(
+                Ok(QueryOutput::from_query_rows(
+                    vec![BTreeMap::from([(
                         "job_id".to_string(),
                         Value::Int(job.id as i64),
                     )])]
                     .into(),
-                })
+                ))
             },
             2,
         )
@@ -1015,13 +1013,13 @@ fn scheduled_background_external_content_artifact_job_tracks_import_budget() {
             |job| {
                 assert_eq!(job.status, DerivedArtifactJobStatus::Running);
                 assert_eq!(job.attempts, 1);
-                Ok(QueryOutput {
-                    rows: vec![BTreeMap::from([(
+                Ok(QueryOutput::from_query_rows(
+                    vec![BTreeMap::from([(
                         "job_id".to_string(),
                         Value::Int(job.id as i64),
                     )])]
                     .into(),
-                })
+                ))
             },
             2,
         )
@@ -1122,13 +1120,13 @@ fn background_external_content_artifact_job_can_run_specific_pending_job() {
             |job| {
                 assert_eq!(job.id, second.id);
                 assert_eq!(job.status, DerivedArtifactJobStatus::Running);
-                Ok(QueryOutput {
-                    rows: vec![BTreeMap::from([(
+                Ok(QueryOutput::from_query_rows(
+                    vec![BTreeMap::from([(
                         "job_id".to_string(),
                         Value::Int(job.id as i64),
                     )])]
                     .into(),
-                })
+                ))
             },
             1,
         )
@@ -1231,13 +1229,13 @@ fn caller_owned_content_artifact_runtime_can_run_specific_pending_job() {
                 job.payload.get("content_uri"),
                 Some(&Value::String("file:///nowledge/source-2.md".to_string()))
             );
-            Ok(QueryOutput {
-                rows: vec![BTreeMap::from([(
+            Ok(QueryOutput::from_query_rows(
+                vec![BTreeMap::from([(
                     "job_id".to_string(),
                     Value::Int(job.id as i64),
                 )])]
                 .into(),
-            })
+            ))
         })
         .unwrap()
         .unwrap();
@@ -1262,13 +1260,13 @@ fn caller_owned_content_artifact_runtime_can_run_specific_pending_job() {
 
     let next = db
         .run_next_external_content_artifact_job_with(|job| {
-            Ok(QueryOutput {
-                rows: vec![BTreeMap::from([(
+            Ok(QueryOutput::from_query_rows(
+                vec![BTreeMap::from([(
                     "job_id".to_string(),
                     Value::Int(job.id as i64),
                 )])]
                 .into(),
-            })
+            ))
         })
         .unwrap()
         .unwrap();
@@ -1542,13 +1540,13 @@ fn caller_owned_content_artifact_runtime_can_poll_and_run_by_action() {
         .run_next_external_content_artifact_job_for_action_with("parse", |job| {
             assert_eq!(job.id, parse.id);
             assert_eq!(job.action, "parse");
-            Ok(QueryOutput {
-                rows: vec![BTreeMap::from([(
+            Ok(QueryOutput::from_query_rows(
+                vec![BTreeMap::from([(
                     "job_id".to_string(),
                     Value::Int(job.id as i64),
                 )])]
                 .into(),
-            })
+            ))
         })
         .unwrap()
         .unwrap();
@@ -1566,13 +1564,13 @@ fn caller_owned_content_artifact_runtime_can_poll_and_run_by_action() {
         .run_next_external_content_artifact_job_with(|job| {
             assert_eq!(job.id, crawl.id);
             assert_eq!(job.action, "crawl");
-            Ok(QueryOutput {
-                rows: vec![BTreeMap::from([(
+            Ok(QueryOutput::from_query_rows(
+                vec![BTreeMap::from([(
                     "job_id".to_string(),
                     Value::Int(job.id as i64),
                 )])]
                 .into(),
-            })
+            ))
         })
         .unwrap()
         .unwrap();

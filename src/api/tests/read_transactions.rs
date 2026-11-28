@@ -731,6 +731,109 @@ fn out_of_core_reader_pin_retains_its_canonical_generation_until_drop() {
 }
 
 #[test]
+fn current_only_reader_pin_retains_pinned_generation_and_reclaims_previous() {
+    let path = unique_test_dir("current_only_reader_generation_pin");
+    let config = DatabaseConfig {
+        storage_residency_mode: StorageResidencyMode::OutOfCore,
+        checkpoint_generation_retention: crate::CheckpointGenerationRetention::CurrentOnly,
+        ..DatabaseConfig::default()
+    };
+    let mut db = Database::open_with_config(&path, config).unwrap();
+    db.query("CREATE (:Memory {id: 1, title: 'Pinned snapshot'})")
+        .unwrap();
+    db.checkpoint().unwrap();
+
+    let mut reader = db.begin_read_transaction().unwrap();
+    let pinned_view = reader.published_read_view();
+    let pinned_generation = pinned_view.physical_generation().unwrap().0;
+    let data = active_storage_root(&path);
+    let mut generations = vec![(
+        pinned_generation,
+        db.storage_residency_report()
+            .unwrap()
+            .canonical_generation
+            .unwrap(),
+    )];
+    for id in 2..=5 {
+        db.query_with_params(
+            "CREATE (:Memory {id: $id, title: 'Newer'})",
+            &BTreeMap::from([("id".to_string(), Value::Int(id))]),
+        )
+        .unwrap();
+        db.checkpoint().unwrap();
+        generations.push((
+            db.published_read_view()
+                .unwrap()
+                .physical_generation()
+                .unwrap()
+                .0,
+            db.storage_residency_report()
+                .unwrap()
+                .canonical_generation
+                .unwrap(),
+        ));
+    }
+
+    // The reader pins its exact generation. `CurrentOnly` retains that
+    // generation and the selected generation, but not the superseded
+    // intermediate or immediately previous generations.
+    for (index, &(checkpoint, canonical)) in generations.iter().enumerate() {
+        let expected = index == 0 || index == generations.len() - 1;
+        for (prefix, generation) in [("canonical", canonical), ("checkpoint", checkpoint)] {
+            assert_eq!(
+                data.join(format!("{prefix}.{generation}.hawdb")).exists(),
+                expected,
+                "{prefix}.{generation}.hawdb at generation index {index}"
+            );
+        }
+    }
+    let pinned = reader
+        .query("MATCH (m:Memory) RETURN m.id AS id ORDER BY id")
+        .unwrap();
+    assert_eq!(pinned.rows.len(), 1);
+    assert_eq!(pinned.rows[0].get("id"), Some(&Value::Int(1)));
+    assert_eq!(reader.published_read_view(), pinned_view);
+
+    drop(reader);
+    db.checkpoint().unwrap();
+    let current_checkpoint = db
+        .published_read_view()
+        .unwrap()
+        .physical_generation()
+        .unwrap()
+        .0;
+    let current_graph = db
+        .storage_residency_report()
+        .unwrap()
+        .canonical_generation
+        .unwrap();
+    assert!(!data
+        .join(format!("canonical.{}.hawdb", generations[0].1))
+        .exists());
+    assert!(!data
+        .join(format!("checkpoint.{}.hawdb", generations[0].0))
+        .exists());
+    for &(checkpoint, canonical) in &generations {
+        assert_eq!(
+            data.join(format!("canonical.{canonical}.hawdb")).exists(),
+            canonical == current_graph
+        );
+        assert_eq!(
+            data.join(format!("checkpoint.{checkpoint}.hawdb")).exists(),
+            checkpoint == current_checkpoint
+        );
+    }
+    assert!(data
+        .join(format!("checkpoint.{current_checkpoint}.hawdb"))
+        .exists());
+    assert!(data
+        .join(format!("canonical.{current_graph}.hawdb"))
+        .exists());
+    drop(db);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
 fn overlapping_pinned_reads_survive_serialized_durable_commit() {
     let path = unique_test_dir("overlapping_pinned_reads");
     let mut db = Database::open(&path).unwrap();

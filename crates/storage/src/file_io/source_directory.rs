@@ -361,7 +361,27 @@ impl SourceDirectory {
         )
     }
 
+    /// Opens a lock file. On read-only media a read-write open is refused, so
+    /// an existing lock file is opened read-only instead: locking never needs
+    /// write access, and a missing lock file still fails (#2029).
     fn open_named_lock(
+        &self,
+        context: &FileOpenContext,
+        name: ChildName<'_>,
+        mode: SourceDirectoryLockMode,
+    ) -> io::Result<File> {
+        match self.open_named_lock_once(context, name, mode) {
+            Err(error)
+                if mode == SourceDirectoryLockMode::ReadWriteCreate
+                    && lock_requires_read_only_open(&error) =>
+            {
+                self.open_named_lock_once(context, name, SourceDirectoryLockMode::ReadExisting)
+            }
+            result => result,
+        }
+    }
+
+    fn open_named_lock_once(
         &self,
         context: &FileOpenContext,
         name: ChildName<'_>,
@@ -1093,3 +1113,12 @@ mod tests;
 
 #[cfg(all(test, any(target_os = "linux", target_vendor = "apple", windows)))]
 mod recording_tests;
+
+/// Whether opening a lock file read-write failed only because the directory
+/// or file is not writable, so an existing lock file can be opened read-only.
+pub(crate) fn lock_requires_read_only_open(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem
+    )
+}

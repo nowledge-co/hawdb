@@ -105,9 +105,7 @@ pub(super) fn admit_append_explain(
         }
         super::query_runtime::query_runtime_checkpoint(task_context)?;
     }
-    Ok(QueryOutput {
-        rows: output.finish(),
-    })
+    Ok(QueryOutput::from_query_rows(output.finish()))
 }
 
 // A snapshot read can finish recording after releasing the commit sequencer.
@@ -796,9 +794,9 @@ impl Database {
                         plan.max_rows,
                         max_payload_bytes.unwrap_or(usize::MAX),
                     )?;
-                    return Ok(super::sql_query_result(QueryOutput {
-                        rows: project_append_rows(&plan, &output.rows)?,
-                    }));
+                    return Ok(super::sql_query_result(QueryOutput::from_query_rows(
+                        project_append_rows(&plan, &output.rows)?,
+                    )));
                 }
                 if let Some(plan) = compile_prepared_append_explain_sql(
                     &prepared.template,
@@ -872,7 +870,9 @@ impl Database {
                         .store
                         .poison_on_storage_error(&query_result);
                     let output = query_result?;
-                    return Ok(super::sql_query_result(QueryOutput { rows: output.rows }));
+                    return Ok(super::sql_query_result(QueryOutput::from_query_rows(
+                        output.rows,
+                    )));
                 }
 
                 super::query_runtime::query_runtime_checkpoint(task_context)?;
@@ -925,9 +925,9 @@ impl Database {
                         )
                     }?;
                     // Strict Append writes report no RowPage mutation count.
-                    return Ok(super::sql_query_result(QueryOutput {
-                        rows: summary.rows.into(),
-                    }));
+                    return Ok(super::sql_query_result(QueryOutput::from_query_rows(
+                        summary.rows.into(),
+                    )));
                 }
                 if let crate::sql::SqlStatement::CreateTable(create) = prepared.statement()
                     && self
@@ -993,7 +993,7 @@ impl Database {
                     rows = mutation.rows.clone();
                 }
                 Ok(super::SqlStatementResult {
-                    output: QueryOutput { rows },
+                    output: QueryOutput::from_query_rows(rows),
                     mutation,
                 })
             })()

@@ -51,7 +51,11 @@ fn relationship_definition_denies_before_cloning_large_property() {
             memory: std::cell::RefCell::default(),
         };
         let mut definitions = Vec::new();
-        let mut limits = PersistentPropertyProjectionDefinitionAdmission::new(Default::default());
+        let refusals = durable::PropertyProjectionBudgetRefusals::default();
+        let mut limits = ProjectionDefinitionAdmission {
+            admission: PersistentPropertyProjectionDefinitionAdmission::new(Default::default()),
+            refusals: &refusals,
+        };
         push_relationship_property_projection_definitions(
             &mut definitions,
             &mut limits,
@@ -171,7 +175,11 @@ fn definition_strings_vector_and_shared_composite_grammar_keep_their_leases() {
         )
         .unwrap();
     assert_eq!(identity, expected);
-    let mut limits = PersistentPropertyProjectionDefinitionAdmission::new(Default::default());
+    let refusals = durable::PropertyProjectionBudgetRefusals::default();
+    let mut limits = ProjectionDefinitionAdmission {
+        admission: PersistentPropertyProjectionDefinitionAdmission::new(Default::default()),
+        refusals: &refusals,
+    };
     push_property_projection_definition(
         &mut definitions,
         &mut limits,

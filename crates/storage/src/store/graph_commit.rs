@@ -411,7 +411,7 @@ impl GraphStore {
         let mut next_node_id = self.next_node_id;
         let mut next_rel_id = self.next_rel_id;
         let mut working_catalog = catalog.clone();
-        let mut ops = Vec::new();
+        let mut ops = CountedOps::default();
         let mut rows = Vec::new();
         let mut limit_tracker = crate::mutation::MutationCommitLimitTracker::default();
         let mut pending_nodes = PendingNodes::default();
@@ -849,6 +849,7 @@ impl GraphStore {
                     label,
                     mut properties,
                 } => {
+                    let given_properties = properties.len();
                     if defaults_declared {
                         working_catalog.fill_creation_defaults(
                             TableKind::Node,
@@ -860,11 +861,14 @@ impl GraphStore {
                     let id = NodeId(next_node_id);
                     next_node_id += 1;
                     let label_id = working_catalog.get_or_create_label(&label);
-                    ops.push(WalOp::CreateNode {
-                        id,
-                        label,
-                        properties: properties.clone(),
-                    });
+                    ops.push_create(
+                        WalOp::CreateNode {
+                            id,
+                            label,
+                            properties: properties.clone(),
+                        },
+                        given_properties,
+                    );
                     pending_nodes.push((id, label_id, properties));
                     rows.push(BTreeMap::from([(
                         "node_id".to_string(),
@@ -922,6 +926,11 @@ impl GraphStore {
                             ("created".to_string(), Value::Bool(false)),
                         ]));
                     } else {
+                        // The pattern, ON CREATE SET and post-merge SET items
+                        // each count, even when they name the same property.
+                        let given_properties = match_properties.len()
+                            + on_create_properties.len()
+                            + post_merge_assignments.len();
                         let mut properties = match_properties;
                         for (property, value) in on_create_properties {
                             properties.insert(property, value);
@@ -943,11 +952,14 @@ impl GraphStore {
                         )?;
                         let id = NodeId(next_node_id);
                         next_node_id += 1;
-                        ops.push(WalOp::CreateNode {
-                            id,
-                            label,
-                            properties: properties.clone(),
-                        });
+                        ops.push_create(
+                            WalOp::CreateNode {
+                                id,
+                                label,
+                                properties: properties.clone(),
+                            },
+                            given_properties,
+                        );
                         pending_nodes.push((id, label_id, properties));
                         rows.push(BTreeMap::from([
                             ("node_id".to_string(), Value::Int(id.0 as i64)),
@@ -1074,6 +1086,7 @@ impl GraphStore {
                             value: NodeSetValue::Value(value.clone()),
                         }];
                         self.apply_set_node_properties_mutation(
+                            catalog,
                             &mut ops,
                             &mut rows,
                             &mut pending_nodes,
@@ -1097,6 +1110,7 @@ impl GraphStore {
                             value: NodeSetValue::AddInt { amount },
                         }];
                         self.apply_set_node_properties_mutation(
+                            catalog,
                             &mut ops,
                             &mut rows,
                             &mut pending_nodes,
@@ -1124,7 +1138,8 @@ impl GraphStore {
                             selected.clear();
                             break;
                         }
-                        let mut ids = self.matching_node_ids_bounded(
+                        let mut ids = self.matching_node_ids_bounded_indexed(
+                            Some(&*catalog),
                             label,
                             node.filter.as_ref(),
                             limits.max_affected_rows.get(),
@@ -1155,6 +1170,7 @@ impl GraphStore {
                                 })
                                 .collect::<Vec<_>>();
                             self.apply_set_node_properties_mutation(
+                                catalog,
                                 &mut ops,
                                 &mut rows,
                                 &mut pending_nodes,
@@ -1244,6 +1260,7 @@ impl GraphStore {
                     let label_id = optional_label_id(&working_catalog, &label);
                     if label.is_empty() || label_id.is_some() {
                         self.apply_set_node_properties_mutation(
+                            catalog,
                             &mut ops,
                             &mut rows,
                             &mut pending_nodes,
@@ -1319,7 +1336,8 @@ impl GraphStore {
                 } => {
                     let label_id = optional_label_id(&working_catalog, &label);
                     if label.is_empty() || label_id.is_some() {
-                        let committed_ids = self.matching_node_ids_bounded(
+                        let committed_ids = self.matching_node_ids_bounded_indexed(
+                            Some(&*catalog),
                             label_id,
                             filter.as_ref(),
                             remaining_mutation_affected_rows(rows.len(), limits)?,
@@ -1390,7 +1408,8 @@ impl GraphStore {
                         // `None`: an unconstrained source matches every relationship.
                         let source_ids = (source_label_id.is_some() || filter.is_some())
                             .then(|| {
-                                self.matching_node_ids_with_pending_bounded(
+                                self.matching_node_ids_with_pending_bounded_indexed(
+                                    Some(&*catalog),
                                     source_label_id,
                                     filter.as_ref(),
                                     &pending_nodes,
@@ -1406,7 +1425,8 @@ impl GraphStore {
                         let target_ids = target_filter
                             .as_ref()
                             .map(|filter| {
-                                self.matching_node_ids_with_pending_bounded(
+                                self.matching_node_ids_with_pending_bounded_indexed(
+                                    Some(&*catalog),
                                     target_label_id,
                                     Some(filter),
                                     &pending_nodes,
@@ -1565,14 +1585,16 @@ impl GraphStore {
                     }
                     let rel_type_id = working_catalog.get_or_create_rel_type(&request.rel_type);
                     let remaining_rows = remaining_mutation_affected_rows(rows.len(), limits)?;
-                    let sources = self.matching_node_ids_with_pending_bounded(
+                    let sources = self.matching_node_ids_with_pending_bounded_indexed(
+                        Some(&*catalog),
                         source_label_id,
                         request.source_filter.as_ref(),
                         &pending_nodes,
                         remaining_rows,
                         "max_mutation_affected_rows",
                     )?;
-                    let targets = self.matching_node_ids_with_pending_bounded(
+                    let targets = self.matching_node_ids_with_pending_bounded_indexed(
+                        Some(&*catalog),
                         target_label_id,
                         request.target_filter.as_ref(),
                         &pending_nodes,
@@ -1627,14 +1649,16 @@ impl GraphStore {
                     }
                     let rel_type_id = working_catalog.get_or_create_rel_type(&request.rel_type);
                     let remaining_rows = remaining_mutation_affected_rows(rows.len(), limits)?;
-                    let sources = self.matching_node_ids_with_pending_bounded(
+                    let sources = self.matching_node_ids_with_pending_bounded_indexed(
+                        Some(&*catalog),
                         source_label_id,
                         request.source_filter.as_ref(),
                         &pending_nodes,
                         remaining_rows,
                         "max_mutation_affected_rows",
                     )?;
-                    let targets = self.matching_node_ids_with_pending_bounded(
+                    let targets = self.matching_node_ids_with_pending_bounded_indexed(
+                        Some(&*catalog),
                         target_label_id,
                         request.target_filter.as_ref(),
                         &pending_nodes,
@@ -1723,13 +1747,17 @@ impl GraphStore {
                             for (property, value) in &request.on_create_properties {
                                 properties.insert(property.clone(), value.clone());
                             }
-                            ops.push(WalOp::CreateRelationship {
-                                id: relationship,
-                                source,
-                                target: *target,
-                                rel_type: request.rel_type.clone(),
-                                properties: properties.clone(),
-                            });
+                            ops.push_create(
+                                WalOp::CreateRelationship {
+                                    id: relationship,
+                                    source,
+                                    target: *target,
+                                    rel_type: request.rel_type.clone(),
+                                    properties: properties.clone(),
+                                },
+                                request.rel_match_properties.len()
+                                    + request.on_create_properties.len(),
+                            );
                             pending_relationships.push((
                                 relationship,
                                 source,
@@ -1793,7 +1821,8 @@ impl GraphStore {
                     .map(|relationship| relationship.source)
                     .collect::<BTreeSet<_>>();
                     let target_ids = self
-                        .matching_node_ids_with_pending_bounded(
+                        .matching_node_ids_with_pending_bounded_indexed(
+                            Some(&*catalog),
                             new_target_label_id,
                             request.new_target_filter.as_ref(),
                             &pending_nodes,
@@ -1859,13 +1888,17 @@ impl GraphStore {
                             next_rel_id += 1;
                             let mut properties = request.new_rel_match_properties.clone();
                             properties.extend(request.on_create_properties.clone());
-                            ops.push(WalOp::CreateRelationship {
-                                id: relationship,
-                                source,
-                                target: *target,
-                                rel_type: request.new_rel_type.clone(),
-                                properties: properties.clone(),
-                            });
+                            ops.push_create(
+                                WalOp::CreateRelationship {
+                                    id: relationship,
+                                    source,
+                                    target: *target,
+                                    rel_type: request.new_rel_type.clone(),
+                                    properties: properties.clone(),
+                                },
+                                request.new_rel_match_properties.len()
+                                    + request.on_create_properties.len(),
+                            );
                             pending_relationships.push((
                                 relationship,
                                 source,
@@ -1923,7 +1956,8 @@ impl GraphStore {
                     .map(|relationship| relationship.target)
                     .collect::<BTreeSet<_>>();
                     let source_ids = self
-                        .matching_node_ids_with_pending_bounded(
+                        .matching_node_ids_with_pending_bounded_indexed(
+                            Some(&*catalog),
                             new_source_label_id,
                             request.new_source_filter.as_ref(),
                             &pending_nodes,
@@ -1989,13 +2023,17 @@ impl GraphStore {
                             next_rel_id += 1;
                             let mut properties = request.new_rel_match_properties.clone();
                             properties.extend(request.on_create_properties.clone());
-                            ops.push(WalOp::CreateRelationship {
-                                id: relationship,
-                                source,
-                                target: *target,
-                                rel_type: request.new_rel_type.clone(),
-                                properties: properties.clone(),
-                            });
+                            ops.push_create(
+                                WalOp::CreateRelationship {
+                                    id: relationship,
+                                    source,
+                                    target: *target,
+                                    rel_type: request.new_rel_type.clone(),
+                                    properties: properties.clone(),
+                                },
+                                request.new_rel_match_properties.len()
+                                    + request.on_create_properties.len(),
+                            );
                             pending_relationships.push((
                                 relationship,
                                 source,
@@ -2101,13 +2139,17 @@ impl GraphStore {
                             };
                             properties.insert(property.clone(), value);
                         }
-                        ops.push(WalOp::CreateRelationship {
-                            id: relationship,
-                            source: old_relationship.source,
-                            target: old_relationship.target,
-                            rel_type: request.new_rel_type.clone(),
-                            properties: properties.clone(),
-                        });
+                        ops.push_create(
+                            WalOp::CreateRelationship {
+                                id: relationship,
+                                source: old_relationship.source,
+                                target: old_relationship.target,
+                                rel_type: request.new_rel_type.clone(),
+                                properties: properties.clone(),
+                            },
+                            request.new_rel_match_properties.len()
+                                + request.on_create_properties.len(),
+                        );
                         pending_relationships.push((
                             relationship,
                             old_relationship.source,
@@ -2182,8 +2224,18 @@ impl GraphStore {
         // Statement writes become final WAL ops here, so creation defaults are
         // materialized before validation, capture and WAL encoding. Prepared
         // transaction commits replay these already-filled ops unchanged.
+        let (mut ops, counters) = ops.into_parts();
         fill_creation_defaults(&working_catalog, &mut ops, &mut creation_clock);
-        self.commit_prepared_mutation_ops(catalog, working_catalog, ops, rows, limits, options)
+        let mut summary = self.commit_prepared_mutation_ops(
+            catalog,
+            working_catalog,
+            ops,
+            rows,
+            limits,
+            options,
+        )?;
+        summary.counters = counters;
+        Ok(summary)
     }
 
     fn commit_prepared_mutation_ops(
@@ -2365,6 +2417,7 @@ impl GraphStore {
                 rows,
                 relational_mutation_outcomes,
                 append_mutation_outcomes,
+                counters: QueryCounters::default(),
             });
         }
         if let Some(read_epoch) = mvcc_read_epoch {
@@ -2514,6 +2567,7 @@ impl GraphStore {
             rows,
             relational_mutation_outcomes,
             append_mutation_outcomes,
+            counters: QueryCounters::default(),
         })
     }
 
@@ -2604,8 +2658,10 @@ impl GraphStore {
         Ok(writes)
     }
 
+    /// Folds `assignments` into a node this batch created earlier; each
+    /// folded write counts as executed.
     fn apply_pending_node_assignments(
-        ops: &mut [WalOp],
+        ops: &mut CountedOps,
         pending_nodes: &mut PendingNodes,
         id: NodeId,
         assignments: &[NodeSetAssignment],
@@ -2616,7 +2672,8 @@ impl GraphStore {
         for assignment in assignments {
             let value = evaluate_node_set_value(&pending_nodes[index].2, assignment)?;
             pending_nodes.set_property(index, assignment.property.clone(), value.clone());
-            for op in ops.iter_mut() {
+            ops.count_folded_property_writes(1);
+            for op in ops.ops_for_fold().iter_mut() {
                 if let WalOp::CreateNode {
                     id: create_id,
                     properties,
@@ -2635,7 +2692,8 @@ impl GraphStore {
     #[allow(clippy::too_many_arguments)]
     fn apply_set_node_properties_mutation(
         &self,
-        ops: &mut Vec<WalOp>,
+        indexed_catalog: &Catalog,
+        ops: &mut CountedOps,
         rows: &mut Vec<BTreeMap<String, Value>>,
         pending_nodes: &mut PendingNodes,
         label_id: Option<LabelId>,
@@ -2644,7 +2702,8 @@ impl GraphStore {
         limits: MutationLimits,
     ) -> Result<()> {
         let remaining_rows = remaining_mutation_affected_rows(rows.len(), limits)?;
-        let committed_ids = self.matching_node_ids_bounded(
+        let committed_ids = self.matching_node_ids_bounded_indexed(
+            Some(indexed_catalog),
             label_id,
             filter,
             remaining_rows,
@@ -2749,7 +2808,7 @@ impl GraphStore {
         Ok(())
     }
 
-    fn wal_admission_signals(&self, ops: &[WalOp]) -> Result<StoragePressureSignals> {
+    pub(super) fn wal_admission_signals(&self, ops: &[WalOp]) -> Result<StoragePressureSignals> {
         // DurableStore owns the persisted reader watermark and generation files, so it
         // fills those signals immediately before admission without duplicating a directory scan.
         let mut signals = self.storage_pressure_signals(None, None);
@@ -3054,7 +3113,7 @@ impl GraphStore {
 /// relationships created earlier in this batch are updated in place.
 fn apply_relationship_on_match_assignments(
     store: &GraphStore,
-    ops: &mut Vec<WalOp>,
+    ops: &mut CountedOps,
     pending_relationships: &mut [PendingRelationship],
     relationship: RelId,
     committed: bool,

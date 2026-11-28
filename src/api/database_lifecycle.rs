@@ -508,7 +508,12 @@ impl Database {
     }
 
     pub fn storage_residency_report(&self) -> Result<crate::store::StorageResidencyReport> {
-        Ok(self.runtime.get()?.store.storage_residency_report())
+        let runtime = self.runtime.get()?;
+        let mut report = runtime.store.storage_residency_report();
+        report.unserved_graph_property_indexes = runtime
+            .store
+            .graph_indexes_not_served_by_persistent_projection(&runtime.catalog);
+        Ok(report)
     }
 
     pub(crate) fn bind_embedded_runtime(&mut self, binding: &EmbeddedRuntimeBinding) {

@@ -17,8 +17,10 @@ use crate::cypher;
 use crate::value::Value;
 use std::collections::BTreeMap;
 
-pub use hawdb_query_policy::QuerySystemVariables;
-pub(super) use hawdb_query_policy::{
+mod policy;
+
+pub use policy::QuerySystemVariables;
+pub(super) use policy::{
     query_statement_variables_for_statement, query_work_request_for_statement,
     reject_system_variable_parameters,
 };
@@ -27,12 +29,12 @@ pub(super) fn apply_set_system_variable(
     variables: &mut QuerySystemVariables,
     set: &cypher::SetSystemVariable,
 ) -> Result<QueryOutput> {
-    let update = hawdb_query_policy::apply_set_system_variable(variables, set)?;
-    Ok(QueryOutput {
-        rows: vec![BTreeMap::from([
+    let update = policy::apply_set_system_variable(variables, set)?;
+    Ok(QueryOutput::from_query_rows(
+        vec![BTreeMap::from([
             ("name".to_string(), Value::String(update.name)),
             ("value".to_string(), update.value),
         ])]
         .into(),
-    })
+    ))
 }

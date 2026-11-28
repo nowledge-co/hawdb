@@ -912,19 +912,20 @@ impl Database {
         options: &crate::store::OptimizerStatisticsRefreshOptions,
     ) -> Result<crate::store::OptimizerStatisticsRefreshReport> {
         self.ensure_writable()?;
+        if !self.runtime.get()?.store.is_out_of_core() {
+            // A resident checkpoint recomputes statistics itself, so the
+            // refreshed resident distributions are published without one.
+            let report = self.refresh_store_optimizer_statistics(options)?;
+            self.invalidate_optimizer_plans_after_statistics_refresh()?;
+            return Ok(report);
+        }
         let previous_statistics = self.runtime.get()?.store.checkpoint_statistics_snapshot();
         let previous_dirty_state = self
             .runtime
             .get()?
             .store
             .advanced_statistics_dirty_snapshot();
-        let mut report = {
-            let mut branch_runtime_access = self.runtime.get_mut()?;
-            let branch_runtime = &mut *branch_runtime_access;
-            branch_runtime
-                .store
-                .refresh_optimizer_statistics_external(&branch_runtime.catalog, options)
-        }?;
+        let mut report = self.refresh_store_optimizer_statistics(options)?;
         if let Err(error) = self.checkpoint() {
             self.runtime
                 .get_mut()?
@@ -933,6 +934,33 @@ impl Database {
             return Err(error);
         }
         report.checkpoint_persisted = true;
+        self.invalidate_optimizer_plans_after_statistics_refresh()?;
+        Ok(report)
+    }
+
+    /// Runs the store refresh under the database write guard and records how
+    /// long the guard was held, including its release.
+    fn refresh_store_optimizer_statistics(
+        &mut self,
+        options: &crate::store::OptimizerStatisticsRefreshOptions,
+    ) -> Result<crate::store::OptimizerStatisticsRefreshReport> {
+        let started;
+        let report = {
+            let mut branch_runtime_access = self.runtime.get_mut()?;
+            started = std::time::Instant::now();
+            let branch_runtime = &mut *branch_runtime_access;
+            branch_runtime
+                .store
+                .refresh_optimizer_statistics_external(&branch_runtime.catalog, options)
+        };
+        self.runtime
+            .get()?
+            .store
+            .record_optimizer_statistics_refresh_write_guard_hold(started.elapsed());
+        report
+    }
+
+    fn invalidate_optimizer_plans_after_statistics_refresh(&self) -> Result<()> {
         *self.runtime.get()?.plan_cache.borrow_mut() = PlanCache::with_byte_limits(
             self.config.max_plan_cache_entries,
             Some(self.config.max_physical_plan_cache_bytes),
@@ -943,7 +971,43 @@ impl Database {
             .optimizer_planning_cache
             .borrow_mut()
             .invalidate();
-        Ok(report)
+        Ok(())
+    }
+
+    /// Recomputes resident optimizer statistics synchronously and publishes
+    /// them for planning. Tests and diagnostics use it to remove statistics
+    /// lag; production refresh is the background statistics task (#2017).
+    #[doc(hidden)]
+    pub fn refresh_optimizer_statistics_now(&mut self) -> Result<()> {
+        self.ensure_writable()?;
+        let started;
+        let refreshed = {
+            let mut branch_runtime_access = self.runtime.get_mut()?;
+            started = std::time::Instant::now();
+            let branch_runtime = &mut *branch_runtime_access;
+            branch_runtime
+                .store
+                .refresh_resident_optimizer_statistics_now(&branch_runtime.catalog)
+        };
+        self.runtime
+            .get()?
+            .store
+            .record_optimizer_statistics_refresh_write_guard_hold(started.elapsed());
+        refreshed?;
+        self.invalidate_optimizer_plans_after_statistics_refresh()
+    }
+
+    /// Which optimizer-statistics path planning uses, the cached
+    /// distributions' commit lag and dirty operations, and full
+    /// recomputations by caller site (#2017).
+    pub fn optimizer_statistics_maintenance_report(
+        &self,
+    ) -> Result<crate::store::OptimizerStatisticsMaintenanceReport> {
+        Ok(self
+            .runtime
+            .get()?
+            .store
+            .optimizer_statistics_maintenance_report())
     }
 
     pub(super) fn optimizer_statistics_refresh_work(
@@ -960,26 +1024,85 @@ impl Database {
         })
     }
 
+    /// Background work plan for an optimizer-statistics refresh, admitted
+    /// under the database's local QoS policy.
     pub fn optimizer_statistics_refresh_background_work_plan(
         &self,
-        mut hint: BackgroundWorkHint,
+        hint: BackgroundWorkHint,
     ) -> Result<Option<BackgroundWorkPlan>> {
-        Ok({
-            let Some(work) = self.optimizer_statistics_refresh_work()? else {
-                return Ok(None);
-            };
-            hint.recent_delta_operations = hint
-                .recent_delta_operations
-                .max(work.recent_delta_operations);
-            hint.source_graph_commit_lag = hint.source_graph_commit_lag.max(work.source_commit_lag);
-            Some(BackgroundWorkPlan::background(
-                WorkClass::Projection,
-                work.estimated_operations,
-                hint,
-            ))
-        })
+        let policy = *self.local_qos_scheduler().policy();
+        self.optimizer_statistics_refresh_background_work_plan_for(&policy, hint)
     }
 
+    /// A statistics refresh is one whole-graph maintenance pass. Its size is
+    /// bounded by its own allowance (`max_input_records` and the refresh
+    /// memory budget), not by the per-task operation cap meant for
+    /// incremental background units. Its QoS charge is therefore its record
+    /// count clamped to `policy`'s per-task cap: a small graph is charged its
+    /// records, a large graph one full task slot. Background enablement, the
+    /// total and per-class budgets, and memory admission still apply (#2017).
+    fn optimizer_statistics_refresh_background_work_plan_for(
+        &self,
+        policy: &LocalQosPolicy,
+        mut hint: BackgroundWorkHint,
+    ) -> Result<Option<BackgroundWorkPlan>> {
+        let Some(work) = self.optimizer_statistics_refresh_work()? else {
+            return Ok(None);
+        };
+        hint.recent_delta_operations = hint
+            .recent_delta_operations
+            .max(work.recent_delta_operations);
+        hint.source_graph_commit_lag = hint.source_graph_commit_lag.max(work.source_commit_lag);
+        let charged_operations = policy
+            .max_background_operations
+            .map_or(work.estimated_operations, |cap| {
+                work.estimated_operations.min(cap.max(1))
+            });
+        Ok(Some(BackgroundWorkPlan::background(
+            WorkClass::Projection,
+            charged_operations,
+            hint,
+        )))
+    }
+
+    /// Admits the refresh's declared memory budget with the runtime governor,
+    /// if one is bound, without waiting. `None` means memory admission is
+    /// unavailable now: the refresh is skipped and counted, and a later
+    /// maintenance pass retries.
+    fn admit_optimizer_statistics_refresh_memory(
+        &self,
+        options: &crate::store::OptimizerStatisticsRefreshOptions,
+    ) -> Result<Option<Option<hawdb_qos::RuntimePermit>>> {
+        let Some(governor) = &self.runtime_governor else {
+            return Ok(Some(None));
+        };
+        match governor.try_admit(hawdb_qos::RuntimeWorkRequest::background_maintenance(
+            u64::try_from(options.memory_budget_bytes).unwrap_or(u64::MAX),
+        )) {
+            Ok(permit) => Ok(Some(Some(permit))),
+            Err(_) => {
+                self.runtime
+                    .get()?
+                    .store
+                    .record_optimizer_statistics_refresh_skipped();
+                Ok(None)
+            }
+        }
+    }
+
+    fn record_optimizer_statistics_refresh_refusal<T>(&self, result: Result<T>) -> Result<T> {
+        if result.is_err() {
+            self.runtime
+                .get()?
+                .store
+                .record_optimizer_statistics_refresh_refused();
+        }
+        result
+    }
+
+    /// Refreshes optimizer statistics as background work admitted by
+    /// `policy`. Returns `None` when no refresh is due or memory admission is
+    /// unavailable (the skip is counted; it never waits).
     pub fn refresh_background_optimizer_statistics(
         &mut self,
         policy: &LocalQosPolicy,
@@ -988,25 +1111,42 @@ impl Database {
         hint: BackgroundWorkHint,
     ) -> Result<Option<crate::store::OptimizerStatisticsRefreshReport>> {
         self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
-        let Some(plan) = self.optimizer_statistics_refresh_background_work_plan(hint)? else {
+        let Some(plan) =
+            self.optimizer_statistics_refresh_background_work_plan_for(policy, hint)?
+        else {
             return Ok(None);
         };
-        policy.admit_or_refuse(state, &plan.request)?;
+        self.record_optimizer_statistics_refresh_refusal(
+            policy.admit_or_refuse(state, &plan.request),
+        )?;
+        let Some(_memory) = self.admit_optimizer_statistics_refresh_memory(options)? else {
+            return Ok(None);
+        };
         self.refresh_optimizer_statistics_external(options)
             .map(Some)
     }
 
+    /// Like [`Self::refresh_background_optimizer_statistics`], admitted and
+    /// tracked by the database's local QoS scheduler.
     pub fn refresh_scheduled_background_optimizer_statistics(
         &mut self,
         options: &crate::store::OptimizerStatisticsRefreshOptions,
         hint: BackgroundWorkHint,
     ) -> Result<Option<crate::store::OptimizerStatisticsRefreshReport>> {
         self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
-        let Some(plan) = self.optimizer_statistics_refresh_background_work_plan(hint)? else {
+        let scheduler = self.local_qos_scheduler_for_work();
+        let Some(plan) =
+            self.optimizer_statistics_refresh_background_work_plan_for(scheduler.policy(), hint)?
+        else {
             return Ok(None);
         };
-        let scheduler = self.local_qos_scheduler_for_work();
-        let permit = scheduler.try_start_or_refuse(plan.request)?;
+        let permit = self.record_optimizer_statistics_refresh_refusal(
+            scheduler.try_start_or_refuse(plan.request),
+        )?;
+        let Some(_memory) = self.admit_optimizer_statistics_refresh_memory(options)? else {
+            permit.finish_with_outcome(true);
+            return Ok(None);
+        };
 
         let result = self
             .refresh_optimizer_statistics_external(options)
@@ -1431,7 +1571,7 @@ impl Database {
                     ])
                 })
                 .collect();
-            QueryOutput { rows: rows.into() }
+            QueryOutput::from_query_rows(rows.into())
         })
     }
 

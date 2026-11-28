@@ -1,5 +1,5 @@
 [package]
-name = "hawdb-plan-core"
+name = "hawdb-vector-planning"
 version.workspace = true
 edition = "2024"
 rust-version.workspace = true
@@ -9,3 +9,4 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
+hawdb-cascades = { path = "../cascades", version = "0.41.0" }

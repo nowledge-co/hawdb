@@ -710,11 +710,21 @@ fn relationship_loads_resolve_endpoints_before_the_write_guard() {
             db.query("CREATE INDEX ON :Person(id)").unwrap();
         }
         db.query_with_params(LOAD_PEOPLE, &file(&people)).unwrap();
-        // The counter observes the per-request scan a property filter needs.
+        // The counter observes the per-request scan a property filter needs
+        // without an index; an indexed property seeks instead.
         let scans = hawdb_storage::store::matched_node_label_scans_for_test();
+        let seeks = mutation_target_index_seeks(&db);
         db.query("MATCH (a:Person {id: 1}), (b:Person {id: 2}) CREATE (a)-[:SEED]->(b)")
             .unwrap();
-        assert!(hawdb_storage::store::matched_node_label_scans_for_test() > scans);
+        if indexed {
+            assert_eq!(
+                hawdb_storage::store::matched_node_label_scans_for_test(),
+                scans
+            );
+            assert!(mutation_target_index_seeks(&db) > seeks);
+        } else {
+            assert!(hawdb_storage::store::matched_node_label_scans_for_test() > scans);
+        }
 
         let scans = hawdb_storage::store::matched_node_label_scans_for_test();
         db.query_with_params(LOAD_KNOWS, &file(&knows)).unwrap();
@@ -1054,4 +1064,11 @@ fn created_rows_without_a_value_receive_declared_property_defaults() {
         .unwrap();
     assert_eq!(column(&output, "name"), [string("anon"), string("Bo")]);
     assert_eq!(column(&output, "rank"), [Value::Int(0), Value::Int(0)]);
+}
+
+fn mutation_target_index_seeks(db: &Database) -> u64 {
+    db.storage_residency_report()
+        .unwrap()
+        .graph_index_reads
+        .mutation_target_index_seeks
 }

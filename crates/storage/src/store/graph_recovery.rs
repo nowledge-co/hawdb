@@ -357,7 +357,7 @@ impl GraphStore {
         let Some(durable) = &self.durable else {
             return Ok(());
         };
-        if !durable.checkpoint_path.exists() {
+        if !fs::try_exists(&durable.checkpoint_path)? {
             if durable.checkpoint_commit_epoch != 0 {
                 return Err(HawDBError::Storage(format!(
                     "manifest checkpoint generation {} is missing",
@@ -719,6 +719,50 @@ impl GraphStore {
         self.replay_wal_interval_with_file(catalog, config, relational_recovery_source, &mut None)
     }
 
+    /// The recovery result of the header-only WAL anchor that a branch mount
+    /// writes for its manifest generation, without reading or writing it: a
+    /// read-only admission leaves the disposable runtime unmounted (#2029).
+    pub(super) fn replay_virtual_empty_wal_anchor(
+        &mut self,
+        config: WalReplayConfig,
+    ) -> Result<StorageRecoveryReport> {
+        let commit_epoch = self.commit_epoch;
+        let durable = self.durable.as_mut().ok_or_else(|| {
+            HawDBError::Storage("branch admission requires durable storage".to_string())
+        })?;
+        if !durable.read_only {
+            return Err(HawDBError::StorageIntegrity(
+                "a virtual WAL anchor requires a read-only branch admission".into(),
+            ));
+        }
+        let checkpoint_present = fs::try_exists(&durable.checkpoint_path)?;
+        let wal_replay_start_lsn = durable.wal_replay_start_lsn;
+        durable.next_lsn = wal_replay_start_lsn;
+        durable.wal_commit_epoch = commit_epoch;
+        Ok(StorageRecoveryReport {
+            open_timings: Default::default(),
+            durable: true,
+            recovery_mode: config.recovery_mode,
+            max_wal_replay_entries: config.max_entries,
+            max_wal_replay_bytes: config.max_bytes,
+            max_wal_record_bytes: config.max_record_bytes,
+            checkpoint_epoch: checkpoint_present.then_some(durable.checkpoint_epoch),
+            checkpoint_commit_epoch: checkpoint_present.then_some(durable.checkpoint_commit_epoch),
+            wal_present: true,
+            wal_generation: Some(durable.wal_generation),
+            wal_replay_start_lsn: Some(wal_replay_start_lsn),
+            next_lsn_after_replay: Some(wal_replay_start_lsn),
+            replayed_wal_entries: 0,
+            replayed_wal_bytes: 0,
+            torn_tail_ignored: false,
+            torn_tail_repaired: false,
+            discarded_wal_tail_bytes: 0,
+            torn_tail_reason: None,
+            wal_repair: None,
+            recovered_commit_epoch: commit_epoch,
+        })
+    }
+
     pub(super) fn replay_wal_interval_with_file(
         &mut self,
         catalog: &mut Catalog,
@@ -740,7 +784,7 @@ impl GraphStore {
         let mut torn_tail_reason = tail_repair
             .as_ref()
             .map(|_| "resumed interrupted repair of an incomplete final WAL record".to_string());
-        let checkpoint_present = durable.checkpoint_path.exists();
+        let checkpoint_present = fs::try_exists(&durable.checkpoint_path)?;
         let mut replayed_entries = 0_usize;
         let mut replayed_bytes = 0u64;
         let wal_present = captured || wal_path.exists();

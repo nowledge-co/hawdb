@@ -88,6 +88,19 @@ pub struct GraphIndexReadMetricsSnapshot {
     pub adjacency_records_decoded: u64,
     pub adjacency_sparse_blocks_read: u64,
     pub adjacency_dense_blocks_read: u64,
+    /// Mutations that resolved their target nodes through a property index.
+    pub mutation_target_index_seeks: u64,
+    /// Mutations that resolved their target nodes by scanning a label (or all
+    /// nodes) because no usable index covered their filter.
+    pub mutation_target_label_scans: u64,
+    /// Index hits a mutation-target seek examined (resident records and
+    /// hydrated out-of-core records), whether or not they matched.
+    pub mutation_target_index_candidates: u64,
+    /// Mutations on an out-of-core store whose property index is not yet
+    /// served by the persistent projection: they seek the resident index for
+    /// delta nodes and scan the canonical base by property, as reads do,
+    /// instead of scanning the label (#2019).
+    pub mutation_target_property_scans: u64,
 }
 
 impl GraphIndexReadMetricsSnapshot {
@@ -218,6 +231,18 @@ impl GraphIndexReadMetricsSnapshot {
             adjacency_dense_blocks_read: self
                 .adjacency_dense_blocks_read
                 .saturating_sub(before.adjacency_dense_blocks_read),
+            mutation_target_index_seeks: self
+                .mutation_target_index_seeks
+                .saturating_sub(before.mutation_target_index_seeks),
+            mutation_target_label_scans: self
+                .mutation_target_label_scans
+                .saturating_sub(before.mutation_target_label_scans),
+            mutation_target_index_candidates: self
+                .mutation_target_index_candidates
+                .saturating_sub(before.mutation_target_index_candidates),
+            mutation_target_property_scans: self
+                .mutation_target_property_scans
+                .saturating_sub(before.mutation_target_property_scans),
         }
     }
 }
@@ -253,9 +278,33 @@ pub struct GraphIndexReadMetrics {
     adjacency_records_decoded: AtomicU64,
     adjacency_sparse_blocks_read: AtomicU64,
     adjacency_dense_blocks_read: AtomicU64,
+    mutation_target_index_seeks: AtomicU64,
+    mutation_target_label_scans: AtomicU64,
+    mutation_target_index_candidates: AtomicU64,
+    mutation_target_property_scans: AtomicU64,
 }
 
 impl GraphIndexReadMetrics {
+    pub fn record_mutation_target_index_seek(&self) {
+        self.mutation_target_index_seeks
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_mutation_target_label_scan(&self) {
+        self.mutation_target_label_scans
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_mutation_target_property_scan(&self) {
+        self.mutation_target_property_scans
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_mutation_target_index_candidate(&self) {
+        self.mutation_target_index_candidates
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
     pub fn record_property(
         &self,
         class: PersistentGraphIndexClass,
@@ -436,6 +485,14 @@ impl GraphIndexReadMetrics {
             adjacency_records_decoded: self.adjacency_records_decoded.load(Ordering::Relaxed),
             adjacency_sparse_blocks_read: self.adjacency_sparse_blocks_read.load(Ordering::Relaxed),
             adjacency_dense_blocks_read: self.adjacency_dense_blocks_read.load(Ordering::Relaxed),
+            mutation_target_index_seeks: self.mutation_target_index_seeks.load(Ordering::Relaxed),
+            mutation_target_label_scans: self.mutation_target_label_scans.load(Ordering::Relaxed),
+            mutation_target_index_candidates: self
+                .mutation_target_index_candidates
+                .load(Ordering::Relaxed),
+            mutation_target_property_scans: self
+                .mutation_target_property_scans
+                .load(Ordering::Relaxed),
         }
     }
 }

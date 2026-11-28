@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::{OptimizerContext, VectorPrecision};
-use hawdb_plan_core::{
+use crate::{
     VectorBackendSelectionReason, VectorCandidateSource, VectorPhysicalPlan,
     VectorSearchLogicalPlan,
 };
@@ -233,8 +233,8 @@ pub struct VectorPlanProperties {
 }
 
 impl VectorPlanProperties {
-    pub fn execution_resource_profile(&self) -> hawdb_plan_core::VectorExecutionResourceProfile {
-        hawdb_plan_core::VectorExecutionResourceProfile {
+    pub fn execution_resource_profile(&self) -> crate::VectorExecutionResourceProfile {
+        crate::VectorExecutionResourceProfile {
             priority: self.priority,
             max_parallelism: self.max_parallelism.max(1),
             max_working_memory_bytes: self.max_memory_bytes,
@@ -330,8 +330,8 @@ pub fn validate_vector_pipeline(plan: &VectorPhysicalPlan) -> Result<(), VectorP
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::VectorCandidateSource;
     use crate::{QueryFamily, ResourceHints};
-    use hawdb_plan_core::VectorCandidateSource;
 
     #[test]
     fn vector_pipeline_enforces_filter_candidate_raw_rerank_top_k() {

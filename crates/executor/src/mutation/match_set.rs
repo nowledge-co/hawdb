@@ -46,6 +46,21 @@ pub struct MatchSetOutcome {
     pub mutations: Vec<GraphMutation>,
     /// The projected rows; empty without RETURN.
     pub rows: Vec<Row>,
+    /// Property writes this SET executed that the committed mutation does
+    /// not repeat, because a later write of the same row set or statement
+    /// replaced them (one write per entity and property is committed).
+    /// Every executed write counts, so add these to the commit's counters.
+    pub superseded_property_writes: u64,
+}
+
+impl MatchSetOutcome {
+    /// The commit's counters plus the writes it does not repeat.
+    pub fn counters(&self, mut committed: hawdb_core::QueryCounters) -> hawdb_core::QueryCounters {
+        committed.properties_set = committed
+            .properties_set
+            .saturating_add(self.superseded_property_writes);
+        committed
+    }
 }
 
 #[derive(Clone)]
@@ -182,6 +197,7 @@ pub fn resolve_match_set(
     // Entities in first-write order, with their written properties.
     let mut written = Vec::<(MutationEntity, Vec<String>)>::new();
     let mut positions = BTreeMap::<MutationEntity, usize>::new();
+    let mut executed_property_writes = 0u64;
     for assignment in &plan.assignments {
         // Every row reads the state the earlier items left, so the values of
         // one item are computed before any of them is applied.
@@ -211,6 +227,7 @@ pub fn resolve_match_set(
             charge.grow(value_memory_bytes(&value))?;
             values.push((entity, value));
         }
+        executed_property_writes += values.len() as u64;
         for (entity, value) in values {
             // The value's charge moves into the entity copy, which releases
             // the value it replaces.
@@ -272,6 +289,10 @@ pub fn resolve_match_set(
         }
     }
 
+    let committed_property_writes = written
+        .iter()
+        .map(|(_, properties)| properties.len() as u64)
+        .sum::<u64>();
     let mut updates = Vec::with_capacity(written.len());
     for (entity, properties) in written {
         let current = records[&entity].properties();
@@ -292,6 +313,8 @@ pub fn resolve_match_set(
     Ok(MatchSetOutcome {
         mutations,
         rows: output,
+        superseded_property_writes: executed_property_writes
+            .saturating_sub(committed_property_writes),
     })
 }
 
