@@ -21,6 +21,7 @@ use hawdb_qos::{
     RuntimeAdmissionCode, RuntimeAdmissionError, RuntimeGovernor, RuntimeMaintenanceWork,
     RuntimeWorkRequest,
 };
+use hawdb_scheduler::{Priority, Scheduler, SchedulerConfig, SchedulerError, TaskKey};
 use hawdb_storage::background::{
     CheckpointOperationError, CheckpointWorkContext, CheckpointWorkError,
 };
@@ -35,6 +36,29 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 const RETRY_DELAY: Duration = Duration::from_millis(100);
+const SCHEDULED_PREPARATION_POLL: Duration = Duration::from_millis(25);
+
+fn preparation_scheduler() -> std::result::Result<Arc<Scheduler>, SchedulerError> {
+    static SCHEDULER: OnceLock<Mutex<Weak<Scheduler>>> = OnceLock::new();
+    let mut shared = SCHEDULER
+        .get_or_init(|| Mutex::new(Weak::new()))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if let Some(scheduler) = shared.upgrade() {
+        return Ok(scheduler);
+    }
+    let workers = std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1)
+        .min(4);
+    let scheduler = Arc::new(Scheduler::new(SchedulerConfig {
+        business_workers: 1,
+        background_workers: workers,
+        ..SchedulerConfig::default()
+    })?);
+    *shared = Arc::downgrade(&scheduler);
+    Ok(scheduler)
+}
 // Off-gate construction may span the whole database. A pressure writer gives
 // it one short backoff, then relies on the ordinary hard storage limits.
 // Publication, sync-group draining and active reclamation keep their fences.
@@ -1041,6 +1065,9 @@ impl Owner {
         if !eligible {
             return Ok(None);
         }
+        let execution_scheduler = preparation_scheduler().map_err(|error| {
+            HawDBError::from_storage_error_with_context(error, "cannot start checkpoint scheduler")
+        })?;
         let governor = governor.unwrap_or_else(|| {
             RuntimeGovernor::detect(
                 hawdb_qos::RuntimeGovernorConfig::shared_host(),
@@ -1061,7 +1088,13 @@ impl Owner {
             .spawn(move || {
                 let failure_control = Arc::clone(&worker_control);
                 if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    run(worker_control, scheduler, pins, max_age);
+                    run(
+                        worker_control,
+                        scheduler,
+                        execution_scheduler,
+                        pins,
+                        max_age,
+                    );
                 }))
                 .is_err()
                 {
@@ -1167,9 +1200,12 @@ impl Drop for Owner {
 fn run(
     control: Arc<Control>,
     scheduler: LocalQosScheduler,
+    execution_scheduler: Arc<Scheduler>,
     pins: Arc<Mutex<ReaderPins>>,
     max_age: Duration,
 ) {
+    static NEXT_KEY: AtomicU64 = AtomicU64::new(1);
+    let scheduler_key = TaskKey::new(NEXT_KEY.fetch_add(1, Ordering::Relaxed));
     loop {
         let (mut source, pending, governor, task) = {
             let mut state = control
@@ -1483,21 +1519,33 @@ fn run(
                 // A manual source/generation change invalidates the private
                 // prefix. Release its state off-gate before a new preparation.
                 drop(pending);
-                prepare(
-                    &mut source,
+                let (next_source, next_report, result) = scheduled_prepare(
+                    &execution_scheduler,
+                    scheduler_key,
+                    source,
+                    preparation_report,
                     &scheduler,
                     &governor,
                     &task,
-                    &mut preparation_report,
-                )
+                );
+                source = next_source;
+                preparation_report = next_report;
+                result
             }
-            None => prepare(
-                &mut source,
-                &scheduler,
-                &governor,
-                &task,
-                &mut preparation_report,
-            ),
+            None => {
+                let (next_source, next_report, result) = scheduled_prepare(
+                    &execution_scheduler,
+                    scheduler_key,
+                    source,
+                    preparation_report,
+                    &scheduler,
+                    &governor,
+                    &task,
+                );
+                source = next_source;
+                preparation_report = next_report;
+                result
+            }
         };
         {
             let mut state = control
@@ -2049,6 +2097,76 @@ fn next_work_delay(state: &State, max_age: Duration) -> Option<Duration> {
         return None;
     }
     Some(max_age.saturating_sub(Duration::from_millis(debt.wal_age_millis)))
+}
+
+type PreparationResult = Result<Option<(CheckpointCandidate, Admission)>>;
+
+fn scheduled_prepare(
+    executor: &Scheduler,
+    key: TaskKey,
+    source: Source,
+    report: PreparationReport,
+    qos: &LocalQosScheduler,
+    governor: &RuntimeGovernor,
+    task: &RuntimeTaskContext,
+) -> (Source, PreparationReport, PreparationResult) {
+    let work = Arc::new(Mutex::new(Some((source, report))));
+    let submitted_work = Arc::clone(&work);
+    let submitted_qos = qos.clone();
+    let submitted_governor = governor.clone();
+    let submitted_task = task.clone();
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let submission = executor.spawn_background(key, Priority::Normal, move || {
+        let Some((mut source, mut report)) = submitted_work
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+        else {
+            return;
+        };
+        let result = prepare(
+            &mut source,
+            &submitted_qos,
+            &submitted_governor,
+            &submitted_task,
+            &mut report,
+        );
+        let _ = sender.send((source, report, result));
+    });
+    if let Err(error) = submission {
+        let (source, report) = work
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+            .expect("refused work remains with its owner");
+        return (
+            source,
+            report,
+            Err(HawDBError::from_storage_error_with_context(
+                error,
+                "checkpoint scheduler refused preparation",
+            )),
+        );
+    }
+    loop {
+        match receiver.recv_timeout(SCHEDULED_PREPARATION_POLL) {
+            Ok(completed) => return completed,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("checkpoint scheduler lost its preparation task")
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+        }
+        if let Err(reason) = task.checkpoint()
+            && let Some((source, report)) = work
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take()
+        {
+            // The queued closure sees the empty slot and never touches the
+            // captured source after shutdown or manual suspension returns.
+            return (source, report, Err(HawDBError::RuntimeTaskStopped(reason)));
+        }
+    }
 }
 
 fn prepare(

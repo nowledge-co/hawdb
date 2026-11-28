@@ -363,7 +363,8 @@ impl Scheduler {
         if let Err(error) =
             spawn_workers(&business, config.business_workers, "business", &mut workers)
         {
-            business.stop();
+            business.request_stop();
+            fail_queued(business.drain());
             for worker in workers {
                 let _ = worker.join();
             }
@@ -375,8 +376,11 @@ impl Scheduler {
             "background",
             &mut workers,
         ) {
-            business.stop();
-            background.stop();
+            business.request_stop();
+            background.request_stop();
+            let mut queued = business.drain();
+            queued.extend(background.drain());
+            fail_queued(queued);
             for worker in workers {
                 let _ = worker.join();
             }
@@ -466,8 +470,7 @@ impl Scheduler {
     pub fn shutdown(&self) {
         let current = thread::current().id();
         if self.worker_threads.contains(&current) {
-            self.business.stop();
-            self.background.stop();
+            self.stop_pools();
             return;
         }
         let mut state = lock(&self.shutdown);
@@ -495,8 +498,7 @@ impl Scheduler {
             // Queue drain and task teardown belong to the same completion as
             // the worker joins. A waiting caller must not return while the
             // joining caller is still running task destructors.
-            self.business.stop();
-            self.background.stop();
+            self.stop_pools();
             if let Some(workers) = workers {
                 for worker in workers {
                     let _ = worker.join();
@@ -509,6 +511,14 @@ impl Scheduler {
             self.shutdown_complete.notify_all();
             return;
         }
+    }
+
+    fn stop_pools(&self) {
+        self.business.request_stop();
+        self.background.request_stop();
+        let mut queued = self.business.drain();
+        queued.extend(self.background.drain());
+        fail_queued(queued);
     }
 }
 
@@ -739,28 +749,30 @@ impl Pool {
         lock(&self.state).queued
     }
 
-    fn stop(&self) {
+    fn request_stop(&self) {
         #[cfg(test)]
         if let Some(probe) = lock(&self.stop_probe).take() {
             let _ = probe.send(());
         }
-        let tasks = {
+        {
             // Set the stop predicate under the same mutex used by the worker's
             // wait predicate. The notification below cannot race an idle
             // worker between its flag check and `wait_timeout`.
-            let mut state = lock(&self.state);
+            let _state = lock(&self.state);
             self.stop.store(true, Ordering::Release);
+        }
+        self.available.notify_all();
+    }
+
+    fn drain(&self) -> Vec<QueuedTask> {
+        {
+            let mut state = lock(&self.state);
             let mut tasks = Vec::new();
             for level in 0..LEVELS {
                 tasks.extend(state.levels[level].drain(..));
             }
             state.queued = 0;
             tasks
-        };
-        self.available.notify_all();
-        for mut task in tasks {
-            task.task.fail(TaskError::Shutdown);
-            drop_task(task);
         }
     }
 
@@ -879,6 +891,17 @@ impl Pool {
     }
 }
 
+fn fail_queued(mut tasks: Vec<QueuedTask>) {
+    // Publish every cancellation before running any user destructor. A queued
+    // task may wait for another queued task in either pool during teardown.
+    for task in &mut tasks {
+        task.task.fail(TaskError::Shutdown);
+    }
+    for task in tasks {
+        drop_task(task);
+    }
+}
+
 fn drop_task(task: QueuedTask) {
     // A task-owned destructor must not retire the worker. The handle may
     // already hold a completion, but later submissions still need a live pool.
@@ -918,6 +941,7 @@ fn promote_aged(state: &mut PoolState, now: Instant, aging: Duration) {
         }
         for mut task in promoted {
             task.level -= 1;
+            task.enqueued_at = now;
             state.levels[level - 1].push_back(task);
         }
     }

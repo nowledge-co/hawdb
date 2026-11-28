@@ -260,6 +260,7 @@ dependencies = [
  "hawdb-relational",
  "hawdb-resource-profile",
  "hawdb-route-ownership",
+ "hawdb-scheduler",
  "hawdb-search",
  "hawdb-sql",
  "hawdb-storage",
@@ -570,6 +571,10 @@ version = "0.41.0"
 dependencies = [
  "serde_json",
 ]
+
+[[package]]
+name = "hawdb-scheduler"
+version = "0.41.0"
 
 [[package]]
 name = "hawdb-search"

@@ -53,6 +53,7 @@ hawdb-readiness = { path = "crates/readiness", version = "0.41.0" }
 hawdb-relational = { path = "crates/relational", version = "0.41.0" }
 hawdb-resource-profile = { path = "crates/resource-profile", version = "0.41.0" }
 hawdb-route-ownership = { path = "crates/route-ownership", version = "0.41.0" }
+hawdb-scheduler = { path = "crates/scheduler", version = "0.41.0" }
 hawdb-search = { path = "crates/search", version = "0.41.0", default-features = false }
 hawdb-runtime-tokio = { path = "crates/runtime-tokio", version = "0.41.0", optional = true }
 hawdb-sql = { path = "crates/sql", version = "0.41.0" }

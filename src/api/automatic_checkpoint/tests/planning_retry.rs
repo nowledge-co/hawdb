@@ -57,6 +57,67 @@ fn add(store: &mut GraphStore, catalog: &mut Catalog, id: i64, body: &str) {
 }
 
 #[test]
+fn cancelled_queued_preparation_releases_its_source_before_worker_available() {
+    let fixture = Fixture::new();
+    let mut catalog = Catalog::default();
+    let store = GraphStore::open(&fixture.0, &mut catalog).unwrap();
+    let source = Source::capture(&store, &catalog);
+    let identity = source.store.checkpoint_source_identity();
+    let executor = Arc::new(
+        Scheduler::new(SchedulerConfig {
+            business_workers: 1,
+            background_workers: 1,
+            queue_capacity: 1,
+            ..SchedulerConfig::default()
+        })
+        .unwrap(),
+    );
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let blocker = executor
+        .spawn_background(TaskKey::new(1), Priority::High, move || {
+            let _ = started_tx.send(());
+            let _ = release_rx.recv_timeout(Duration::from_secs(10));
+        })
+        .unwrap();
+    started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+
+    let task = RuntimeTaskContext::default();
+    let running_task = task.clone();
+    let running_executor = Arc::clone(&executor);
+    let (completed_tx, completed_rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let qos = LocalQosScheduler::new(hawdb_qos::LocalQosPolicy::default());
+        let resources = resources(MEMORY_BYTES);
+        let completed = scheduled_prepare(
+            &running_executor,
+            TaskKey::new(2),
+            source,
+            PreparationReport::default(),
+            &qos,
+            &resources,
+            &running_task,
+        );
+        let _ = completed_tx.send(completed);
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while executor.background_queued() == 0 && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    let was_queued = executor.background_queued() == 1;
+    task.cancellation().cancel();
+    let completed = completed_rx.recv_timeout(Duration::from_secs(2));
+    let _ = release_tx.send(());
+    worker.join().unwrap();
+    blocker.join().unwrap();
+    assert!(was_queued);
+    let (source, _, result) =
+        completed.expect("cancelled queued preparation must release its source");
+    assert!(matches!(result, Err(HawDBError::RuntimeTaskStopped(_))));
+    assert_eq!(source.store.checkpoint_source_identity(), identity);
+}
+
+#[test]
 fn permanently_denied_retries_traverse_an_unchanged_source_only_once() {
     let fixture = Fixture::new();
     let mut catalog = Catalog::default();

@@ -230,6 +230,7 @@ _HAWDB_COMMON_BASE_DEPS = [
     "//crates/relational:hawdb_relational",
     "//crates/resource-profile:hawdb_resource_profile",
     "//crates/route-ownership:hawdb_route_ownership",
+    "//crates/scheduler:hawdb_scheduler",
     "//crates/sql:hawdb_sql",
     "//crates/storage:hawdb_storage",
     "//crates/system-sql:hawdb_system_sql",

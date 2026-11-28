@@ -218,7 +218,7 @@ fn aging_promotes_a_waiting_task_one_level_per_interval() {
         class: TaskClass::Business,
         priority: Priority::Low,
         level: 2,
-        enqueued_at: now.checked_sub(aging * 2).unwrap(),
+        enqueued_at: now.checked_sub(aging).unwrap(),
         cancelled,
         task: Box::new(NoopTask),
     });
@@ -227,6 +227,9 @@ fn aging_promotes_a_waiting_task_one_level_per_interval() {
     assert_eq!(state.levels[1].len(), 1);
     assert!(state.levels[2].is_empty());
     promote_aged(&mut state, now, aging);
+    assert_eq!(state.levels[1].len(), 1);
+    assert!(state.levels[0].is_empty());
+    promote_aged(&mut state, now + aging, aging);
     assert_eq!(state.levels[0].len(), 1);
     assert!(state.levels[1].is_empty());
 }
@@ -759,6 +762,160 @@ struct ReentrantShutdownTask {
     scheduler: Arc<Scheduler>,
     entered: mpsc::Sender<()>,
     returned: mpsc::Sender<()>,
+}
+
+struct JoinOnDropTask {
+    handle: Option<TaskHandle<()>>,
+    finished: mpsc::Sender<Result<(), TaskError>>,
+}
+
+impl Task for JoinOnDropTask {
+    type Output = ();
+
+    fn run(&mut self, _: &TaskContext) -> TaskProgress<()> {
+        TaskProgress::Done(())
+    }
+}
+
+impl Drop for JoinOnDropTask {
+    fn drop(&mut self) {
+        let result = self.handle.take().expect("background handle").join();
+        let _ = self.finished.send(result);
+    }
+}
+
+struct WaitForShutdown {
+    started: mpsc::Sender<()>,
+    fallback: Arc<AtomicBool>,
+}
+
+impl Task for WaitForShutdown {
+    type Output = ();
+
+    fn run(&mut self, context: &TaskContext) -> TaskProgress<()> {
+        let _ = self.started.send(());
+        while context.checkpoint().is_ok() && !self.fallback.load(Ordering::Acquire) {
+            std::thread::yield_now();
+        }
+        TaskProgress::Done(())
+    }
+}
+
+#[test]
+fn shutdown_signals_both_pools_before_task_teardown() {
+    let scheduler = Arc::new(Scheduler::new(config(1, 1, 8)).unwrap());
+    let gate = Arc::new(Gate::new());
+    let (business_started_tx, business_started_rx) = mpsc::channel();
+    let business_gate = Arc::clone(&gate);
+    let business = scheduler
+        .spawn(TaskKey::new(1), Priority::High, move || {
+            let _ = business_started_tx.send(());
+            business_gate.wait();
+        })
+        .unwrap();
+    business_started_rx
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap();
+
+    let fallback = Arc::new(AtomicBool::new(false));
+    let (background_started_tx, background_started_rx) = mpsc::channel();
+    let background = scheduler
+        .spawn_background_task(
+            TaskKey::new(2),
+            Priority::Normal,
+            WaitForShutdown {
+                started: background_started_tx,
+                fallback: Arc::clone(&fallback),
+            },
+        )
+        .unwrap();
+    background_started_rx
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap();
+    let (finished_tx, finished_rx) = mpsc::channel();
+    let queued = scheduler
+        .spawn_task(
+            TaskKey::new(3),
+            Priority::Normal,
+            JoinOnDropTask {
+                handle: Some(background),
+                finished: finished_tx,
+            },
+        )
+        .unwrap();
+
+    let shutdown_scheduler = Arc::clone(&scheduler);
+    let (done_tx, done_rx) = mpsc::channel();
+    let shutdown = std::thread::spawn(move || {
+        shutdown_scheduler.shutdown();
+        let _ = done_tx.send(());
+    });
+    let result = finished_rx.recv_timeout(Duration::from_secs(2));
+    fallback.store(true, Ordering::Release);
+    gate.open();
+    let done = done_rx.recv_timeout(Duration::from_secs(5));
+    if done.is_ok() {
+        shutdown.join().unwrap();
+    }
+    assert_eq!(result.unwrap(), Err(TaskError::Shutdown));
+    assert!(done.is_ok());
+    assert_eq!(business.join(), Err(TaskError::Shutdown));
+    assert_eq!(queued.join(), Err(TaskError::Shutdown));
+}
+
+#[test]
+fn shutdown_fails_both_queues_before_task_teardown() {
+    let scheduler = Arc::new(Scheduler::new(config(1, 1, 8)).unwrap());
+    let gate = Arc::new(Gate::new());
+    let (started_tx, started_rx) = mpsc::channel();
+    let business_gate = Arc::clone(&gate);
+    let business_started = started_tx.clone();
+    let business = scheduler
+        .spawn(TaskKey::new(1), Priority::High, move || {
+            let _ = business_started.send(());
+            business_gate.wait();
+        })
+        .unwrap();
+    let background_gate = Arc::clone(&gate);
+    let background = scheduler
+        .spawn_background(TaskKey::new(2), Priority::High, move || {
+            let _ = started_tx.send(());
+            background_gate.wait();
+        })
+        .unwrap();
+    started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let background_queued = scheduler
+        .spawn_background(TaskKey::new(3), Priority::Normal, || {})
+        .unwrap();
+    let (finished_tx, finished_rx) = mpsc::channel();
+    let business_queued = scheduler
+        .spawn_task(
+            TaskKey::new(4),
+            Priority::Normal,
+            JoinOnDropTask {
+                handle: Some(background_queued),
+                finished: finished_tx,
+            },
+        )
+        .unwrap();
+    let shutdown_scheduler = Arc::clone(&scheduler);
+    let (done_tx, done_rx) = mpsc::channel();
+    let shutdown = std::thread::spawn(move || {
+        shutdown_scheduler.shutdown();
+        let _ = done_tx.send(());
+    });
+    let result = finished_rx.recv_timeout(Duration::from_secs(2));
+    gate.open();
+    let done = done_rx.recv_timeout(Duration::from_secs(5));
+    if done.is_ok() {
+        shutdown.join().unwrap();
+    }
+    assert_eq!(result.unwrap(), Err(TaskError::Shutdown));
+    assert!(done.is_ok());
+    assert_eq!(business.join(), Err(TaskError::Shutdown));
+    assert_eq!(background.join(), Err(TaskError::Shutdown));
+    assert_eq!(business_queued.join(), Err(TaskError::Shutdown));
 }
 
 impl Task for ReentrantShutdownTask {
