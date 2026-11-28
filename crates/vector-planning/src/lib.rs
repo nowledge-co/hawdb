@@ -12,13 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Vector backend selection and bounded vector plan construction.
+//! Shared vector plan IR and bounded vector planning.
 
+pub mod optimizer;
 pub mod vector;
 pub use hawdb_cascades::{OptimizerContext, QueryFamily, ResourceHints, VectorPrecision};
-pub use vector::{
+pub use optimizer::{
     plan_vector_search, select_adaptive_vector_backend, validate_vector_pipeline,
     AdaptiveVectorBackend, AdaptiveVectorBackendDecision, AdaptiveVectorBackendInput,
     AdaptiveVectorBackendPolicy, PlannedVectorSearch, VectorCompressionPreference, VectorPlanError,
     VectorPlanProperties,
 };
+pub use vector::*;

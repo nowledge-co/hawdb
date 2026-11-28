@@ -37,7 +37,7 @@ pub mod stage {
 }
 pub mod trace;
 
-use hawdb_optimizer_vector::plan_vector_search;
+use hawdb_vector_planning::plan_vector_search;
 
 pub use context::{
     ExplainMode, OptimizerContext, QueryFamily, ResourceHints, StatementClass, TraceSink,

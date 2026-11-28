@@ -7,7 +7,7 @@
 use super::*;
 use hawdb_core::{checked_retained_heap_sum, RetainedHeapBytes};
 
-// plan-core stays independent of the value/core crate. Its public vector IR
+// Shared vector planning stays independent of the value/core crate. Its vector IR
 // can be accounted here without reversing that dependency boundary.
 fn resource_profile_heap_bytes(profile: &crate::VectorExecutionResourceProfile) -> Option<usize> {
     fn require_copy<T: Copy>(_: &T) {}

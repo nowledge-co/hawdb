@@ -48,7 +48,6 @@ hawdb-plan-cache = { path = "crates/plan-cache", version = "0.41.0" }
 hawdb-plan-cypher = { path = "crates/plan-cypher", version = "0.41.0" }
 hawdb-qos = { path = "crates/qos", version = "0.41.0" }
 hawdb-query = { path = "crates/query", version = "0.41.0" }
-hawdb-query-policy = { path = "crates/query-policy", version = "0.41.0" }
 hawdb-readiness = { path = "crates/readiness", version = "0.41.0" }
 hawdb-relational = { path = "crates/relational", version = "0.41.0" }
 hawdb-resource-profile = { path = "crates/resource-profile", version = "0.41.0" }
@@ -108,20 +107,17 @@ members = [
   "crates/executor",
   "crates/expression",
   "crates/fuzz-contracts",
-  "crates/cgroup",
   "crates/cascades",
   "crates/integrity",
   "crates/optimizer",
   "crates/optimizer-graph",
   "crates/optimizer-relational",
   "crates/optimizer-predicate",
-  "crates/optimizer-vector",
-  "crates/plan-core",
+  "crates/vector-planning",
   "crates/plan-cache",
   "crates/plan-cypher",
   "crates/qos",
   "crates/query",
-  "crates/query-policy",
   "crates/qualification",
   "crates/test-contracts",
   "crates/readiness",
@@ -135,6 +131,7 @@ members = [
   "crates/system-sql",
   "crates/telemetry",
   "crates/runtime-tokio",
+  "crates/util",
   "crates/vector-projection",
 ]
 resolver = "2"

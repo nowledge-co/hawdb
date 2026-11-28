@@ -14,8 +14,8 @@
 
 //! Session-scoped query policy derived from Cypher system variables.
 //!
-//! This crate owns the typed policy and AST interpretation. The embedded
-//! facade owns session state and turns accepted updates into query results.
+//! The embedded facade owns session state and turns accepted updates into
+//! query results.
 
 use hawdb_core::{HawDBError, Result, Value};
 use hawdb_cypher as cypher;
