@@ -118,6 +118,7 @@ pub enum ObjectKind {
     CheckpointArtifact = 4,
     DurableManifest = 5,
     CheckpointBlock = 6,
+    CheckpointBlockTable = 7,
 }
 
 impl ObjectKind {
@@ -128,7 +129,8 @@ impl ObjectKind {
             | Self::SealedWal
             | Self::CheckpointArtifact
             | Self::DurableManifest
-            | Self::CheckpointBlock => 1,
+            | Self::CheckpointBlock
+            | Self::CheckpointBlockTable => 1,
         }
     }
 
@@ -140,6 +142,7 @@ impl ObjectKind {
             Self::CheckpointArtifact => "checkpoint-artifact",
             Self::DurableManifest => "durable-manifest",
             Self::CheckpointBlock => "checkpoint-block",
+            Self::CheckpointBlockTable => "checkpoint-block-table",
         }
     }
 }
@@ -518,7 +521,8 @@ impl ImmutableObjectStore {
         match kind {
             ObjectKind::Checkpoint
             | ObjectKind::CheckpointArtifact
-            | ObjectKind::CheckpointBlock => self.max_streamed_object_bytes,
+            | ObjectKind::CheckpointBlock
+            | ObjectKind::CheckpointBlockTable => self.max_streamed_object_bytes,
             ObjectKind::SealedWal | ObjectKind::SealedRoot | ObjectKind::DurableManifest => {
                 self.max_object_bytes
             }
@@ -577,6 +581,7 @@ impl ImmutableObjectStore {
             ObjectKind::CheckpointArtifact,
             ObjectKind::DurableManifest,
             ObjectKind::CheckpointBlock,
+            ObjectKind::CheckpointBlockTable,
         ]
         .into_iter()
         .map(|kind| (kind.directory(), Some(kind)))
@@ -1017,6 +1022,7 @@ impl ImmutableObjectStore {
                 ObjectKind::CheckpointArtifact,
                 ObjectKind::DurableManifest,
                 ObjectKind::CheckpointBlock,
+                ObjectKind::CheckpointBlockTable,
             ]
             .into_iter()
             .map(|kind| (kind.directory(), Some(kind)))

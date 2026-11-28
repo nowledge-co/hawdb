@@ -52,6 +52,8 @@ pub mod checkpoint;
 #[doc(hidden)]
 pub mod checkpoint_block;
 #[doc(hidden)]
+pub mod checkpoint_block_table;
+#[doc(hidden)]
 pub mod checkpoint_closure;
 pub mod column_group;
 #[doc(hidden)]

@@ -84,6 +84,7 @@ fn kind_directory(kind: ObjectKind) -> &'static str {
         ObjectKind::CheckpointArtifact => "checkpoint-artifact",
         ObjectKind::DurableManifest => "durable-manifest",
         ObjectKind::CheckpointBlock => "checkpoint-block",
+        ObjectKind::CheckpointBlockTable => "checkpoint-block-table",
     }
 }
 

@@ -165,6 +165,16 @@ MUST be able to locate one block from the descriptor without reading the
 complete block table payload. A scan MUST be able to stream blocks in key order
 through the bounded block cache.
 
+The ordered block table is itself an immutable content-addressed
+`CheckpointBlockTable` object. Its entries are sorted by
+`(block kind, bucket start, part)`; entries of one kind have non-overlapping
+bucket ranges, and multiple parts of one range start at zero and are contiguous.
+The generation manifest binds the table object reference and MUST reject a table
+whose entries overlap, are unordered, reference a non-block object, use a
+different block format version, carry a block length outside the block codec's
+minimum/maximum bounds, or contain an empty block/spill identity. The table's
+entry-count and encoded-byte limits MUST be mutually consistent.
+
 A generation manifest MAY reference more than one spill namespace. This is
 required when an unchanged canonical block is carried from an older generation
 while newly written blocks use the current spill artifact. Each block MUST

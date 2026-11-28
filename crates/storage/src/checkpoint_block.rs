@@ -26,6 +26,8 @@ pub const BLOCK_FORMAT_VERSION: u16 = 1;
 pub const BLOCK_HEADER_BYTES: usize = 80;
 pub const BLOCK_DIGEST_BYTES: usize = SHA256_BYTES;
 pub const DEFAULT_CHECKPOINT_BLOCK_TARGET_BYTES: u64 = 2 * 1024 * 1024;
+/// Smallest encodable block: header, digest and one payload byte.
+pub const MIN_CHECKPOINT_BLOCK_BYTES: u64 = (BLOCK_HEADER_BYTES + BLOCK_DIGEST_BYTES + 1) as u64;
 pub const MAX_CHECKPOINT_BLOCK_BYTES: u64 = 16 * 1024 * 1024;
 
 const FLAG_SPILL_NAMESPACE: u8 = 1;
