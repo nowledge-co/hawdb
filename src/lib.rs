@@ -451,8 +451,9 @@ pub use hawdb_readiness::embedded_query_path::{
 pub use hawdb_readiness::query_runtime_preflight::parse_query_runtime_preflight_probes;
 #[cfg(feature = "tokio-runtime")]
 pub use hawdb_runtime_tokio::{
-    TokioRuntimeAdapter, TokioRuntimeConfig, TokioRuntimeError, TokioRuntimeOwnership,
-    TokioSegmentReadExecutionError, TokioSegmentReadExecutor, TokioTaskError,
+    QuerySchedulingSnapshot, TokioRuntimeAdapter, TokioRuntimeConfig, TokioRuntimeError,
+    TokioRuntimeOwnership, TokioSegmentReadExecutionError, TokioSegmentReadExecutor,
+    TokioTaskError,
 };
 pub use hawdb_search::{SearchQueryError, SearchQueryResult, SearchRetainedOutput};
 pub use hawdb_storage::file_descriptors::FileDescriptorMetrics;

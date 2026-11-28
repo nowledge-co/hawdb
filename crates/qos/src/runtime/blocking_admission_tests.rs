@@ -676,6 +676,88 @@ fn queue_rank_orders_work_without_moving_it_into_the_background_pool() {
 }
 
 #[test]
+fn interactive_waiters_precede_young_foreground_without_starving_aged_work() {
+    let governor = one_cpu_governor();
+    let foreground = RuntimeWorkPriority::Foreground;
+    let first = governor.admission_waiter(foreground);
+    let second = governor.admission_waiter(foreground);
+    let fast = governor.admission_waiter_interactive(foreground, foreground);
+    let now = Instant::now();
+    {
+        let mut state = mutex_lock(&governor.inner.state);
+        for entry in &mut state.admission_waiters {
+            entry.enqueued_at = now + Duration::from_secs(60);
+        }
+    }
+    let work = request(foreground);
+    assert_eq!(
+        governor.try_admit_waiter(&first, work).unwrap_err().code,
+        RuntimeAdmissionCode::QueuedAhead
+    );
+    drop(governor.try_admit_waiter(&fast, work).unwrap());
+
+    let fast = governor.admission_waiter_interactive(foreground, foreground);
+    let aged = Instant::now() - BACKGROUND_ADMISSION_AGING - Duration::from_secs(1);
+    {
+        let mut state = mutex_lock(&governor.inner.state);
+        for entry in &mut state.admission_waiters {
+            if !entry.interactive {
+                entry.enqueued_at = aged;
+            }
+        }
+    }
+    // Aging is also tracked on the waiter for the admitted-work fairness mark.
+    let mut first = first;
+    first.enqueued_at = aged;
+    drop(governor.try_admit_waiter(&first, work).unwrap());
+    assert_eq!(
+        governor.try_admit_waiter(&second, work).unwrap_err().code,
+        RuntimeAdmissionCode::QueuedAhead
+    );
+    drop(governor.try_admit_waiter(&fast, work).unwrap());
+    drop(governor.try_admit_waiter(&second, work).unwrap());
+}
+
+#[test]
+fn interactive_preference_preserves_background_aging_and_explicit_rank() {
+    let governor = one_cpu_governor();
+    let foreground = RuntimeWorkPriority::Foreground;
+    let background = RuntimeWorkPriority::Background;
+    let maintenance = governor.admission_waiter(background);
+    let fast = governor.admission_waiter_interactive(foreground, foreground);
+    let lowered = governor.admission_waiter_interactive(foreground, background);
+    assert!(!lowered.interactive);
+    assert_eq!(lowered.rank(), background);
+    {
+        let mut state = mutex_lock(&governor.inner.state);
+        state.admission_waiters[0].enqueued_at =
+            Instant::now() - BACKGROUND_ADMISSION_AGING - Duration::from_secs(1);
+    }
+    assert_eq!(
+        governor
+            .try_admit_waiter(&fast, request(foreground))
+            .unwrap_err()
+            .code,
+        RuntimeAdmissionCode::QueuedAhead
+    );
+    drop(
+        governor
+            .try_admit_waiter(&maintenance, request(background))
+            .unwrap(),
+    );
+    drop(
+        governor
+            .try_admit_waiter(&fast, request(foreground))
+            .unwrap(),
+    );
+    drop(
+        governor
+            .try_admit_waiter(&lowered, request(foreground))
+            .unwrap(),
+    );
+}
+
+#[test]
 fn waiter_short_of_process_memory_is_not_overtaken_by_small_requests() {
     use crate::{ProcessMemoryCapabilities, ProcessMemoryPolicyConfig, ProcessMemorySnapshot};
     let policy = ProcessMemoryPolicy::new(ProcessMemoryPolicyConfig::new(

@@ -405,6 +405,7 @@ dependencies = [
  "hawdb-resource-profile",
  "hawdb-route-ownership",
  "hawdb-runtime-tokio",
+ "hawdb-scheduler",
  "hawdb-search",
  "hawdb-sql",
  "hawdb-storage",
@@ -707,9 +708,14 @@ version = "0.41.0"
 dependencies = [
  "hawdb-core",
  "hawdb-qos",
+ "hawdb-scheduler",
  "hawdb-storage",
  "tokio",
 ]
+
+[[package]]
+name = "hawdb-scheduler"
+version = "0.41.0"
 
 [[package]]
 name = "hawdb-search"

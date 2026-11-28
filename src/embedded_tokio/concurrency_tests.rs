@@ -105,6 +105,55 @@ fn read(engine: &HawDBTokioEmbedded, sql: bool, id: i64) -> Value {
 }
 
 #[test]
+fn point_read_and_general_queries_enter_distinct_scheduling_levels() {
+    let fixture = Fixture::new();
+    let engine = &fixture.engine;
+    let before = engine.runtime().query_scheduling_snapshot();
+    let (point, lowered, scan, sql) = engine
+        .runtime()
+        .block_on(async {
+            let point = engine
+                .query(
+                    "MATCH (n:Counter) WHERE id(n) = 0 RETURN n.counter AS counter",
+                    RuntimeTaskContext::default(),
+                )
+                .await
+                .unwrap();
+            let lowered = engine
+                .query(
+                    "MATCH (n:Counter) WHERE id(n) = 0 RETURN n.counter AS counter",
+                    RuntimeTaskContext::default()
+                        .with_admission_queue_priority(RuntimeWorkPriority::Background),
+                )
+                .await
+                .unwrap();
+            let scan = engine
+                .query(
+                    "MATCH (n:Counter) RETURN n.counter AS counter ORDER BY counter",
+                    RuntimeTaskContext::default(),
+                )
+                .await
+                .unwrap();
+            let sql = engine
+                .query_sql_request(OwnedSqlQueryRequest::new(
+                    "SELECT counter FROM counters ORDER BY counter",
+                ))
+                .await
+                .unwrap();
+            (point, lowered, scan, sql)
+        })
+        .unwrap();
+    assert_eq!(point.rows[0]["counter"], Value::Int(10));
+    assert_eq!(lowered.rows, point.rows);
+    assert_eq!(scan.rows.len(), 2);
+    assert_eq!(sql.rows.len(), 2);
+    let after = engine.runtime().query_scheduling_snapshot();
+    assert_eq!(after.high - before.high, 1);
+    assert_eq!(after.normal - before.normal, 3);
+    fixture.close();
+}
+
+#[test]
 fn sql_autocommit_clock_advances_without_a_write_on_tokio_workers() {
     let fixture = Fixture::new();
     let engine = &fixture.engine;

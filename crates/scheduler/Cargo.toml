@@ -1,0 +1,11 @@
+[package]
+name = "hawdb-scheduler"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Multi-level feedback scheduling for HawDB background and prioritized work"
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
