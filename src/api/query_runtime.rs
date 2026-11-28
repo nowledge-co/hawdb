@@ -23,6 +23,8 @@ pub(crate) struct PreparedRuntimeQuery {
     optimized: Option<OptimizedQueryPlan>,
     optimizer_environment: Option<OptimizerEnvironmentKey>,
     admission: RuntimeAdmissionPlan,
+    #[cfg(feature = "tokio-runtime")]
+    scheduling_fast: bool,
     parse_metrics: hawdb_cypher::ParseMetrics,
     config: DatabaseConfig,
     system_variables: QuerySystemVariables,
@@ -227,6 +229,11 @@ impl PreparedRuntimeQuery {
 
     pub(crate) fn admission(&self) -> &RuntimeAdmissionPlan {
         &self.admission
+    }
+
+    #[cfg(feature = "tokio-runtime")]
+    pub(crate) fn scheduling_fast(&self) -> bool {
+        self.scheduling_fast
     }
 
     pub(super) fn statement_kind(&self) -> &'static str {
@@ -603,6 +610,12 @@ impl RuntimePlanningContext<'_> {
                 )
             }
         };
+        #[cfg(feature = "tokio-runtime")]
+        let scheduling_fast = !is_mutation
+            && !matches!(body, cypher::Statement::Explain(_))
+            && prepared_optimized
+                .as_ref()
+                .is_some_and(|plan| is_bounded_point_read(&plan.physical_plan));
         Ok(PreparedRuntimeQuery {
             branch_id: self.branch_id,
             cypher_text,
@@ -618,6 +631,8 @@ impl RuntimePlanningContext<'_> {
                 parallel_execution_eligible,
                 max_parallelism,
             },
+            #[cfg(feature = "tokio-runtime")]
+            scheduling_fast,
             parse_metrics,
             config: self.config.clone(),
             system_variables: self.system_variables.clone(),
@@ -665,6 +680,50 @@ impl RuntimePlanningContext<'_> {
             },
         )
     }
+}
+
+#[cfg(feature = "tokio-runtime")]
+fn is_bounded_point_read(plan: &PhysicalPlan) -> bool {
+    fn simple_projection(items: &[hawdb_plan_cypher::Projection]) -> bool {
+        items.len() <= 16
+            && items.iter().all(|item| {
+                matches!(
+                    item.expression,
+                    hawdb_plan_cypher::ProjectionExpression::Property { .. }
+                        | hawdb_plan_cypher::ProjectionExpression::Id { .. }
+                )
+            })
+    }
+
+    fn bounded(plan: &PhysicalPlan, depth: usize) -> bool {
+        if depth > 3 {
+            return false;
+        }
+        match plan {
+            PhysicalPlan::NodeProjectionScanExec {
+                variable,
+                access: hawdb_plan_cypher::NodeProjectionAccess::IdSeek,
+                predicate:
+                    Some(hawdb_plan_cypher::Predicate::IdEq {
+                        variable: predicate_variable,
+                        value: Value::Int(_),
+                    }),
+                items,
+                required_properties,
+                ..
+            } => {
+                variable == predicate_variable
+                    && required_properties.len() <= 16
+                    && simple_projection(items)
+            }
+            PhysicalPlan::ProjectExec { items, input } => {
+                simple_projection(items) && bounded(input, depth + 1)
+            }
+            PhysicalPlan::LimitExec { input, .. } => bounded(input, depth + 1),
+            _ => false,
+        }
+    }
+    bounded(plan, 0)
 }
 
 impl Database {
@@ -1188,6 +1247,35 @@ pub(super) fn query_runtime_checkpoint(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "tokio-runtime")]
+    #[test]
+    fn fast_scheduling_requires_a_proven_identity_point_read() {
+        let point = PhysicalPlan::IndexNodeSeek {
+            variable: "m".into(),
+            label: "Memory".into(),
+            property: "id".into(),
+            value: Value::Int(1),
+        };
+        assert!(!is_bounded_point_read(&point));
+        let identity = PhysicalPlan::NodeProjectionScanExec {
+            variable: "m".into(),
+            label: "Memory".into(),
+            access: hawdb_plan_cypher::NodeProjectionAccess::IdSeek,
+            required_properties: vec!["id".into()],
+            predicate: Some(hawdb_plan_cypher::Predicate::IdEq {
+                variable: "m".into(),
+                value: Value::Int(1),
+            }),
+            items: vec![],
+        };
+        assert!(is_bounded_point_read(&identity));
+        let sorted = PhysicalPlan::SortExec {
+            items: Vec::new(),
+            input: Box::new(identity),
+        };
+        assert!(!is_bounded_point_read(&sorted));
+    }
 
     #[test]
     fn plain_explain_uses_a_read_snapshot_without_executing_writes() {

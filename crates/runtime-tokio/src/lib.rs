@@ -17,15 +17,20 @@ use hawdb_qos::{
     RuntimeAdmissionCode, RuntimeAdmissionError, RuntimeGovernor, RuntimeGovernorSnapshot,
     RuntimeRetainedMemory, RuntimeWorkKind, RuntimeWorkPriority, RuntimeWorkRequest,
 };
+use hawdb_scheduler::{
+    Priority as SchedulingPriority, Scheduler, SchedulerConfig, SchedulerError, TaskKey,
+};
 use std::error::Error;
 use std::fmt::{self, Debug, Display, Formatter};
 use std::future::{poll_fn, Future};
 use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
 use std::time::{Duration, Instant};
 use tokio::runtime::{Builder, Runtime};
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use tokio::task::{JoinError, JoinHandle};
 
 mod segment_read;
@@ -138,6 +143,35 @@ pub struct TokioRuntimeAdapter {
     governor: RuntimeGovernor,
     config: TokioRuntimeConfig,
     last_resource_refresh: Arc<Mutex<Instant>>,
+    query_scheduler: Arc<Mutex<Option<Arc<Scheduler>>>>,
+    query_scheduling: Arc<QuerySchedulingCounters>,
+}
+
+#[derive(Default)]
+struct QuerySchedulingCounters {
+    high: AtomicU64,
+    normal: AtomicU64,
+}
+
+/// Counts accepted query submissions by requested priority. Feedback and
+/// aging may change the level at which an individual task is dispatched.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct QuerySchedulingSnapshot {
+    pub high: u64,
+    pub normal: u64,
+}
+
+struct QueuedWork<T>(Arc<Mutex<Option<T>>>);
+
+impl<T> Drop for QueuedWork<T> {
+    fn drop(&mut self) {
+        let work = self
+            .0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(work)));
+    }
 }
 
 impl Debug for TokioRuntimeAdapter {
@@ -233,6 +267,32 @@ impl<E: Error + 'static> Error for TokioTaskError<E> {
 }
 
 impl TokioRuntimeAdapter {
+    fn query_scheduler(&self) -> Result<Arc<Scheduler>, SchedulerError> {
+        let mut scheduler = self
+            .query_scheduler
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(scheduler) = scheduler.as_ref() {
+            return Ok(Arc::clone(scheduler));
+        }
+        let host = std::thread::available_parallelism().map_or(1, NonZeroUsize::get);
+        let workers = self
+            .governor
+            .snapshot()
+            .limits
+            .configured_cpu_slots
+            .get()
+            .min(host)
+            .max(1);
+        let created = Arc::new(Scheduler::new(SchedulerConfig {
+            business_workers: workers,
+            background_workers: 1,
+            ..SchedulerConfig::default()
+        })?);
+        *scheduler = Some(Arc::clone(&created));
+        Ok(created)
+    }
+
     pub fn borrowed(
         handle: TokioHandle,
         governor: RuntimeGovernor,
@@ -245,6 +305,8 @@ impl TokioRuntimeAdapter {
             governor,
             config,
             last_resource_refresh: Arc::new(Mutex::new(Instant::now())),
+            query_scheduler: Arc::new(Mutex::new(None)),
+            query_scheduling: Arc::new(QuerySchedulingCounters::default()),
         }
     }
 
@@ -276,6 +338,8 @@ impl TokioRuntimeAdapter {
             governor,
             config,
             last_resource_refresh: Arc::new(Mutex::new(Instant::now())),
+            query_scheduler: Arc::new(Mutex::new(None)),
+            query_scheduling: Arc::new(QuerySchedulingCounters::default()),
         })
     }
 
@@ -293,6 +357,13 @@ impl TokioRuntimeAdapter {
 
     pub fn governor_snapshot(&self) -> RuntimeGovernorSnapshot {
         self.governor.snapshot()
+    }
+
+    pub fn query_scheduling_snapshot(&self) -> QuerySchedulingSnapshot {
+        QuerySchedulingSnapshot {
+            high: self.query_scheduling.high.load(Ordering::Relaxed),
+            normal: self.query_scheduling.normal.load(Ordering::Relaxed),
+        }
     }
 
     pub fn config(&self) -> TokioRuntimeConfig {
@@ -463,6 +534,133 @@ impl TokioRuntimeAdapter {
         self.await_join(join).await
     }
 
+    /// Dispatches owned query work through the business feedback queue.
+    #[doc(hidden)]
+    pub async fn execute_scheduled_with_reusable_state<T, E, S, F, R>(
+        &self,
+        state: S,
+        mut request_for_snapshot: R,
+        context: RuntimeTaskContext,
+        scheduling: (TaskKey, SchedulingPriority),
+        scheduler_error: impl Fn(String) -> E + Clone + Send + Sync + 'static,
+        operation: F,
+    ) -> Result<T, TokioTaskError<E>>
+    where
+        T: Send + 'static,
+        E: Send + 'static,
+        S: Send + 'static,
+        F: FnOnce(Option<S>, &RuntimeTaskContext) -> Result<T, E> + Send + 'static,
+        R: FnMut(RuntimeGovernorSnapshot, Option<&S>) -> RuntimeWorkRequest + Send,
+    {
+        let (key, priority) = scheduling;
+        let scheduler = self.query_scheduler().map_err(|error| {
+            TokioTaskError::Operation(scheduler_error(format!("query scheduler failed: {error}")))
+        })?;
+        let mut state = Some(state);
+        let permit = self
+            .acquire_with_state_priority(
+                &mut state,
+                move |snapshot, state| request_for_snapshot(snapshot, state).with_blocking(true),
+                &context,
+                priority == SchedulingPriority::High,
+            )
+            .await?;
+        let observe_cancellation = permit.request().kind != RuntimeWorkKind::Mutation;
+        let task_context = permit.bind_task_context(context.clone());
+        let work = Arc::new(Mutex::new(Some((state, permit, task_context, operation))));
+        let _queued_guard = QueuedWork(Arc::clone(&work));
+        let queued = Arc::clone(&work);
+        let scheduler_lifetime = Arc::clone(&scheduler);
+        let panic_error = scheduler_error.clone();
+        let (sender, mut receiver) = oneshot::channel();
+        let _handle = scheduler
+            .spawn(key, priority, move || {
+                let _scheduler_lifetime = scheduler_lifetime;
+                let Some((state, permit, task_context, operation)) = queued
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .take()
+                else {
+                    return;
+                };
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _permit = permit;
+                    task_context.checkpoint().map_err(TokioTaskError::Stopped)?;
+                    finish_operation(
+                        &task_context,
+                        operation(state, &task_context),
+                        observe_cancellation,
+                    )
+                }))
+                .unwrap_or_else(|_| {
+                    Err(TokioTaskError::Operation(panic_error(
+                        "scheduled query panicked".to_string(),
+                    )))
+                });
+                let _ = sender.send(result);
+            })
+            .map_err(|error| {
+                TokioTaskError::Operation(scheduler_error(format!(
+                    "query scheduler failed: {error}"
+                )))
+            })?;
+        match priority {
+            SchedulingPriority::High => &self.query_scheduling.high,
+            SchedulingPriority::Normal | SchedulingPriority::Low => &self.query_scheduling.normal,
+        }
+        .fetch_add(1, Ordering::Relaxed);
+        let mut cancellation = Box::pin(context.cancellation().cancelled());
+        let mut deadline = context.deadline().map(|deadline| {
+            Box::pin(tokio::time::sleep_until(tokio::time::Instant::from_std(
+                deadline,
+            )))
+        });
+        let completed = poll_fn(|cx| {
+            if let Poll::Ready(result) = std::pin::Pin::new(&mut receiver).poll(cx) {
+                return Poll::Ready(Ok(result));
+            }
+            if cancellation.as_mut().poll(cx).is_ready()
+                && let Err(reason) = context.checkpoint()
+            {
+                return Poll::Ready(Err(reason));
+            }
+            if deadline
+                .as_mut()
+                .is_some_and(|deadline| deadline.as_mut().poll(cx).is_ready())
+            {
+                return Poll::Ready(Err(RuntimeCancellationReason::DeadlineExceeded));
+            }
+            Poll::Pending
+        })
+        .await;
+        let result = match completed {
+            Ok(result) => result,
+            Err(reason) => {
+                let queued_work = work
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .take();
+                if let Some(queued_work) = queued_work {
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        drop(queued_work)
+                    }));
+                    self.governor.record_cancellation(reason);
+                    return Err(TokioTaskError::Stopped(reason));
+                }
+                receiver.await
+            }
+        };
+        let result = result.map_err(|_| {
+            TokioTaskError::Operation(scheduler_error(
+                "scheduled query completion closed".to_string(),
+            ))
+        })?;
+        if let Err(TokioTaskError::Stopped(reason)) = &result {
+            self.governor.record_cancellation(*reason);
+        }
+        result
+    }
+
     async fn acquire<E>(
         &self,
         request: RuntimeWorkRequest,
@@ -490,8 +688,23 @@ impl TokioRuntimeAdapter {
     async fn acquire_with_state<E, S, R>(
         &self,
         state: &mut Option<S>,
+        request_for_snapshot: R,
+        context: &RuntimeTaskContext,
+    ) -> Result<hawdb_qos::RuntimePermit, TokioTaskError<E>>
+    where
+        S: Send,
+        R: FnMut(RuntimeGovernorSnapshot, Option<&S>) -> RuntimeWorkRequest + Send,
+    {
+        self.acquire_with_state_priority(state, request_for_snapshot, context, false)
+            .await
+    }
+
+    async fn acquire_with_state_priority<E, S, R>(
+        &self,
+        state: &mut Option<S>,
         mut request_for_snapshot: R,
         context: &RuntimeTaskContext,
+        interactive: bool,
     ) -> Result<hawdb_qos::RuntimePermit, TokioTaskError<E>>
     where
         S: Send,
@@ -500,7 +713,15 @@ impl TokioRuntimeAdapter {
         let mut wait = None;
         self.refresh_resources_if_due();
         let mut request = request_for_snapshot(self.governor.snapshot(), state.as_ref());
-        let mut waiter = self.governor.admission_waiter(request.priority);
+        let make_waiter = |priority| {
+            let rank = RuntimeGovernor::effective_queue_rank(priority, context);
+            if interactive {
+                self.governor.admission_waiter_interactive(priority, rank)
+            } else {
+                self.governor.admission_waiter_ranked(priority, rank)
+            }
+        };
+        let mut waiter = make_waiter(request.priority);
         loop {
             if let Err(reason) = context.checkpoint() {
                 self.finish_admission_wait(request, wait.take());
@@ -520,7 +741,7 @@ impl TokioRuntimeAdapter {
                     request = request_for_snapshot(self.governor.snapshot(), None);
                     if !error.is_retryable() {
                         // A terminal refusal removes the waiter from the queue.
-                        waiter = self.governor.admission_waiter(request.priority);
+                        waiter = make_waiter(request.priority);
                     }
                     continue;
                 }
@@ -708,6 +929,129 @@ mod tests {
             runtime_resources(cpu),
             IoConcurrencyBudget::new(4, 1),
         )
+    }
+
+    #[test]
+    fn scheduled_queries_prioritize_high_and_release_cancelled_queued_work() {
+        let governor = governor(4);
+        let adapter = TokioRuntimeAdapter::owned(
+            governor.clone(),
+            TokioRuntimeConfig::from_governor(&governor),
+        )
+        .unwrap();
+        let scheduler = Arc::new(
+            Scheduler::new(SchedulerConfig {
+                business_workers: 1,
+                background_workers: 1,
+                queue_capacity: 8,
+                aging_interval: Duration::from_secs(60),
+                ..SchedulerConfig::default()
+            })
+            .unwrap(),
+        );
+        *adapter.query_scheduler.lock().unwrap() = Some(Arc::clone(&scheduler));
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let blocker = scheduler
+            .spawn(TaskKey::new(1), SchedulingPriority::High, move || {
+                started_tx.send(()).unwrap();
+                release_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            })
+            .unwrap();
+        started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let order = Arc::new(Mutex::new(Vec::new()));
+        adapter
+            .block_on(async {
+                let spawn = |priority, value, context: RuntimeTaskContext| {
+                    let adapter = adapter.clone();
+                    let order = Arc::clone(&order);
+                    tokio::spawn(async move {
+                        adapter
+                            .execute_scheduled_with_reusable_state(
+                                (),
+                                |_, _| RuntimeWorkRequest::foreground_query(1, 0),
+                                context,
+                                (TaskKey::new(value), priority),
+                                |error| error,
+                                move |_, _| {
+                                    order.lock().unwrap().push(value);
+                                    Ok::<_, String>(())
+                                },
+                            )
+                            .await
+                    })
+                };
+                let normal = spawn(SchedulingPriority::Normal, 2, RuntimeTaskContext::default());
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while scheduler.business_queued() < 1 {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .unwrap();
+                let context = RuntimeTaskContext::default();
+                let cancelled = spawn(SchedulingPriority::Normal, 3, context.clone());
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while scheduler.business_queued() < 2 {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .unwrap();
+                context.cancellation().cancel();
+                assert!(matches!(
+                    tokio::time::timeout(Duration::from_secs(2), cancelled)
+                        .await
+                        .unwrap()
+                        .unwrap(),
+                    Err(TokioTaskError::Stopped(
+                        RuntimeCancellationReason::Cancelled
+                    ))
+                ));
+                let high = spawn(SchedulingPriority::High, 4, RuntimeTaskContext::default());
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while scheduler.business_queued() < 3 {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .unwrap();
+                release_tx.send(()).unwrap();
+                high.await.unwrap().unwrap();
+                normal.await.unwrap().unwrap();
+            })
+            .unwrap();
+        blocker.join().unwrap();
+        assert_eq!(*order.lock().unwrap(), [4, 2]);
+        assert_eq!(
+            adapter.query_scheduling_snapshot(),
+            QuerySchedulingSnapshot { high: 1, normal: 2 }
+        );
+        assert_eq!(governor.snapshot().active_cpu_slots, 0);
+    }
+
+    #[test]
+    fn scheduled_query_panic_returns_an_operation_error_and_releases_permit() {
+        let governor = governor(1);
+        let adapter = TokioRuntimeAdapter::owned(
+            governor.clone(),
+            TokioRuntimeConfig::from_governor(&governor),
+        )
+        .unwrap();
+        let result = adapter
+            .block_on(adapter.execute_scheduled_with_reusable_state(
+                (),
+                |_, _| RuntimeWorkRequest::foreground_query(1, 0),
+                RuntimeTaskContext::default(),
+                (TaskKey::new(1), SchedulingPriority::Normal),
+                |error| error,
+                |_, _| -> Result<(), String> { panic!("fixture panic") },
+            ))
+            .unwrap();
+        assert!(
+            matches!(result, Err(TokioTaskError::Operation(error)) if error == "scheduled query panicked")
+        );
+        assert_eq!(governor.snapshot().active_cpu_slots, 0);
     }
 
     #[derive(Debug, Default)]

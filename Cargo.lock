@@ -615,6 +615,7 @@ version = "0.41.0"
 dependencies = [
  "hawdb-core",
  "hawdb-qos",
+ "hawdb-scheduler",
  "hawdb-storage",
  "tokio",
 ]

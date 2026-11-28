@@ -577,6 +577,8 @@ struct RuntimeAdmissionQueueEntry {
     priority: RuntimeWorkPriority,
     /// Queue order: selection, aging and immediate preemption use the rank.
     rank: RuntimeWorkPriority,
+    interactive: bool,
+    interactive_overtaken: bool,
     enqueued_at: Instant,
     signal: Arc<RuntimeAdmissionSignal>,
     /// A Foreground waiter that a Background waiter was admitted ahead of.
@@ -632,6 +634,7 @@ pub struct RuntimeAdmissionWaiter {
     id: u64,
     priority: RuntimeWorkPriority,
     rank: RuntimeWorkPriority,
+    interactive: bool,
     enqueued_at: Instant,
     signal: Arc<RuntimeAdmissionSignal>,
     observed_generation: u64,
@@ -647,10 +650,10 @@ impl RuntimeAdmissionWaiter {
         self.rank
     }
 
-    /// Returns the one-shot deadline at which background aging may change
-    /// this waiter's admission order.
+    /// Returns the one-shot deadline at which aging may change this waiter's
+    /// admission order.
     pub fn next_priority_change_at(&self) -> Option<Instant> {
-        if self.rank != RuntimeWorkPriority::Background {
+        if self.interactive {
             return None;
         }
         let deadline = self.enqueued_at.checked_add(BACKGROUND_ADMISSION_AGING)?;
@@ -965,7 +968,28 @@ impl RuntimeGovernor {
         priority: RuntimeWorkPriority,
         rank: RuntimeWorkPriority,
     ) -> RuntimeAdmissionWaiter {
+        self.admission_waiter_with_interactive(priority, rank, false)
+    }
+
+    /// Joins the existing foreground resource pool with an interactive queue
+    /// preference. Older ordinary foreground work can still age ahead.
+    #[doc(hidden)]
+    pub fn admission_waiter_interactive(
+        &self,
+        priority: RuntimeWorkPriority,
+        rank: RuntimeWorkPriority,
+    ) -> RuntimeAdmissionWaiter {
+        self.admission_waiter_with_interactive(priority, rank, true)
+    }
+
+    fn admission_waiter_with_interactive(
+        &self,
+        priority: RuntimeWorkPriority,
+        rank: RuntimeWorkPriority,
+        interactive: bool,
+    ) -> RuntimeAdmissionWaiter {
         let rank = priority.lowered_by(rank);
+        let interactive = interactive && rank == RuntimeWorkPriority::Foreground;
         let signal = Arc::new(RuntimeAdmissionSignal::default());
         let enqueued_at = Instant::now();
         let id = {
@@ -978,6 +1002,8 @@ impl RuntimeGovernor {
                     id,
                     priority,
                     rank,
+                    interactive,
+                    interactive_overtaken: false,
                     enqueued_at,
                     signal: Arc::clone(&signal),
                     overtaken: false,
@@ -990,6 +1016,7 @@ impl RuntimeGovernor {
             id,
             priority,
             rank,
+            interactive,
             enqueued_at,
             signal,
             observed_generation: 0,
@@ -1095,6 +1122,17 @@ impl RuntimeGovernor {
                 None => {
                     if let Some(waiter) = waiter {
                         remove_admission_waiter(&mut state, waiter.id);
+                        if waiter.rank == RuntimeWorkPriority::Foreground
+                            && !waiter.interactive
+                            && Instant::now().saturating_duration_since(waiter.enqueued_at)
+                                >= BACKGROUND_ADMISSION_AGING
+                        {
+                            for entry in &mut state.admission_waiters {
+                                if entry.interactive {
+                                    entry.interactive_overtaken = true;
+                                }
+                            }
+                        }
                         // A queued Background waiter is admitted only when
                         // selected, so every Foreground waiter still queued
                         // was just overtaken by an aged Background waiter.
@@ -1957,10 +1995,9 @@ fn contends_with_waiter(
 
 /// Selects the waiter whose turn it is.
 ///
-/// Foreground waiters go first, FIFO. An aged Background waiter (queued for
-/// `BACKGROUND_ADMISSION_AGING`) goes ahead of them so it cannot starve, but
-/// only while the oldest Foreground waiter has not already been overtaken:
-/// each Foreground waiter yields to aged Background work at most once.
+/// Interactive Foreground work goes ahead of younger ordinary Foreground work.
+/// An aged ordinary waiter may pass once, then a waiting interactive request
+/// gets its turn. Aged Background work retains its existing bounded preference.
 fn selected_admission_waiter(
     waiters: &VecDeque<RuntimeAdmissionQueueEntry>,
     now: Instant,
@@ -1978,6 +2015,14 @@ fn selected_admission_waiter(
         return Some((index, true));
     }
     if let Some(index) = foreground {
+        if let Some(interactive) = waiters.iter().position(|waiter| waiter.interactive) {
+            let oldest = &waiters[index];
+            let aged = !oldest.interactive
+                && now.saturating_duration_since(oldest.enqueued_at) >= BACKGROUND_ADMISSION_AGING;
+            if !aged || waiters[interactive].interactive_overtaken {
+                return Some((interactive, false));
+            }
+        }
         return Some((index, false));
     }
     waiters.front().map(|_| (0, false))

@@ -25,9 +25,11 @@ use hawdb_runtime_tokio::{
     TokioRuntimeAdapter, TokioRuntimeConfig, TokioRuntimeError, TokioRuntimeOwnership,
     TokioTaskError,
 };
+use hawdb_scheduler::{Priority as SchedulingPriority, TaskKey};
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
+use std::hash::{Hash, Hasher};
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
@@ -77,6 +79,7 @@ impl RuntimeQueryInput {
         planning: &crate::api::PublishedConcurrentRead,
         prepared: Option<crate::api::PreparedRuntimeQuery>,
         admitted: &crate::api::RuntimeAdmissionPlan,
+        scheduling_fast: Option<bool>,
         context: &RuntimeTaskContext,
     ) -> Result<crate::api::PreparedRuntimeQuery, HawDBError> {
         context
@@ -89,7 +92,9 @@ impl RuntimeQueryInput {
                 planning.prepare(self.request.as_request().with_task_context(context))?
             }
         };
-        if prepared.admission() != admitted {
+        if prepared.admission() != admitted
+            || scheduling_fast.is_some_and(|fast| prepared.scheduling_fast() != fast)
+        {
             return Err(HawDBError::Execution(
                 "query admission changed during preparation; retry the query".to_string(),
             ));
@@ -468,8 +473,12 @@ impl HawDBTokioEmbedded {
         let request =
             request.with_memory_bytes(request.memory_bytes.max(planning_request.memory_bytes));
         let engine = self.clone();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        "sql".hash(&mut hasher);
+        query.as_request().sql.hash(&mut hasher);
+        let key = TaskKey::new(hasher.finish());
         self.runtime
-            .execute_blocking_with_reusable_state(
+            .execute_scheduled_with_reusable_state(
                 prepared,
                 move |_, prepared: Option<&crate::api::PreparedRuntimeSql>| {
                     request.with_retained_memory_bytes(
@@ -477,6 +486,8 @@ impl HawDBTokioEmbedded {
                     )
                 },
                 context,
+                (key, SchedulingPriority::Normal),
+                HawDBError::Execution,
                 move |prepared, context| {
                     context
                         .checkpoint()
@@ -677,8 +688,13 @@ impl HawDBTokioEmbedded {
             input.validate_source(&planning.sql_planning.identity)?;
             let mut read_transaction =
                 planning.begin_read_transaction_with_context(&task_context)?;
-            let prepared =
-                input.prepare_for_execution(&planning, prepared, &admission, &task_context)?;
+            let prepared = input.prepare_for_execution(
+                &planning,
+                prepared,
+                &admission,
+                None,
+                &task_context,
+            )?;
             drop(planning);
             let mut batch = Vec::with_capacity(batch_rows);
             let mut batch_bytes = 0usize;
@@ -781,6 +797,21 @@ impl HawDBTokioEmbedded {
         R: FnMut(hawdb_qos::RuntimeGovernorSnapshot) -> RuntimeWorkRequest + Send,
     {
         let admission = prepared.admission().clone();
+        let scheduling_fast = prepared.scheduling_fast()
+            && request.priority == RuntimeWorkPriority::Foreground
+            && task_context.admission_priority() == RuntimeWorkPriority::Foreground
+            && task_context.admission_queue_priority() == RuntimeWorkPriority::Foreground;
+        let prepared_fast = prepared.scheduling_fast();
+        let priority = if scheduling_fast {
+            SchedulingPriority::High
+        } else {
+            SchedulingPriority::Normal
+        };
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        "cypher".hash(&mut hasher);
+        priority.hash(&mut hasher);
+        input.request.as_request().cypher.hash(&mut hasher);
+        let key = TaskKey::new(hasher.finish());
         let embedded = Arc::clone(&self.embedded);
         let concurrent = Arc::clone(&self.concurrent);
         let planning_memory_bytes = input.planning_request(request.priority).memory_bytes;
@@ -800,10 +831,12 @@ impl HawDBTokioEmbedded {
             };
         if request.kind == RuntimeWorkKind::Mutation {
             self.runtime
-                .execute_blocking_with_reusable_state(
+                .execute_scheduled_with_reusable_state(
                     prepared,
                     request_for_snapshot,
                     task_context,
+                    (key, priority),
+                    HawDBError::Execution,
                     move |prepared, task_context| {
                         execute_live_query(
                             &embedded,
@@ -811,6 +844,7 @@ impl HawDBTokioEmbedded {
                             &input,
                             prepared,
                             &admission,
+                            Some(prepared_fast),
                             task_context,
                         )
                     },
@@ -821,10 +855,12 @@ impl HawDBTokioEmbedded {
             let max_rows = self.embedded.sql_planning()?.config.read_result_row_limit();
             let max_payload_bytes = usize::try_from(request.result_bytes).unwrap_or(usize::MAX);
             self.runtime
-                .execute_blocking_with_reusable_state(
+                .execute_scheduled_with_reusable_state(
                     prepared,
                     request_for_snapshot,
                     task_context,
+                    (key, priority),
+                    HawDBError::Execution,
                     move |prepared, task_context| {
                         let planning = embedded.view()?;
                         input.validate_source(&planning.sql_planning.identity)?;
@@ -834,6 +870,7 @@ impl HawDBTokioEmbedded {
                             &planning,
                             prepared,
                             &admission,
+                            Some(prepared_fast),
                             task_context,
                         )?;
                         drop(planning);
@@ -848,6 +885,7 @@ impl HawDBTokioEmbedded {
                                 &input,
                                 Some(prepared),
                                 &admission,
+                                Some(prepared_fast),
                                 task_context,
                             );
                         }
@@ -879,12 +917,19 @@ fn execute_live_query(
     input: &RuntimeQueryInput,
     prepared: Option<crate::api::PreparedRuntimeQuery>,
     admission: &crate::api::RuntimeAdmissionPlan,
+    scheduling_fast: Option<bool>,
     task_context: &RuntimeTaskContext,
 ) -> Result<QueryOutput, HawDBError> {
     let _execution = embedded.execution()?;
     let planning = embedded.view()?;
     input.validate_source(&planning.sql_planning.identity)?;
-    let prepared = input.prepare_for_execution(&planning, prepared, admission, task_context)?;
+    let prepared = input.prepare_for_execution(
+        &planning,
+        prepared,
+        admission,
+        scheduling_fast,
+        task_context,
+    )?;
     // Semantic lock waiting must retain preparation funding, not a source pin.
     drop(planning);
     let concurrent = embedded.concurrent(concurrent)?;

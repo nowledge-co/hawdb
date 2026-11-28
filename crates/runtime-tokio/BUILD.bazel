@@ -23,6 +23,7 @@ rust_library(
     deps = all_crate_deps(normal = True) + [
         "//crates/core:hawdb_core",
         "//crates/qos:hawdb_qos",
+        "//crates/scheduler:hawdb_scheduler",
         "//crates/storage:hawdb_storage",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
