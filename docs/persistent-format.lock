@@ -21,6 +21,8 @@ crates/storage/src/canonical_adjacency.rs const DESCRIPTOR_VALUE_MAGIC: &[u8; 8]
 crates/storage/src/canonical_adjacency.rs const DESCRIPTOR_VALUE_VERSION: u16 = 1;
 crates/storage/src/checkpoint_block.rs pub const BLOCK_MAGIC: &[u8; 8] = b"SKNBLK01";
 crates/storage/src/checkpoint_block.rs pub const BLOCK_FORMAT_VERSION: u16 = 1;
+crates/storage/src/checkpoint_block_table.rs pub const BLOCK_TABLE_MAGIC: &[u8; 8] = b"SKNBLT01";
+crates/storage/src/checkpoint_block_table.rs pub const BLOCK_TABLE_FORMAT_VERSION: u16 = 1;
 crates/storage/src/column_group/deletion.rs const DELETION_VECTOR_VERSION: u32 = 1;
 crates/storage/src/column_group/group.rs const DIRECTORY_VERSION: u32 = 1;
 crates/storage/src/column_group/manifest.rs const MANIFEST_MAGIC: &[u8; 9] = b"SKNCOLM01";
