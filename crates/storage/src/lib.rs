@@ -50,6 +50,8 @@ pub mod canonical_adjacency;
 #[doc(hidden)]
 pub mod checkpoint;
 #[doc(hidden)]
+pub mod checkpoint_block;
+#[doc(hidden)]
 pub mod checkpoint_closure;
 pub mod column_group;
 #[doc(hidden)]

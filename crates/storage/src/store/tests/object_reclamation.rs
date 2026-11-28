@@ -83,6 +83,7 @@ fn kind_directory(kind: ObjectKind) -> &'static str {
         ObjectKind::SealedRoot => "sealed-root",
         ObjectKind::CheckpointArtifact => "checkpoint-artifact",
         ObjectKind::DurableManifest => "durable-manifest",
+        ObjectKind::CheckpointBlock => "checkpoint-block",
     }
 }
 
